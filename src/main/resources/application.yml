@@ -1,0 +1,28 @@
+spring:
+  application:
+    name: Agent
+
+  ai:
+    dashscope:
+      api-key: ${DASHSCOPE_API_KEY}
+      chat:
+        options:
+          model: qwen-max
+
+server:
+  port: 8080
+
+logging:
+  level:
+    uno.zhuchen.agent: DEBUG
+    org.springframework.ai: INFO
+---
+spring:
+  config:
+    activate:
+      on-profile: dev
+  ai:
+    dashscope:
+      chat:
+        options:
+          model: qwen-turbo
