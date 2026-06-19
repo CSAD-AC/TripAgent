@@ -9,6 +9,11 @@ spring:
         options:
           model: qwen-max
 
+agent:
+  react:
+    max-iterations: 10
+    timeout-seconds: 30
+
 server:
   port: ${SERVER_PORT:8080}
 
