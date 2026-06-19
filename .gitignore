@@ -44,6 +44,9 @@ build/
 ### Reasonix Agent ###
 .reasonix/
 
+### Agent Skills (可重现，由 skills-lock.json 恢复) ###
+.agents/
+
 ### OS files ###
 .DS_Store
 Thumbs.db

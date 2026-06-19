@@ -1,0 +1,180 @@
+@import "tailwindcss";
+
+/* ─── Design Token 体系 ───
+ * 调性：旅行手账质感 · 温暖大地色 · 避免 AI 蓝白模板
+ * 主色：暖陶土橙 #C6663E · 深炭灰 #2B2B2B
+ * 辅助：鼠尾草绿 #8BA888 · 暖白 #F5F0EB
+ * 强调：芥末黄 #D4A84B
+ * 字体：Playfair Display (标题) · Inter (正文)
+ */
+
+@theme {
+  /* 主色系 */
+  --color-terracotta-50: #fdf4ef;
+  --color-terracotta-100: #fae6db;
+  --color-terracotta-200: #f4cab5;
+  --color-terracotta-300: #eba785;
+  --color-terracotta-400: #e07d55;
+  --color-terracotta-500: #c6663e;
+  --color-terracotta-600: #a85030;
+  --color-terracotta-700: #8c4028;
+  --color-terracotta-800: #753624;
+  --color-terracotta-900: #632f21;
+
+  /* 炭灰系 */
+  --color-charcoal-50: #f5f4f2;
+  --color-charcoal-100: #e4e2dc;
+  --color-charcoal-200: #cac5ba;
+  --color-charcoal-300: #aba393;
+  --color-charcoal-400: #938974;
+  --color-charcoal-500: #847960;
+  --color-charcoal-600: #71634d;
+  --color-charcoal-700: #5d4f3e;
+  --color-charcoal-800: #4e4235;
+  --color-charcoal-900: #2b2b2b;
+
+  /* 鼠尾草绿 */
+  --color-sage-50: #f3f6f1;
+  --color-sage-100: #e0e8dc;
+  --color-sage-200: #c3d3bb;
+  --color-sage-300: #9fb894;
+  --color-sage-400: #8ba888;
+  --color-sage-500: #6a8a6b;
+  --color-sage-600: #526e54;
+  --color-sage-700: #425845;
+  --color-sage-800: #38483a;
+  --color-sage-900: #303d32;
+
+  /* 芥末黄 */
+  --color-mustard-50: #fdf8ed;
+  --color-mustard-100: #f9eecb;
+  --color-mustard-200: #f3dc93;
+  --color-mustard-300: #ecc55a;
+  --color-mustard-400: #d4a84b;
+  --color-mustard-500: #bd8f39;
+  --color-mustard-600: #a0722e;
+  --color-mustard-700: #805628;
+  --color-mustard-800: #6b4728;
+  --color-mustard-900: #5b3c25;
+
+  /* 暖白 */
+  --color-warm-white: #f5f0eb;
+  --color-warm-white-100: #ede5dc;
+  --color-warm-white-200: #dcd1c4;
+
+  /* 字体 */
+  --font-display: 'Playfair Display', Georgia, serif;
+  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+}
+
+/* ─── 全局样式 ─── */
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  background-color: var(--color-warm-white);
+  color: var(--color-charcoal-900);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ─── 折角信纸卡片签名样式 ─── */
+.corner-fold {
+  position: relative;
+  background: white;
+  border-radius: 12px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08), 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+.corner-fold::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 28px;
+  height: 28px;
+  background: linear-gradient(135deg, transparent 50%, var(--color-warm-white-200) 50%);
+  border-top-left-radius: 12px;
+  pointer-events: none;
+}
+
+/* ─── 打字动画 (尊重 prefers-reduced-motion) ─── */
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+.cursor-blink::after {
+  content: '▊';
+  color: var(--color-terracotta-500);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .cursor-blink::after {
+    animation: blink 1s step-end infinite;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .step-dot, .step-line {
+    transition: none !important;
+  }
+  *, *::before, *::after {
+    animation-duration: 0s !important;
+    transition-duration: 0s !important;
+  }
+}
+
+/* ─── 步骤进度条 ─── */
+.step-indicator {
+  display: flex;
+  align-items: center;
+  gap: 0;
+}
+.step-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 2px solid var(--color-charcoal-200);
+  background: white;
+  flex-shrink: 0;
+  transition: all 0.3s ease;
+}
+.step-dot.active {
+  border-color: var(--color-terracotta-500);
+  background: var(--color-terracotta-500);
+  box-shadow: 0 0 0 3px rgba(198, 102, 62, 0.2);
+}
+.step-dot.completed {
+  border-color: var(--color-sage-500);
+  background: var(--color-sage-500);
+}
+.step-line {
+  flex: 1;
+  height: 2px;
+  background: var(--color-charcoal-200);
+  transition: background 0.3s ease;
+}
+.step-line.completed {
+  background: var(--color-sage-500);
+}
+
+/* ─── 暗色模式 ─── */
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+  }
+  body {
+    background-color: #1a1a1a;
+    color: #e8e4de;
+  }
+  .corner-fold {
+    background: #262626;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  }
+  .corner-fold::before {
+    background: linear-gradient(135deg, transparent 50%, #333 50%);
+  }
+  /* 组件暗色补丁 (当 Tailwind dark: 类不可用时) */
+  .dark\:bg-\[\#1a1a1a\] { background-color: #1a1a1a; }
+}
+
+/* ─── 触摸优化 ─── */
+body {
+  touch-action: manipulation;
+}

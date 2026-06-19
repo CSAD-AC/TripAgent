@@ -11,7 +11,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 public class AgentConfig {
 
     /** 最大 ReAct 迭代次数 */
-    private int maxIterations = 10;
+    private int maxIterations = 20;
 
     /** 默认 system prompt */
     private String systemPrompt = """
