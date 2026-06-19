@@ -61,7 +61,7 @@ export function Sidebar({
             </div>
           ) : (
             conversations.map((conv) => (
-              <button
+              <div
                 key={conv.id}
                 onClick={() => onSelect(conv.id)}
                 onKeyDown={(e) => {
@@ -70,6 +70,8 @@ export function Sidebar({
                     onSelect(conv.id)
                   }
                 }}
+                role="button"
+                tabIndex={0}
                 className={cn(
                   'group flex items-center gap-2 w-full px-3 py-2.5 rounded-xl cursor-pointer transition-colors text-sm text-left min-h-[44px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-terracotta-500',
                   conv.id === activeId
@@ -94,7 +96,7 @@ export function Sidebar({
                 >
                   <Trash2 className="w-3.5 h-3.5" />
                 </button>
-              </button>
+              </div>
             ))
           )}
         </div>

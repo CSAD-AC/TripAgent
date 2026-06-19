@@ -7,7 +7,7 @@ import java.util.List;
 /**
  * 对话记忆存取 — 类比 Mapper 层，抽象持久化方式
  *
- * <p>后续可扩展为 Redis 实现、MySQL 实现等。</p>
+ * 后续可扩展为 Redis 实现、MySQL 实现等。
  */
 public interface ChatMemory {
 

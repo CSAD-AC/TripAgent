@@ -76,7 +76,7 @@ export interface Conversation {
 
 /** API 请求 */
 export interface ChatRequest {
-  conversationId?: number
+  conversationId?: number | string
   message: string
 }
 
@@ -90,7 +90,7 @@ export interface ChatResponse {
 
 /** SSE 事件数据类型 */
 export interface SSEEvent {
-  type: 'thinking' | 'node' | 'tool_call' | 'final'
+  type: 'thinking' | 'node' | 'tool_call' | 'final' | 'error'
   content?: string
   tool?: string
   duration?: number

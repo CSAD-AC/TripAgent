@@ -1,134 +1,189 @@
 import { useState, useRef, useCallback } from 'react'
 import type { Message, SSEEvent } from '../types'
 
-interface UseChatOptions {
-  onStream?: (chunk: string) => void
-}
-
-export function useChat({ onStream }: UseChatOptions = {}) {
+export function useChat() {
   const [messages, setMessages] = useState<Message[]>([])
   const [isLoading, setIsLoading] = useState(false)
-  const [currentStreamContent, setCurrentStreamContent] = useState('')
+  const [streamContent, setStreamContent] = useState('')
   const [workflowNode, setWorkflowNode] = useState<string | null>(null)
   const abortRef = useRef<AbortController | null>(null)
+  const accumulatedRef = useRef('')
 
-  const sendMessage = useCallback(async (content: string, conversationId?: number) => {
-    // 添加用户消息
+  const sendMessage = useCallback(async (content: string, conversationId?: number | string) => {
+    console.log('[useChat] sendMessage called', { content, conversationId })
+
     const userMsg: Message = {
       id: `user-${Date.now()}`,
       role: 'user',
       content,
       timestamp: Date.now(),
     }
-    setMessages((prev) => [...prev, userMsg])
-    setIsLoading(true)
-    setWorkflowNode('intent_analysis')
-
-    // 创建 Assistant 占位消息
     const assistantId = `assistant-${Date.now()}`
     const assistantMsg: Message = {
       id: assistantId,
       role: 'assistant',
       content: '',
-      type: 'thinking',
+      type: 'thinking' as const,
       timestamp: Date.now(),
     }
-    setMessages((prev) => [...prev, assistantMsg])
-    setCurrentStreamContent('')
+
+    setMessages((prev) => {
+      console.log('[useChat] setMessages (initial)', { prevLen: prev.length, newLen: prev.length + 2, assistantId })
+      return [...prev, userMsg, assistantMsg]
+    })
+    setIsLoading(true)
+    setWorkflowNode(null)
+    accumulatedRef.current = ''
+    setStreamContent('')
+    console.log('[useChat] state set: isLoading=true, streamContent=""')
 
     abortRef.current = new AbortController()
 
     try {
+      console.log('[useChat] starting fetch to /api/chat/stream')
       const response = await fetch('/api/chat/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          conversationId,
-          message: content,
-        }),
+        body: JSON.stringify({ conversationId, message: content }),
         signal: abortRef.current.signal,
       })
 
+      console.log('[useChat] fetch response', { ok: response.ok, status: response.status, type: response.type })
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
 
-      const reader = response.body!.getReader()
+      if (!response.body) {
+        console.error('[useChat] response.body is null!')
+        throw new Error('response.body is null')
+      }
+
+      const reader = response.body.getReader()
       const decoder = new TextDecoder()
-      let accumulated = ''
+      let chunkCount = 0
+      let totalChars = 0
 
       while (true) {
         const { done, value } = await reader.read()
-        if (done) break
+        if (done) {
+          console.log('[useChat] stream done', { chunkCount, totalChars, accumulatedFinal: accumulatedRef.current.length })
+          break
+        }
 
-        const chunk = decoder.decode(value, { stream: true })
-        const lines = chunk.split('\n')
+        chunkCount++
+        const text = decoder.decode(value, { stream: true })
+        console.log(`[useChat] chunk #${chunkCount}`, { rawLength: text.length, preview: text.slice(0, 100) })
+
+        const lines = text.split('\n')
+        let eventCount = 0
 
         for (const line of lines) {
-          if (!line.startsWith('data: ')) continue
-          const data = line.slice(6).trim()
-          if (data === '[DONE]') break
+          const trimmed = line.trim()
+          if (!trimmed) continue
+          if (!trimmed.startsWith('data:')) {
+            console.log('[useChat] skip non-data line:', trimmed.slice(0, 80))
+            continue
+          }
+          const data = trimmed.slice(5).trim()
+          if (data === '[DONE]') {
+            console.log('[useChat] received [DONE] marker')
+            break
+          }
 
           try {
             const event: SSEEvent = JSON.parse(data)
+            eventCount++
+
             switch (event.type) {
-              case 'thinking':
-                setCurrentStreamContent(event.content || '')
+      case 'thinking': {
+                accumulatedRef.current += event.content || ''
                 break
+              }
+              case 'final': {
+                accumulatedRef.current = event.content || ''
+                break
+              }
+              case 'error': {
+                accumulatedRef.current = event.content || '出错了'
+                break
+              }
               case 'node':
+                console.log('[useChat] node event', { content: event.content })
                 setWorkflowNode(event.content || null)
-                setCurrentStreamContent(event.content || '')
                 break
               case 'tool_call':
-                setCurrentStreamContent(`正在调用 ${event.tool}...`)
-                break
-              case 'final':
-                accumulated += event.content || ''
-                setCurrentStreamContent(accumulated)
-                onStream?.(event.content || '')
+                console.log('[useChat] tool_call event', { tool: (event as any).tool })
+                accumulatedRef.current += `[调用 ${(event as any).tool}]`
                 break
             }
-          } catch {
-            // 忽略解析错误
+          } catch (parseErr) {
+            console.warn('[useChat] parse error for line:', data.slice(0, 80), parseErr)
           }
         }
+
+        // 每个 read() chunk 结束，强制更新 streamContent
+        console.log(`[useChat] after chunk #${chunkCount}`, {
+          eventCount,
+          accumulatedLen: accumulatedRef.current.length,
+          accumulatedPreview: accumulatedRef.current.slice(-50),
+        })
+        setStreamContent(accumulatedRef.current)
       }
 
-      // 流结束，更新消息
-      setMessages((prev) =>
-        prev.map((msg) =>
+      // 流结束
+      const finalContent = accumulatedRef.current
+      console.log('[useChat] stream complete, updating message', { finalContentLen: finalContent.length, contentPreview: finalContent.slice(0, 50) })
+
+      setMessages((prev) => {
+        const updated = prev.map((msg) =>
           msg.id === assistantId
-            ? { ...msg, content: accumulated || currentStreamContent, type: 'final' }
+            ? { ...msg, content: finalContent, type: 'final' as const }
             : msg
         )
-      )
+        const assistant = updated.find(m => m.id === assistantId)
+        console.log('[useChat] setMessages (final update)', { assistantContentLen: assistant?.content?.length, assistantContent: assistant?.content?.slice(0, 50) })
+        return updated
+      })
     } catch (err: any) {
-      if (err.name === 'AbortError') return
+      if (err.name === 'AbortError') {
+        console.log('[useChat] fetch aborted')
+        return
+      }
+      console.error('[useChat] fetch error:', err.message)
+      const errorContent = `出错了：${(err as Error).message}`
       setMessages((prev) =>
         prev.map((msg) =>
           msg.id === assistantId
-            ? { ...msg, content: `出错了：${err.message}`, type: 'final' }
+            ? { ...msg, content: errorContent, type: 'final' as const }
             : msg
         )
       )
     } finally {
+      console.log('[useChat] finally block', {
+        accumulatedWas: accumulatedRef.current.length,
+        isLoadingWillBe: false,
+        streamContentWillBe: '',
+      })
       setIsLoading(false)
       setWorkflowNode(null)
-      setCurrentStreamContent('')
+      setStreamContent('')
+      accumulatedRef.current = ''
       abortRef.current = null
     }
-  }, [onStream])
+  }, [])
 
   const stopStreaming = useCallback(() => {
+    console.log('[useChat] stopStreaming called')
     abortRef.current?.abort()
   }, [])
 
   const clearMessages = useCallback(() => {
+    console.log('[useChat] clearMessages called')
     setMessages([])
   }, [])
 
   return {
     messages,
     isLoading,
-    currentStreamContent,
+    streamContent,
     workflowNode,
     sendMessage,
     stopStreaming,

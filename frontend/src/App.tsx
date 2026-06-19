@@ -19,8 +19,10 @@ export default function App() {
     deleteConversation,
   } = useConversations()
 
-  const { messages, isLoading, currentStreamContent, workflowNode, sendMessage, stopStreaming } =
+  const { messages, isLoading, streamContent, workflowNode, sendMessage, stopStreaming } =
     useChat()
+
+  console.log('[App] render', { messagesLen: messages.length, isLoading, streamContentLen: streamContent.length })
 
   // 自动滚动到底部（尊重 prefers-reduced-motion）
   useEffect(() => {
@@ -28,7 +30,7 @@ export default function App() {
     messagesEndRef.current?.scrollIntoView({
       behavior: prefersReduced ? 'auto' : 'smooth',
     })
-  }, [messages, currentStreamContent])
+  }, [messages, streamContent])
 
   const handleSend = (content: string) => {
     sendMessage(content, activeId)
@@ -101,7 +103,7 @@ export default function App() {
                   key={msg.id}
                   message={msg}
                   isStreaming={isLastAssistant && isLoading}
-                  streamContent={isLastAssistant ? currentStreamContent : undefined}
+                  streamContent={isLastAssistant ? streamContent : undefined}
                 />
               )
             })}

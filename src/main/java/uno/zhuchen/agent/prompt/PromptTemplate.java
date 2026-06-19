@@ -3,7 +3,7 @@ package uno.zhuchen.agent.prompt;
 /**
  * 提示词模板 — 支持 {placeholder} 替换
  *
- * <p>用途：构建带变量的 prompt，如根据用户角色、上下文动态生成 system prompt。</p>
+ * 用途：构建带变量的 prompt，如根据用户角色、上下文动态生成 system prompt。
  */
 public class PromptTemplate {
 

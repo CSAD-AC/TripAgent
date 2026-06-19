@@ -9,7 +9,7 @@ import uno.zhuchen.agent.domain.dto.ChatDTO;
 /**
  * 聊天视图对象 — 前端展示层，按需裁剪/格式化 ChatDTO 中的字段
  *
- * <p>唯一构造来源：{@link #from(ChatDTO)}。</p>
+ * 唯一构造来源：{@link #from(ChatDTO)}。
  */
 @Data
 @NoArgsConstructor

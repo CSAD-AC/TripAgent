@@ -32,6 +32,7 @@ export function ChatInput({ onSend, onStop, isLoading, disabled }: ChatInputProp
   const handleSend = () => {
     const trimmed = input.trim()
     if (!trimmed || isLoading) return
+    console.log('[ChatInput] handleSend', { content: trimmed })
     onSend(trimmed)
     setInput('')
   }

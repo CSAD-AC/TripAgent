@@ -3,16 +3,14 @@ package uno.zhuchen.agent.tool;
 /**
  * 工具回调接口 — 预留扩展点
  *
- * <p>后续为 ReactAgent 注册工具时实现此接口。
- * 当前阶段（无工具）仅保留定义，供架构预览。</p>
+ * 后续为 ReactAgent 注册工具时实现此接口。
+ * 当前阶段（无工具）仅保留定义，供架构预览。
  *
- * <pre>
  * 使用示例（后续）:
  *   ToolCallback weatherTool = () -> {
  *       return new ToolResponse("天气查询结果...");
  *   };
  *   reactAgent.registerTool("get_weather", weatherTool);
- * </pre>
  */
 public interface ToolCallback {
 

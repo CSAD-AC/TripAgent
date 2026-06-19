@@ -5,6 +5,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
+import reactor.core.publisher.Flux;
 import uno.zhuchen.agent.llm.ChatModel;
 
 import java.util.List;
@@ -12,7 +13,7 @@ import java.util.List;
 /**
  * DashScope 实现的 ChatModel
  *
- * <p>基于 Spring AI 的 ChatClient 封装，对接阿里通义系列模型。</p>
+ * 基于 Spring AI 的 ChatClient 封装，对接阿里通义系列模型。
  */
 public class DashScopeChatModel implements ChatModel {
 
@@ -26,7 +27,7 @@ public class DashScopeChatModel implements ChatModel {
 
     @Override
     public AssistantMessage call(List<Message> messages) {
-        log.debug("LLM 调用, messages 数量: {}", messages.size());
+        log.debug("LLM 同步调用, messages 数量: {}", messages.size());
 
         org.springframework.ai.chat.model.ChatResponse response = chatClient.prompt()
                 .messages(messages)
@@ -44,5 +45,18 @@ public class DashScopeChatModel implements ChatModel {
                 result.getText() != null ? result.getText().length() : 0);
 
         return result;
+    }
+
+    @Override
+    public Flux<String> stream(List<Message> messages) {
+        log.debug("LLM 流式调用, messages 数量: {}", messages.size());
+
+        return chatClient.prompt()
+                .messages(messages)
+                .stream()
+                .content()
+                .doOnNext(token -> log.trace("LLM token: {}", token))
+                .doOnComplete(() -> log.debug("LLM 流式响应完成"))
+                .doOnError(e -> log.error("LLM 流式响应异常", e));
     }
 }

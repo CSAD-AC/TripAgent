@@ -11,8 +11,8 @@ import java.util.stream.Collectors;
 /**
  * 内存级对话记忆实现（开发/演示用）
  *
- * <p>消息按 conversationId 分组存储，仅保留最新 N 条以避免上下文过长。
- * 生产环境应替换为 Redis / MySQL 持久化实现。</p>
+ * 消息按 conversationId 分组存储，仅保留最新 N 条以避免上下文过长。
+ * 生产环境应替换为 Redis / MySQL 持久化实现。
  */
 public class InMemoryChatMemory implements ChatMemory {
 
