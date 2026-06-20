@@ -3,13 +3,11 @@ export interface Message {
   id: string
   role: 'user' | 'assistant' | 'system'
   content: string
-  /** SSE 流式事件：thinking / node / tool_call / final */
-  type?: 'thinking' | 'node' | 'tool_call' | 'final'
+  /** SSE 流式事件类型 */
+  type?: 'thinking' | 'tool_call' | 'tool_result' | 'final'
   timestamp: number
   /** 结构化行程数据（从 markdown 解析） */
   itinerary?: Itinerary
-  /** 工作流节点状态 */
-  workflowNode?: WorkflowNode
 }
 
 /** 工作流节点 */
@@ -90,8 +88,11 @@ export interface ChatResponse {
 
 /** SSE 事件数据类型 */
 export interface SSEEvent {
-  type: 'thinking' | 'node' | 'tool_call' | 'final' | 'error'
+  type: 'thinking' | 'tool_call' | 'tool_result' | 'final' | 'error'
   content?: string
-  tool?: string
-  duration?: number
+  toolName?: string
+  toolArguments?: string
+  toolResult?: string
+  conversationId?: string
+  durationMs?: number
 }
