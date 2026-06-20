@@ -61,26 +61,17 @@ public class DashScopeChatModel implements ChatModel {
         }
     }
 
+
     @Override
-    public Flux<String> stream(List<Message> messages, ToolCallback... tools) {
-        log.debug("LLM 流式调用, messages 数量: {}", messages.size());
+    public Flux<ChatResponse> stream(List<Message> messages, ToolCallback... tools) {
+        log.debug("LLM流式调用, messages 数量: {}", messages.size());
+        return chatClient.prompt()
+                .messages(messages)
+                .toolCallbacks(tools)
+                .options(ToolCallingChatOptions.builder()
+                        .internalToolExecutionEnabled(false)
+                        .build())
+                .stream().chatResponse();
 
-        try {
-            return chatClient.prompt()
-                    .messages(messages)
-                    .toolCallbacks(tools)
-                    .options(ToolCallingChatOptions.builder()
-                            .internalToolExecutionEnabled(false)
-                            .build())
-                    .stream()
-                    .content()
-                    .doOnNext(token -> log.trace("LLM token: {}", token))
-                    .doOnComplete(() -> log.debug("LLM 流式响应完成"))
-                    .doOnError(e -> log.error("LLM 流式响应异常", e));
-
-        } catch (Exception e) {
-            log.error("LLM 流式调用异常", e);
-            return Flux.just("调用 LLM 流式接口时发生错误: " + e.getMessage());
-        }
     }
 }

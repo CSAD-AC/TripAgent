@@ -2,6 +2,7 @@ package uno.zhuchen.agent.llm;
 
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.tool.ToolCallback;
 import reactor.core.publisher.Flux;
 
@@ -29,5 +30,5 @@ public interface ChatModel {
      * @param messages 包含 system prompt 和消息历史的完整列表
      * @return token 流，每个元素为一段文本（可能为空字符串，调用方需过滤）
      */
-    Flux<String> stream(List<Message> messages, ToolCallback... tools);
+    Flux<ChatResponse> stream(List<Message> messages, ToolCallback... tools);
 }

@@ -18,8 +18,14 @@ export default function App() {
     deleteConversation,
   } = useConversations()
 
-  const { messages, isLoading, streamContent, sendMessage, stopStreaming } =
-    useChat()
+  const {
+    messages,
+    isLoading,
+    streamContent,
+    streamIterations,
+    sendMessage,
+    stopStreaming,
+  } = useChat()
 
   console.log('[App] render', { messagesLen: messages.length, isLoading, streamContentLen: streamContent.length })
 
@@ -100,6 +106,7 @@ export default function App() {
                   message={msg}
                   isStreaming={isLastAssistant && isLoading}
                   streamContent={isLastAssistant ? streamContent : undefined}
+                  streamIterations={isLastAssistant ? streamIterations : undefined}
                 />
               )
             })}

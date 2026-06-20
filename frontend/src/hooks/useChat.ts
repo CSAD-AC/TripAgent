@@ -1,25 +1,53 @@
 import { useState, useRef, useCallback } from 'react'
-import type { Message, SSEEvent } from '../types'
-
-/** 工具名称 → 中文标签 */
-function toolLabel(name: string): string {
-  const map: Record<string, string> = {
-    getWeather: '查询天气',
-    planRoute: '规划路线',
-    searchPOI: '搜索景点',
-    getTraffic: '查询交通',
-  }
-  return map[name] || name
-}
+import type { Message, SSEEvent, ToolCallInfo, StreamIteration } from '../types'
 
 export function useChat() {
   const [messages, setMessages] = useState<Message[]>([])
   const [isLoading, setIsLoading] = useState(false)
+  /** 所有迭代的思考文字拼接（兼容旧版 + 简单文本展示） */
   const [streamContent, setStreamContent] = useState('')
+  /** 当前流输出中正在构建的工具调用（仅最新一轮） */
+  const [currentToolCalls, setCurrentToolCalls] = useState<ToolCallInfo[]>([])
+  /** 按迭代分段的完整流内容 */
+  const [streamIterations, setStreamIterations] = useState<StreamIteration[]>([])
+  /** 当前迭代编号 */
+  const [currentIteration, setCurrentIteration] = useState(1)
+
   const abortRef = useRef<AbortController | null>(null)
-  const accumulatedRef = useRef('')
-  /** 是否已进入 thinking 阶段（true 后 tool 提示不再更新） */
-  const thinkingStartedRef = useRef(false)
+
+  // 按迭代存储（0-indexed；index 0 = iteration 1）
+  const iterationTextsRef = useRef<string[]>([''])
+  const iterationToolCallsRef = useRef<ToolCallInfo[][]>([[]])
+  const iterationRef = useRef(1)
+
+  /** 从 refs 构建 StreamIteration[] */
+  function buildIterations(): StreamIteration[] {
+    const result: StreamIteration[] = []
+    const maxLen = Math.max(
+      iterationTextsRef.current.length,
+      iterationToolCallsRef.current.length
+    )
+    for (let i = 0; i < maxLen; i++) {
+      const text = iterationTextsRef.current[i] || ''
+      const calls = iterationToolCallsRef.current[i] || []
+      if (text || calls.length > 0) {
+        result.push({ iteration: i + 1, text, toolCalls: calls })
+      }
+    }
+    return result
+  }
+
+  /** 从 refs 刷新所有 UI 状态 */
+  function flushUI() {
+    const joined = iterationTextsRef.current.join('\n\n')
+    setStreamContent(joined)
+    setStreamIterations(buildIterations())
+
+    // 当前迭代的工具调用
+    const idx = iterationRef.current - 1
+    setCurrentToolCalls(iterationToolCallsRef.current[idx] || [])
+    setCurrentIteration(iterationRef.current)
+  }
 
   const sendMessage = useCallback(async (content: string, conversationId?: number | string) => {
     const userMsg: Message = {
@@ -39,9 +67,15 @@ export function useChat() {
 
     setMessages((prev) => [...prev, userMsg, assistantMsg])
     setIsLoading(true)
-    accumulatedRef.current = ''
-    thinkingStartedRef.current = false
+
+    // 重置所有状态
+    iterationTextsRef.current = ['']
+    iterationToolCallsRef.current = [[]]
+    iterationRef.current = 1
     setStreamContent('')
+    setStreamIterations([])
+    setCurrentToolCalls([])
+    setCurrentIteration(1)
 
     abortRef.current = new AbortController()
 
@@ -75,29 +109,88 @@ export function useChat() {
           try {
             const event: SSEEvent = JSON.parse(data)
             switch (event.type) {
+              // ── thinking_token: 追加到当前迭代 ──
+              case 'thinking_token': {
+                const idx = iterationRef.current - 1
+                iterationTextsRef.current[idx] =
+                  (iterationTextsRef.current[idx] || '') + (event.content || '')
+                break
+              }
+
+              // ── tool_call_start: 进入工具调用阶段 ──
+              case 'tool_call_start': {
+                // 保证当前迭代的工具列表存在但不重置（允许多个工具）
+                break
+              }
+
+              // ── tool_call: 向当前迭代追加一个工具 ──
               case 'tool_call': {
-                if (!thinkingStartedRef.current) {
-                  accumulatedRef.current += `🔧 正在${toolLabel(event.toolName || '')}…\n`
-                }
+                const idx = iterationRef.current - 1
+                const calls = iterationToolCallsRef.current[idx] || []
+                calls.push({
+                  toolName: event.toolName || '未知工具',
+                  toolArguments: event.toolArguments,
+                  status: 'running',
+                })
+                iterationToolCallsRef.current[idx] = calls
                 break
               }
+
+              // ── tool_result: 更新当前迭代中最后一个 running 工具 ──
               case 'tool_result': {
-                if (!thinkingStartedRef.current) {
-                  accumulatedRef.current += `✅ ${toolLabel(event.toolName || '')}完成\n`
+                const idx = iterationRef.current - 1
+                const calls = [...(iterationToolCallsRef.current[idx] || [])]
+                for (let i = calls.length - 1; i >= 0; i--) {
+                  if (calls[i].status === 'running') {
+                    calls[i] = { ...calls[i], status: 'success', result: event.toolResult || event.content }
+                    break
+                  }
+                }
+                iterationToolCallsRef.current[idx] = calls
+                break
+              }
+
+              // ── tool_error: 更新当前迭代中最后一个 running 工具 ──
+              case 'tool_error': {
+                const idx = iterationRef.current - 1
+                const calls = [...(iterationToolCallsRef.current[idx] || [])]
+                for (let i = calls.length - 1; i >= 0; i--) {
+                  if (calls[i].status === 'running') {
+                    calls[i] = { ...calls[i], status: 'error', error: event.toolResult || event.content }
+                    break
+                  }
+                }
+                iterationToolCallsRef.current[idx] = calls
+                break
+              }
+
+              // ── iteration_separator: 开始下一轮 ──
+              case 'iteration_separator': {
+                iterationRef.current += 1
+                // 为下一轮初始化
+                const nextIdx = iterationRef.current - 1
+                if (!iterationTextsRef.current[nextIdx]) {
+                  iterationTextsRef.current[nextIdx] = ''
+                }
+                if (!iterationToolCallsRef.current[nextIdx]) {
+                  iterationToolCallsRef.current[nextIdx] = []
                 }
                 break
               }
-              case 'thinking': {
-                thinkingStartedRef.current = true
-                accumulatedRef.current += event.content || ''
-                break
-              }
+
+              // ── final: 最终答案——替换最后迭代的文本 ──
               case 'final': {
-                accumulatedRef.current = event.content || ''
+                const lastIdx = iterationRef.current - 1
+                if (event.content) {
+                  iterationTextsRef.current[lastIdx] = event.content
+                }
                 break
               }
+
+              // ── error: 不可恢复异常 ──
               case 'error': {
-                accumulatedRef.current = event.content || '出错了'
+                const lastIdx = iterationRef.current - 1
+                iterationTextsRef.current[lastIdx] = event.content || '出错了'
                 break
               }
             }
@@ -106,16 +199,27 @@ export function useChat() {
           }
         }
 
-        // 每个 chunk 结束强制刷一次
-        setStreamContent(accumulatedRef.current)
+        // 每个 chunk 结束强制刷新 UI
+        flushUI()
       }
 
-      // 流结束，更新消息
-      const finalContent = accumulatedRef.current
+      // 流结束，将完整数据写入消息
+      const finalTexts = [...iterationTextsRef.current]
+      const finalToolCalls = [...iterationToolCallsRef.current]
+      const finalIter = iterationRef.current
+      const finalIterations = buildIterations()
+
       setMessages((prev) =>
         prev.map((msg) =>
           msg.id === assistantId
-            ? { ...msg, content: finalContent, type: 'final' as const }
+            ? {
+                ...msg,
+                content: finalTexts.join('\n\n'),
+                type: 'final' as const,
+                toolCalls: finalToolCalls.flat().length > 0 ? finalToolCalls.flat() : undefined,
+                iterationData: finalIterations.length > 0 ? finalIterations : undefined,
+                iterationCount: finalIter > 1 ? finalIter : undefined,
+              }
             : msg
         )
       )
@@ -132,7 +236,11 @@ export function useChat() {
     } finally {
       setIsLoading(false)
       setStreamContent('')
-      accumulatedRef.current = ''
+      setStreamIterations([])
+      setCurrentToolCalls([])
+      setCurrentIteration(1)
+      iterationTextsRef.current = ['']
+      iterationToolCallsRef.current = [[]]
       abortRef.current = null
     }
   }, [])
@@ -149,6 +257,9 @@ export function useChat() {
     messages,
     isLoading,
     streamContent,
+    streamIterations,
+    currentToolCalls,
+    currentIteration,
     sendMessage,
     stopStreaming,
     clearMessages,

@@ -1,13 +1,35 @@
+/** 工具调用记录（一次工具调用全生命周期） */
+export interface ToolCallInfo {
+  toolName: string
+  toolArguments?: string
+  status: 'running' | 'success' | 'error'
+  result?: string
+  error?: string
+}
+
+/** 一轮迭代的完整内容：思考文字 + 该轮的工具调用 */
+export interface StreamIteration {
+  iteration: number
+  text: string
+  toolCalls: ToolCallInfo[]
+}
+
 /** 对话消息 */
 export interface Message {
   id: string
   role: 'user' | 'assistant' | 'system'
   content: string
-  /** SSE 流式事件类型 */
+  /** SSE 流式事件类型（最终定型后的状态） */
   type?: 'thinking' | 'tool_call' | 'tool_result' | 'final'
   timestamp: number
   /** 结构化行程数据（从 markdown 解析） */
   itinerary?: Itinerary
+  /** 本轮完整的工具调用记录（仅 assistant 消息最终态携带） */
+  toolCalls?: ToolCallInfo[]
+  /** 按迭代分段的完整内容（仅 assistant 消息最终态携带） */
+  iterationData?: StreamIteration[]
+  /** 最后迭代编号 */
+  iterationCount?: number
 }
 
 /** 工作流节点 */
@@ -86,13 +108,14 @@ export interface ChatResponse {
   durationMs: number
 }
 
-/** SSE 事件数据类型 */
+/** SSE 事件数据类型（全流程流式协议 8 种事件） */
 export interface SSEEvent {
-  type: 'thinking' | 'tool_call' | 'tool_result' | 'final' | 'error'
+  type: 'thinking_token' | 'tool_call_start' | 'tool_call' | 'tool_result' | 'tool_error' | 'iteration_separator' | 'final' | 'error'
   content?: string
   toolName?: string
   toolArguments?: string
   toolResult?: string
   conversationId?: string
   durationMs?: number
+  iterationInfo?: string
 }

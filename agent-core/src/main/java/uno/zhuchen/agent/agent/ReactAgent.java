@@ -7,6 +7,7 @@ import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.ToolResponseMessage;
 import org.springframework.ai.tool.ToolCallback;
 import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 import uno.zhuchen.agent.config.AgentConfig;
 import uno.zhuchen.agent.domain.dto.ChatDTO;
@@ -183,172 +184,141 @@ public class ReactAgent {
     }
 
     /**
-     * 流式调用：先同步执行 ReAct 循环（含工具调用），再用缓存的最终文本分块推送 SSE
+     * 全流程流式调用：LLM 思考 token、工具调用、最终答案全程流式推送
      * <p>
-     * 方案 A（当前采用）：
-     *   1. 同步运行 ReAct 循环（与 call() 逻辑相同），其间通过 FluxSink 推送工具调用事件
-     *   2. 循环结束后将最终答案切成小块，逐块推送 thinking 事件
-     *   3. 最终推送 final 事件（含完整答案和耗时）
+     * 流式 SSE 事件序列示例：
+     *   thinking_token → thinking_token → ... → tool_call_start → tool_call → tool_result
+     *   → thinking_token → ... → iteration_separator
+     *   → thinking_token → ... → final
      * <p>
-     * SSE 事件序列：
-     *   tool_call → tool_result → tool_call → tool_result → thinking → ... → final
+     * 核心改进：使用 stream() 替代阻塞的 call()，
+     * 每个 token 在 flatMap 中实时推送 thinking_token 事件，
+     * 工具调用阶段则推送 tool_call / tool_result / tool_error 事件。
      * <p>
-     * 后续迭代为方案 B（全程端到端流式）：见 streaming-tool-call-plan.md
+     * 采用纯响应式递归实现，避免 blockLast 导致的跨线程 sink.next() 问题，
+     * 确保 SSE 事件逐条即时 flush 到前端。
      */
     public Flux<StreamChunk> stream(String userInput, String conversationId) {
         long start = System.currentTimeMillis();
+        AgentState state = new AgentState(conversationId, config.getSystemPrompt(), userInput);
 
-        return Flux.<StreamChunk>create(sink -> {
-            try {
-                // 1. 初始化 Agent 状态
-                AgentState state = new AgentState(conversationId, config.getSystemPrompt(), userInput);
-                log.debug("Agent[{}] 开始流式 ReAct 循环", state.getConversationId());
+        // 加载历史记忆（非阻塞操作）
+        List<Message> history = chatMemory.load(state.getConversationId());
+        if (!history.isEmpty()) {
+            history.forEach(msg -> state.getMessages().add(state.getMessages().size() - 1, msg));
+        }
 
-                // 2. 加载历史记忆
-                List<Message> history = chatMemory.load(state.getConversationId());
-                if (!history.isEmpty()) {
-                    log.debug("Agent[{}] 加载 {} 条历史消息", state.getConversationId(), history.size());
-                    history.forEach(msg -> state.getMessages().add(state.getMessages().size() - 1, msg));
-                }
+        ToolCallback[] allTools = toolRegistry.getAll();
 
-                // 3. 获取所有可用工具
-                ToolCallback[] allTools = toolRegistry.getAll();
-                log.debug("Agent[{}] 可用工具数: {}, 工具列表: {}",
-                        state.getConversationId(),
-                        allTools.length,
-                        java.util.Arrays.stream(allTools)
-                                .map(t -> t.getToolDefinition().name())
-                                .collect(java.util.stream.Collectors.toList()));
-
-                // 4. ReAct 循环（同步执行，含工具调用）
-                AssistantMessage finalResponse = null;
-
-                for (int i = 0; i < config.getMaxIterations(); i++) {
-                    log.debug("Agent[{}] 流式第 {}/{} 轮迭代", state.getConversationId(),
-                            i + 1, config.getMaxIterations());
-
-                    // --- Reason: 调用 LLM ---
-                    AssistantMessage response = chatModel.call(state.getFullMessages(), allTools);
-
-                    // --- Decide: 检查是否有工具调用 ---
-                    if (response.hasToolCalls()) {
-                        log.debug("Agent[{}] 检测到 {} 个工具调用请求",
-                                state.getConversationId(), response.getToolCalls().size());
-
-                        // 将 LLM 的 toolCalls 请求加入消息历史
-                        state.addReasoningResult(response);
-
-                        // --- Act: 执行工具，同时推送 SSE 事件 ---
-                        List<ToolResponseMessage.ToolResponse> toolResponses = new ArrayList<>();
-
-                        for (AssistantMessage.ToolCall toolCall : response.getToolCalls()) {
-                            // 推送 tool_call 事件
-                            sink.next(StreamChunk.toolCall(
-                                    toolCall.name(), toolCall.arguments(), state.getConversationId()));
-
-                            ToolCallback tool = toolRegistry.getByName(toolCall.name());
-                            if (tool == null) {
-                                log.warn("Agent[{}] 未知工具: {}", state.getConversationId(), toolCall.name());
-                                String errorMsg = "错误: 未知工具 '" + toolCall.name() + "'";
-                                toolResponses.add(new ToolResponseMessage.ToolResponse(
-                                        toolCall.id(), toolCall.name(), errorMsg));
-                                sink.next(StreamChunk.toolResult(
-                                        toolCall.name(), errorMsg, state.getConversationId()));
-                                continue;
-                            }
-
-                            log.debug("Agent[{}] 执行工具: {} (id={})",
-                                    state.getConversationId(), toolCall.name(), toolCall.id());
-                            try {
-                                String result = tool.call(toolCall.arguments());
-                                String summary = truncate(result, 300);
-                                toolResponses.add(new ToolResponseMessage.ToolResponse(
-                                        toolCall.id(), toolCall.name(), result));
-                                // 推送 tool_result 事件（仅摘要，避免推超大 JSON）
-                                sink.next(StreamChunk.toolResult(
-                                        toolCall.name(), summary, state.getConversationId()));
-                            } catch (Exception e) {
-                                log.error("Agent[{}] 工具 {} 执行异常",
-                                        state.getConversationId(), toolCall.name(), e);
-                                toolResponses.add(new ToolResponseMessage.ToolResponse(
-                                        toolCall.id(), toolCall.name(),
-                                        "工具执行失败: " + e.getMessage()));
-                                sink.next(StreamChunk.toolResult(
-                                        toolCall.name(), "工具执行失败: " + e.getMessage(),
-                                        state.getConversationId()));
-                            }
-                        }
-
-                        // 将工具响应注入消息历史，继续下一轮迭代
-                        state.getMessages().add(ToolResponseMessage.builder()
-                                .responses(toolResponses)
-                                .build());
-                        continue;
-                    }
-
-                    // --- 无工具调用 → 这就是最终答案 ---
-                    finalResponse = response;
-                    state.addReasoningResult(response);
-                    log.debug("Agent[{}] 第 {} 轮得到最终答案", state.getConversationId(), i + 1);
-                    break;
-                }
-
-                long duration = System.currentTimeMillis() - start;
-
-                if (finalResponse != null) {
-                    // 5. 保存对话历史
-                    chatMemory.save(state.getConversationId(), state.getMessages());
-
-                    // 6. 将最终答案分块推送（模拟流式效果）
-                    String answer = finalResponse.getText();
-                    int chunkSize = 30;
-                    int len = answer.length();
-                    int pos = 0;
-                    while (pos < len) {
-                        int end = Math.min(pos + chunkSize, len);
-                        // 尝试在标点处断句（让前端渲染更自然）
-                        if (end < len) {
-                            int breakAt = lastPunctuationIndex(answer, pos, end);
-                            if (breakAt > pos) {
-                                end = breakAt + 1;
-                            }
-                        }
-                        sink.next(StreamChunk.thinking(answer.substring(pos, end), state.getConversationId()));
-                        pos = end;
-                    }
-
-                    // 7. 推送 final 事件
-                    sink.next(StreamChunk.final_(state.getConversationId(), answer, duration));
-                } else {
-                    // 达到最大迭代次数
-                    sink.next(StreamChunk.error(state.getConversationId(),
-                            "未能在最大迭代次数内得出最终答案", duration));
-                }
-
-                sink.complete();
-
-            } catch (Exception e) {
-                long duration = System.currentTimeMillis() - start;
-                log.error("Agent[{}] 流式执行异常", conversationId, e);
-                sink.next(StreamChunk.error(conversationId, e.getMessage(), duration));
-                sink.complete();
-            }
-        }).subscribeOn(Schedulers.boundedElastic());
+        return nextIteration(state, allTools, 0, start);
     }
 
     /**
-     * 在 [start, end) 范围内找最后一个标点符号的位置
+     * 递归执行一轮 ReAct 迭代
+     * <p>
+     * 每轮分为两个阶段：
+     *   阶段 1 — LLM 流式输出：实时推送 thinking_token，同时累计文本和工具调用
+     *   阶段 2 — 工具执行：若本轮产生工具调用，在 boundedElastic 上执行同步工具调用后递归下一轮
      */
-    private static int lastPunctuationIndex(String text, int start, int end) {
-        for (int i = end - 1; i > start; i--) {
-            char c = text.charAt(i);
-            if (c == '。' || c == '，' || c == '！' || c == '？'
-                    || c == '；' || c == '\n' || c == '.'
-                    || c == ',' || c == '!' || c == '?') {
-                return i;
-            }
+    private Flux<StreamChunk> nextIteration(AgentState state, ToolCallback[] tools,
+                                             int iteration, long start) {
+        if (iteration >= config.getMaxIterations()) {
+            return Flux.just(StreamChunk.error(state.getConversationId(),
+                    "未能在最大迭代次数内得出最终答案", System.currentTimeMillis() - start));
         }
-        return -1;
+
+        int iterNum = iteration + 1;
+        StringBuilder thoughtBuffer = new StringBuilder();
+        List<AssistantMessage.ToolCall> toolCalls = new ArrayList<>();
+
+        // ========== 阶段 1：LLM 流式输出 ==========
+        Flux<StreamChunk> thinkingFlux = chatModel.stream(state.getFullMessages(), tools)
+                .doOnNext(chatResponse -> {
+                    // 副作用：累计文本和工具调用（flatMap 执行后才完成累计）
+                    AssistantMessage msg = (AssistantMessage) chatResponse.getResult().getOutput();
+                    if (msg.getText() != null && !msg.getText().isEmpty()) {
+                        thoughtBuffer.append(msg.getText());
+                    }
+                    if (msg.hasToolCalls() && msg.getToolCalls() != null) {
+                        toolCalls.addAll(msg.getToolCalls());
+                    }
+                })
+                .flatMap(chatResponse -> {
+                    // 实时推送 thinking_token
+                    AssistantMessage msg = (AssistantMessage) chatResponse.getResult().getOutput();
+                    if (msg.getText() != null && !msg.getText().isEmpty()) {
+                        return Mono.just(StreamChunk.thinkingToken(
+                                msg.getText(), state.getConversationId(), "迭代" + iterNum));
+                    }
+                    return Mono.empty();
+                });
+
+        // ========== 阶段 2：工具执行或最终答案 ==========
+        // 使用 publishOn 将同步工具调用切换到 boundedElastic，不阻塞 EventLoop
+        Flux<StreamChunk> continuationFlux = Flux.defer(() -> {
+            // 累计完成，组装 AssistantMessage
+            AssistantMessage response = AssistantMessage.builder()
+                    .content(thoughtBuffer.toString())
+                    .toolCalls(toolCalls.isEmpty() ? List.of() : toolCalls)
+                    .build();
+            state.addReasoningResult(response);
+
+            if (!toolCalls.isEmpty()) {
+                // 执行工具
+                List<ToolResponseMessage.ToolResponse> toolResponses = new ArrayList<>();
+                List<StreamChunk> toolEvents = new ArrayList<>();
+
+                toolEvents.add(StreamChunk.toolCallStart(state.getConversationId(), "开始执行工具调用"));
+
+                for (AssistantMessage.ToolCall toolCall : toolCalls) {
+                    toolEvents.add(StreamChunk.toolCall(
+                            toolCall.name(), toolCall.arguments(), state.getConversationId()));
+
+                    ToolCallback tool = toolRegistry.getByName(toolCall.name());
+                    if (tool == null) {
+                        String errorMsg = "未知工具: " + toolCall.name();
+                        toolResponses.add(new ToolResponseMessage.ToolResponse(
+                                toolCall.id(), toolCall.name(), errorMsg));
+                        toolEvents.add(StreamChunk.toolError(toolCall.name(), errorMsg, state.getConversationId()));
+                        continue;
+                    }
+
+                    try {
+                        String result = tool.call(toolCall.arguments());
+                        String summary = truncate(result, 300);
+                        toolResponses.add(new ToolResponseMessage.ToolResponse(
+                                toolCall.id(), toolCall.name(), result));
+                        toolEvents.add(StreamChunk.toolResult(toolCall.name(), summary, state.getConversationId()));
+                    } catch (Exception e) {
+                        String errorMsg = "工具执行失败: " + e.getMessage();
+                        toolResponses.add(new ToolResponseMessage.ToolResponse(
+                                toolCall.id(), toolCall.name(), errorMsg));
+                        toolEvents.add(StreamChunk.toolError(toolCall.name(), errorMsg, state.getConversationId()));
+                    }
+                }
+
+                // 将工具响应注入消息历史，继续下一轮
+                state.getMessages().add(ToolResponseMessage.builder()
+                        .responses(toolResponses)
+                        .build());
+
+                toolEvents.add(StreamChunk.iterationSeparator(state.getConversationId(),
+                        "第" + iterNum + "轮完成"));
+
+                // 递归下一轮
+                return Flux.fromIterable(toolEvents)
+                        .concatWith(nextIteration(state, tools, iteration + 1, start));
+
+            } else {
+                // 最终答案
+                chatMemory.save(state.getConversationId(), state.getMessages());
+                return Flux.just(StreamChunk.final_(
+                        state.getConversationId(), thoughtBuffer.toString(),
+                        System.currentTimeMillis() - start));
+            }
+        }).publishOn(Schedulers.boundedElastic());
+
+        return thinkingFlux.concatWith(continuationFlux);
     }
 
     private static String truncate(String text, int maxLen) {
