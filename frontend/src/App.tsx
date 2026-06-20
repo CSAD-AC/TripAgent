@@ -2,7 +2,6 @@ import { useState, useRef, useEffect } from 'react'
 import { Sidebar } from './components/Sidebar'
 import { ChatMessage } from './components/ChatMessage'
 import { ChatInput } from './components/ChatInput'
-import { WorkflowStatus } from './components/WorkflowStatus'
 import { useChat } from './hooks/useChat'
 import { useConversations } from './hooks/useConversations'
 import { Menu, MapPin } from 'lucide-react'
@@ -19,7 +18,7 @@ export default function App() {
     deleteConversation,
   } = useConversations()
 
-  const { messages, isLoading, streamContent, workflowNode, sendMessage, stopStreaming } =
+  const { messages, isLoading, streamContent, sendMessage, stopStreaming } =
     useChat()
 
   console.log('[App] render', { messagesLen: messages.length, isLoading, streamContentLen: streamContent.length })
@@ -72,9 +71,6 @@ export default function App() {
             </div>
           </div>
         </header>
-
-        {/* 工作流状态指示器 */}
-        <WorkflowStatus currentNode={workflowNode} visible={isLoading} />
 
         {/* 消息列表 */}
         <div className="flex-1 overflow-y-auto">

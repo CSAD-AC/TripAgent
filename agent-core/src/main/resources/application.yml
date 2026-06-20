@@ -1,0 +1,49 @@
+spring:
+  application:
+    name: Agent
+
+  ai:
+    dashscope:
+      api-key: ${DASHSCOPE_API_KEY}
+      chat:
+        options:
+          model: deepseek-v4-flash
+    mcp:
+      client:
+        enabled: true
+        name: agent-client
+        version: 1.0.0
+        type: SYNC                                    # 同步模式
+        streamable-http:
+          connections:
+#            amap-maps: # 连接名称，随便起
+#              url: https://mcp.amap.com                # 高德 MCP 服务器地址
+#              endpoint: /mcp?key=${AMAP_API_KEY}       # MCP 端点路径 + API key
+            local-mcp: # 本地自建的 MCP 服务器
+              url: http://localhost:8081
+              endpoint: /mcp
+
+agent:
+  react:
+    max-iterations: 20
+    timeout-seconds: 30
+
+
+
+server:
+  port: ${SERVER_PORT:8080}
+
+logging:
+  level:
+    uno.zhuchen.agent: DEBUG
+    org.springframework.ai: INFO
+---
+spring:
+  config:
+    activate:
+      on-profile: dev
+  ai:
+    dashscope:
+      chat:
+        options:
+          model: qwen-turbo

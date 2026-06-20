@@ -1,0 +1,23 @@
+spring:
+  application:
+    name: mcp-server
+
+  ai:
+    mcp:
+      server:
+        enabled: true
+        protocol: STREAMABLE
+        name: amap-mcp-server
+        version: 1.0.0
+        type: SYNC
+
+server:
+  port: 8081
+
+amap:
+  api:
+    key: ***REMOVED-AMAP-KEY***
+
+logging:
+  level:
+    uno.zhuchen.agent.mcpserver: DEBUG
