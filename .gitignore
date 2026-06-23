@@ -8,6 +8,12 @@ release.properties
 .mvn/wrapper/maven-wrapper.jar
 !**/src/main/**/target/
 !**/src/test/**/target/
+xiaohongshu-mcp-windows-amd64/cookies.json
+
+### zip
+*.zip
+*.7z
+*.tz
 
 ### IntelliJ IDEA ###
 .idea/
