@@ -1,37 +1,61 @@
-import { useState, useCallback } from 'react'
-import type { Conversation } from '../types'
+import { useState, useCallback, useEffect } from 'react'
 
-// 模拟数据（后端 API 就绪后替换为真实 fetch）
-const MOCK_CONVERSATIONS: Conversation[] = [
-  { id: 1, title: '北京3日游规划', createdAt: '2026-06-19', messageCount: 4 },
-  { id: 2, title: '杭州周末去哪玩', createdAt: '2026-06-18', messageCount: 2 },
-]
-
+/**
+ * 会话管理 hook（URL hash 模式）
+ *
+ * <p>设计：后端是 conversationId 的唯一权威源,前端只维护一个"当前会话 ID"状态
+ * <ul>
+ *   <li>读取:从 location.hash 取(浏览器自带,刷新保活)</li>
+ *   <li>更新:收到 session_init 时写回 hash(用 history.replaceState,不污染历史栈)</li>
+ *   <li>新建:清空 hash,后端下次会生成新 ID</li>
+ * </ul>
+ *
+ * <p>为什么不用 localStorage:
+ * <ul>
+ *   <li>URL hash 浏览器自带,零代码</li>
+ *   <li>天然支持分享(复制 URL = 继续同会话)</li>
+ *   <li>关 tab 才丢,新 tab 重新开又是新会话(可接受的代价)</li>
+ * </ul>
+ */
 export function useConversations() {
-  const [conversations, setConversations] = useState<Conversation[]>(MOCK_CONVERSATIONS)
-  const [activeId, setActiveId] = useState<number | undefined>()
+  const [conversationId, setConversationIdState] = useState<string | undefined>(() => {
+    // 初始从 URL hash 读
+    if (typeof window === 'undefined') return undefined
+    const hash = window.location.hash.slice(1)
+    return hash || undefined
+  })
 
-  const selectConversation = useCallback((id: number) => {
-    setActiveId(id)
-    // TODO: GET /api/conversations/{id}/messages
+  /** 设置 conversationId 并写回 URL hash(用 replaceState,不污染历史栈) */
+  const setConversationId = useCallback((id: string | undefined) => {
+    setConversationIdState(id)
+    if (typeof window === 'undefined') return
+    if (id) {
+      // 写进 hash,浏览器自动保留,刷新可恢复
+      window.history.replaceState(null, '', '#' + id)
+    } else {
+      // 清空 hash
+      window.history.replaceState(null, '', window.location.pathname + window.location.search)
+    }
   }, [])
 
+  /** 监听浏览器前进后退(hash 变化) */
+  useEffect(() => {
+    const onHashChange = () => {
+      const hash = window.location.hash.slice(1)
+      setConversationIdState(hash || undefined)
+    }
+    window.addEventListener('hashchange', onHashChange)
+    return () => window.removeEventListener('hashchange', onHashChange)
+  }, [])
+
+  /** 新建对话(清空当前 ID,下次发消息由后端生成新 ID) */
   const newConversation = useCallback(() => {
-    setActiveId(undefined)
-    // TODO: POST /api/conversations
-  }, [])
-
-  const deleteConversation = useCallback((id: number) => {
-    setConversations((prev) => prev.filter((c) => c.id !== id))
-    if (activeId === id) setActiveId(undefined)
-    // TODO: DELETE /api/conversations/{id}
-  }, [activeId])
+    setConversationId(undefined)
+  }, [setConversationId])
 
   return {
-    conversations,
-    activeId,
-    selectConversation,
+    conversationId,
+    setConversationId,
     newConversation,
-    deleteConversation,
   }
 }

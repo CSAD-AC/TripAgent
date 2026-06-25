@@ -22,6 +22,16 @@ public class GlobalExceptionHandler {
     }
 
     /**
+     * 参数非法(由 conversationId 格式校验、submit 跨会话校验等触发)
+     * <p>返回 400 而不是 500,因为这是客户端请求问题
+     */
+    @ExceptionHandler(IllegalArgumentException.class)
+    public Result<Void> handleIllegalArgument(IllegalArgumentException e) {
+        log.warn("参数非法: {}", e.getMessage());
+        return Result.error(400, e.getMessage());
+    }
+
+    /**
      * 获取异常堆栈信息
      */
     private String getStackTrace(Throwable e) {

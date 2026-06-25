@@ -26,11 +26,6 @@
             <artifactId>spring-boot-starter-validation</artifactId>
         </dependency>
 
-        <!-- Spring AI Alibaba Agent Framework -->
-        <dependency>
-            <groupId>com.alibaba.cloud.ai</groupId>
-            <artifactId>spring-ai-alibaba-agent-framework</artifactId>
-        </dependency>
         <!-- DashScope ChatModel -->
         <dependency>
             <groupId>com.alibaba.cloud.ai</groupId>

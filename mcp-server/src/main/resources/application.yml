@@ -18,6 +18,17 @@ amap:
   api:
     key: 27eeeb30fd80e9f4f063c60027c4eade
 
+# 必应搜索配置
+search:
+  bing:
+    timeout-seconds: 8      # 单次搜索超时
+    max-results: 20         # 单次最大返回条数（硬上限，防止滥用）
+
+# 页面抓取配置
+fetch:
+  timeout-seconds: 15       # 单次抓取超时（页面下载比搜索慢）
+  max-content-length: 5000  # 正文最大返回字符数（防 token 爆炸）
+
 logging:
   level:
     uno.zhuchen.agent.mcpserver: DEBUG

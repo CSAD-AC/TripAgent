@@ -2,10 +2,10 @@ package uno.zhuchen.agent.llm.impl;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.model.ChatResponse;
+import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.model.tool.ToolCallingChatOptions;
 import org.springframework.ai.tool.ToolCallback;
 import reactor.core.publisher.Flux;
@@ -16,17 +16,17 @@ import java.util.List;
 /**
  * DashScope 实现的 ChatModel
  *
- * 基于 Spring AI 的 ChatClient 封装，对接阿里通义系列模型。
+ * 直接调用 DashScope ChatModel 的 call/stream 方法，
+ * 完全绕过 ChatClient 的 advisor 链。
  */
 public class DashScopeChatModel implements ChatModel {
 
     private static final Logger log = LoggerFactory.getLogger(DashScopeChatModel.class);
 
-    private final ChatClient chatClient;
+    private final org.springframework.ai.chat.model.ChatModel dashScopeChatModel;
 
-
-    public DashScopeChatModel(ChatClient chatClient) {
-        this.chatClient = chatClient;
+    public DashScopeChatModel(org.springframework.ai.chat.model.ChatModel dashScopeChatModel) {
+        this.dashScopeChatModel = dashScopeChatModel;
     }
 
     @Override
@@ -34,14 +34,15 @@ public class DashScopeChatModel implements ChatModel {
         log.debug("LLM 同步调用, messages 数量: {}", messages.size());
 
         try {
-            ChatResponse response = chatClient.prompt()
+            Prompt prompt = Prompt.builder()
                     .messages(messages)
-                    .toolCallbacks(tools)
-                    .options(ToolCallingChatOptions.builder()
+                    .chatOptions(ToolCallingChatOptions.builder()
+                            .toolCallbacks(tools)
                             .internalToolExecutionEnabled(false)
                             .build())
-                    .call()
-                    .chatResponse();
+                    .build();
+
+            ChatResponse response = dashScopeChatModel.call(prompt);
 
             if (response == null || response.getResult() == null) {
                 log.warn("LLM 返回空响应");
@@ -65,13 +66,16 @@ public class DashScopeChatModel implements ChatModel {
     @Override
     public Flux<ChatResponse> stream(List<Message> messages, ToolCallback... tools) {
         log.debug("LLM流式调用, messages 数量: {}", messages.size());
-        return chatClient.prompt()
+
+        Prompt prompt = Prompt.builder()
                 .messages(messages)
-                .toolCallbacks(tools)
-                .options(ToolCallingChatOptions.builder()
+                .chatOptions(ToolCallingChatOptions.builder()
+                        .toolCallbacks(tools)
                         .internalToolExecutionEnabled(false)
                         .build())
-                .stream().chatResponse();
+                .build();
 
+        // 直接调用 DashScope ChatModel 的流式方法，完全绕过 ChatClient 的 advisor 链
+        return dashScopeChatModel.stream(prompt);
     }
 }

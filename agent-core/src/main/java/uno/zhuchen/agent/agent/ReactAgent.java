@@ -14,6 +14,7 @@ import uno.zhuchen.agent.domain.dto.ChatDTO;
 import uno.zhuchen.agent.domain.dto.StreamChunk;
 import uno.zhuchen.agent.llm.ChatModel;
 import uno.zhuchen.agent.memory.ChatMemory;
+import uno.zhuchen.agent.tool.AskUserTool;
 import uno.zhuchen.agent.tool.ToolRegistry;
 
 import java.util.ArrayList;
@@ -120,7 +121,10 @@ public class ReactAgent {
                         log.debug("Agent[{}] 执行工具: {} (id={})",
                                 state.getConversationId(), toolCall.name(), toolCall.id());
 
+                        // 反问工具需要 conversationId,放在 ThreadLocal 里传
+                        // 用 try-finally 保证清理,防止线程复用导致串号
                         try {
+                            AskUserTool.setConversationId(state.getConversationId());
                             // Observe: 执行工具 → 获取结果
                             String result = tool.call(toolCall.arguments());
                             log.debug("Agent[{}] 工具 {} 执行完成, 结果长度={}",
@@ -133,6 +137,8 @@ public class ReactAgent {
                             toolResponses.add(new ToolResponseMessage.ToolResponse(
                                     toolCall.id(), toolCall.name(),
                                     "工具执行失败: " + e.getMessage()));
+                        } finally {
+                            AskUserTool.clearConversationId();
                         }
                     }
 
@@ -254,69 +260,95 @@ public class ReactAgent {
                 });
 
         // ========== 阶段 2：工具执行或最终答案 ==========
-        // 使用 publishOn 将同步工具调用切换到 boundedElastic，不阻塞 EventLoop
-        Flux<StreamChunk> continuationFlux = Flux.defer(() -> {
+        // 使用 Mono.fromCallable + subscribeOn 确保 blocking 工具调用只执行一次，
+        // 避免 Flux.defer + subscribeOn 被递归 concatWith 多次订阅导致并发执行。
+        Flux<StreamChunk> continuationFlux = Mono.fromCallable(() -> {
             // 累计完成，组装 AssistantMessage
+            // 创建 toolCalls 快照，避免 doOnNext（reactor 线程）与遍历（boundedElastic 线程）的并发修改
+            List<AssistantMessage.ToolCall> toolCallsSnapshot = List.copyOf(toolCalls);
+
             AssistantMessage response = AssistantMessage.builder()
                     .content(thoughtBuffer.toString())
-                    .toolCalls(toolCalls.isEmpty() ? List.of() : toolCalls)
+                    .toolCalls(toolCallsSnapshot.isEmpty() ? List.of() : toolCallsSnapshot)
                     .build();
             state.addReasoningResult(response);
 
-            if (!toolCalls.isEmpty()) {
-                // 执行工具
-                List<ToolResponseMessage.ToolResponse> toolResponses = new ArrayList<>();
-                List<StreamChunk> toolEvents = new ArrayList<>();
-
-                toolEvents.add(StreamChunk.toolCallStart(state.getConversationId(), "开始执行工具调用"));
-
-                for (AssistantMessage.ToolCall toolCall : toolCalls) {
-                    toolEvents.add(StreamChunk.toolCall(
-                            toolCall.name(), toolCall.arguments(), state.getConversationId()));
-
-                    ToolCallback tool = toolRegistry.getByName(toolCall.name());
-                    if (tool == null) {
-                        String errorMsg = "未知工具: " + toolCall.name();
-                        toolResponses.add(new ToolResponseMessage.ToolResponse(
-                                toolCall.id(), toolCall.name(), errorMsg));
-                        toolEvents.add(StreamChunk.toolError(toolCall.name(), errorMsg, state.getConversationId()));
-                        continue;
-                    }
-
-                    try {
-                        String result = tool.call(toolCall.arguments());
-                        String summary = truncate(result, 300);
-                        toolResponses.add(new ToolResponseMessage.ToolResponse(
-                                toolCall.id(), toolCall.name(), result));
-                        toolEvents.add(StreamChunk.toolResult(toolCall.name(), summary, state.getConversationId()));
-                    } catch (Exception e) {
-                        String errorMsg = "工具执行失败: " + e.getMessage();
-                        toolResponses.add(new ToolResponseMessage.ToolResponse(
-                                toolCall.id(), toolCall.name(), errorMsg));
-                        toolEvents.add(StreamChunk.toolError(toolCall.name(), errorMsg, state.getConversationId()));
-                    }
-                }
-
-                // 将工具响应注入消息历史，继续下一轮
-                state.getMessages().add(ToolResponseMessage.builder()
-                        .responses(toolResponses)
-                        .build());
-
-                toolEvents.add(StreamChunk.iterationSeparator(state.getConversationId(),
-                        "第" + iterNum + "轮完成"));
-
-                // 递归下一轮
-                return Flux.fromIterable(toolEvents)
-                        .concatWith(nextIteration(state, tools, iteration + 1, start));
-
-            } else {
-                // 最终答案
+            if (toolCallsSnapshot.isEmpty()) {
+                // 无工具调用 → 最终答案
                 chatMemory.save(state.getConversationId(), state.getMessages());
                 return Flux.just(StreamChunk.final_(
                         state.getConversationId(), thoughtBuffer.toString(),
                         System.currentTimeMillis() - start));
             }
-        }).publishOn(Schedulers.boundedElastic());
+
+            // 执行工具（去重：相同 name + 相同 arguments 只执行第一次）
+            List<ToolResponseMessage.ToolResponse> toolResponses = new ArrayList<>();
+            List<StreamChunk> toolEvents = new ArrayList<>();
+            java.util.Set<String> seenToolCalls = new java.util.HashSet<>();
+
+            toolEvents.add(StreamChunk.toolCallStart(state.getConversationId(), "开始执行工具调用"));
+
+            for (AssistantMessage.ToolCall toolCall : toolCallsSnapshot) {
+                // 去重 key: name + arguments
+                String toolKey = toolCall.name() + "::" + toolCall.arguments();
+                if (!seenToolCalls.add(toolKey)) {
+                    log.warn("Agent[{}] 跳过重复工具调用: {} (同 args)", state.getConversationId(), toolCall.name());
+                    toolResponses.add(new ToolResponseMessage.ToolResponse(
+                            toolCall.id(), toolCall.name(),
+                            "重复调用已跳过,使用第一次调用的结果"));
+                    toolEvents.add(StreamChunk.toolResult(toolCall.name(),
+                            "重复调用已跳过", state.getConversationId()));
+                    continue;
+                }
+
+                toolEvents.add(StreamChunk.toolCall(
+                        toolCall.name(), toolCall.arguments(), state.getConversationId()));
+
+                ToolCallback tool = toolRegistry.getByName(toolCall.name());
+                if (tool == null) {
+                    String errorMsg = "未知工具: " + toolCall.name();
+                    toolResponses.add(new ToolResponseMessage.ToolResponse(
+                            toolCall.id(), toolCall.name(), errorMsg));
+                    toolEvents.add(StreamChunk.toolError(toolCall.name(), errorMsg, state.getConversationId()));
+                    continue;
+                }
+
+                // 反问工具需要 conversationId 上下文
+                try {
+                    AskUserTool.setConversationId(state.getConversationId());
+                    long toolStart = System.currentTimeMillis();
+                    String result = tool.call(toolCall.arguments());
+                    long toolDuration = System.currentTimeMillis() - toolStart;
+                    log.debug("Agent[{}] 工具 {} 执行完成, 耗时={}ms, 结果长度={}",
+                            state.getConversationId(), toolCall.name(), toolDuration, result.length());
+                    String summary = truncate(result, 300);
+                    toolResponses.add(new ToolResponseMessage.ToolResponse(
+                            toolCall.id(), toolCall.name(), result));
+                    toolEvents.add(StreamChunk.toolResult(toolCall.name(), summary, state.getConversationId()));
+                } catch (Exception e) {
+                    String errorMsg = "工具执行失败: " + e.getMessage();
+                    log.warn("Agent[{}] 工具 {} 执行异常: {}",
+                                state.getConversationId(), toolCall.name(), errorMsg);
+                    toolResponses.add(new ToolResponseMessage.ToolResponse(
+                            toolCall.id(), toolCall.name(), errorMsg));
+                } finally {
+                    AskUserTool.clearConversationId();
+                }
+            }
+
+            // 将工具响应注入消息历史，继续下一轮
+            state.getMessages().add(ToolResponseMessage.builder()
+                    .responses(toolResponses)
+                    .build());
+
+            toolEvents.add(StreamChunk.iterationSeparator(state.getConversationId(),
+                    "第" + iterNum + "轮完成"));
+
+            // 递归下一轮（返回 Flux，由 flatMapMany 展开）
+            return Flux.fromIterable(toolEvents)
+                    .concatWith(nextIteration(state, tools, iteration + 1, start));
+        }).subscribeOn(Schedulers.boundedElastic())
+          .flatMapMany(flux -> flux);
 
         return thinkingFlux.concatWith(continuationFlux);
     }

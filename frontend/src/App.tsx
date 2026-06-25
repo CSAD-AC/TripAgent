@@ -1,7 +1,8 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
 import { Sidebar } from './components/Sidebar'
 import { ChatMessage } from './components/ChatMessage'
 import { ChatInput } from './components/ChatInput'
+import { ClarificationCard } from './components/ClarificationCard'
 import { useChat } from './hooks/useChat'
 import { useConversations } from './hooks/useConversations'
 import { Menu, MapPin } from 'lucide-react'
@@ -10,46 +11,54 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
-  const {
-    conversations,
-    activeId,
-    selectConversation,
-    newConversation,
-    deleteConversation,
-  } = useConversations()
+  const { conversationId, setConversationId, newConversation } = useConversations()
 
   const {
     messages,
     isLoading,
     streamContent,
     streamIterations,
+    pendingClarification,
     sendMessage,
+    submitClarificationAnswer,
     stopStreaming,
   } = useChat()
 
-  console.log('[App] render', { messagesLen: messages.length, isLoading, streamContentLen: streamContent.length })
+  // 把后端下发的 session_init.conversationId 写回 URL hash
+  const handleSessionInit = useCallback(
+    (id: string) => {
+      if (id !== conversationId) {
+        setConversationId(id)
+      }
+    },
+    [conversationId, setConversationId]
+  )
 
-  // 自动滚动到底部（尊重 prefers-reduced-motion）
+  const handleSend = useCallback(
+    (content: string) => {
+      sendMessage(content, conversationId, handleSessionInit)
+    },
+    [conversationId, handleSessionInit, sendMessage]
+  )
+
+  // 自动滚动到底部(尊重 prefers-reduced-motion)
   useEffect(() => {
     const prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
     messagesEndRef.current?.scrollIntoView({
       behavior: prefersReduced ? 'auto' : 'smooth',
     })
-  }, [messages, streamContent])
-
-  const handleSend = (content: string) => {
-    sendMessage(content, activeId)
-  }
+  }, [messages, streamContent, pendingClarification])
 
   return (
     <div className="h-screen flex overflow-hidden bg-warm-white dark:bg-[#1a1a1a]">
       {/* 侧栏 */}
       <Sidebar
-        conversations={conversations}
-        activeId={activeId}
-        onSelect={selectConversation}
-        onNew={newConversation}
-        onDelete={deleteConversation}
+        conversationId={conversationId}
+        onNew={() => {
+          newConversation()
+          // 注意:不清空 messages 列表,让用户切回老会话时能恢复
+          // 真要清空,需要额外加个清空按钮
+        }}
         open={sidebarOpen}
         onToggle={() => setSidebarOpen(!sidebarOpen)}
       />
@@ -76,6 +85,13 @@ export default function App() {
               <p className="text-[11px] text-charcoal-400 dark:text-charcoal-500">旅途规划助手</p>
             </div>
           </div>
+          {/* 当前会话 ID 标识(8 位缩写) */}
+          {conversationId && (
+            <div className="ml-auto hidden sm:flex items-center gap-1.5 text-xs text-charcoal-400 dark:text-charcoal-500 font-mono">
+              <span className="opacity-50">#</span>
+              {conversationId.slice(0, 8)}
+            </div>
+          )}
         </header>
 
         {/* 消息列表 */}
@@ -111,6 +127,14 @@ export default function App() {
               )
             })}
 
+            {/* 反问问题卡(在最后一条 assistant 消息之后) */}
+            {pendingClarification && (
+              <ClarificationCard
+                pending={pendingClarification}
+                onSubmit={submitClarificationAnswer}
+              />
+            )}
+
             <div ref={messagesEndRef} />
           </div>
         </div>
@@ -120,6 +144,7 @@ export default function App() {
           onSend={handleSend}
           onStop={stopStreaming}
           isLoading={isLoading}
+          awaitingClarification={!!pendingClarification}
         />
       </div>
     </div>

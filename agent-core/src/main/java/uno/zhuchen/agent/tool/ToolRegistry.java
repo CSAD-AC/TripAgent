@@ -15,9 +15,11 @@ import java.util.concurrent.ConcurrentHashMap;
 public class ToolRegistry {
     private final Map<String, ToolCallback> toolMap = new ConcurrentHashMap<>();
     private ToolCallbackProvider toolCallbackProvider;
+    private final AskUserToolCallback askUserToolCallback;
 
-    ToolRegistry(ToolCallbackProvider toolCallbackProvider) {
+    ToolRegistry(ToolCallbackProvider toolCallbackProvider, AskUserToolCallback askUserToolCallback) {
         this.toolCallbackProvider = toolCallbackProvider;
+        this.askUserToolCallback = askUserToolCallback;
     }
 
     @PostConstruct
@@ -41,6 +43,18 @@ public class ToolRegistry {
             // 2. 加载 Mock 工具
             loadMockTools();
         }
+
+        // 3. 注册反问工具(本地内置,不走 MCP)
+        registerLocalTools();
+    }
+
+    /**
+     * 注册本地内置工具（不走 MCP）
+     * <p>必须在 MCP 工具加载之后调用,优先级最高
+     */
+    private void registerLocalTools() {
+        toolMap.put(askUserToolCallback.getToolDefinition().name(), askUserToolCallback);
+        log.info("注册本地内置工具: {}", askUserToolCallback.getToolDefinition().name());
     }
 
     private void loadMockTools() {

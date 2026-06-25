@@ -30,6 +30,9 @@ function toolLabel(name: string): string {
     weatherQuery: '天气查询',
     amapWeather: '高德天气',
     amapPoiSearch: '搜索景点',
+    webSearch: '上网搜索',
+    pageFetch: '抓取网页',
+    askUser: '询问用户',
   }
   return map[name] || name
 }

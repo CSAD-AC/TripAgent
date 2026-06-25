@@ -35,6 +35,15 @@ public class StreamChunk {
     public static final String TYPE_TOOL_ERROR = "tool_error";
     public static final String TYPE_ITERATION_SEPARATOR = "iteration_separator";
 
+    /** 反问事件 — 通知前端弹出问题卡 */
+    public static final String TYPE_CLARIFICATION_REQUEST = "clarification_request";
+
+    /** 会话初始化事件 — 流的第一个事件,告知前端当前 conversationId */
+    public static final String TYPE_SESSION_INIT = "session_init";
+
+    /** 心跳事件 — 反问阻塞期间定期推送,防止反向代理 timeout */
+    public static final String TYPE_HEARTBEAT = "heartbeat";
+
     /** 事件类型：thinking / tool_call / tool_result / final / error */
     private String type;
 
@@ -58,6 +67,12 @@ public class StreamChunk {
 
     /** 耗时（ms），仅 final/error 事件有效 */
     private long durationMs;
+
+    /** 反问问题 ID（clarification_request 事件有效），前端用它来回传答案 */
+    private String questionId;
+
+    /** 是否允许自定义输入（clarification_request 事件有效） */
+    private Boolean allowCustom;
 
     public static StreamChunk thinking(String content, String conversationId) {
         return StreamChunk.builder()
@@ -148,6 +163,54 @@ public class StreamChunk {
                 .content(errorMessage)
                 .conversationId(conversationId)
                 .durationMs(durationMs)
+                .build();
+    }
+
+    /**
+     * 会话初始化事件 — SSE 流的第一个事件
+     *
+     * <p>无论前端是否传 conversationId,后端都会在流的最开始下发一个 session_init,
+     * 告诉前端当前会话的 ID。前端拿到后可以写进 URL hash 实现刷新保活。
+     *
+     * @param conversationId 当前会话的 ID（由后端生成或校验通过后的值）
+     */
+    public static StreamChunk sessionInit(String conversationId) {
+        return StreamChunk.builder()
+                .type(TYPE_SESSION_INIT)
+                .conversationId(conversationId)
+                .build();
+    }
+
+    /**
+     * 心跳事件 — 反问阻塞期间每 15s 推一次,防止反向代理 idle timeout
+     */
+    public static StreamChunk heartbeat(String conversationId) {
+        return StreamChunk.builder()
+                .type(TYPE_HEARTBEAT)
+                .conversationId(conversationId)
+                .content("heartbeat")
+                .build();
+    }
+
+    /**
+     * 反问事件工厂
+     *
+     * @param conversationId  会话 ID
+     * @param questionId      问题 UUID
+     * @param question        问题文本
+     * @param optionsJson     预设选项 JSON 数组：[{label,value}, ...]
+     * @param allowCustom     是否允许用户自由输入
+     */
+    public static StreamChunk clarificationRequest(String conversationId, String questionId,
+                                                   String question, String optionsJson,
+                                                   boolean allowCustom) {
+        return StreamChunk.builder()
+                .type(TYPE_CLARIFICATION_REQUEST)
+                .conversationId(conversationId)
+                .questionId(questionId)
+                .content(question)
+                .toolArguments(optionsJson)
+                .allowCustom(allowCustom)
                 .build();
     }
 

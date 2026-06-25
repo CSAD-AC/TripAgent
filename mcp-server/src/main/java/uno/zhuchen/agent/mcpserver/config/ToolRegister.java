@@ -4,10 +4,7 @@ import org.springframework.ai.tool.ToolCallbackProvider;
 import org.springframework.ai.tool.method.MethodToolCallbackProvider;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import uno.zhuchen.agent.mcpserver.tool.GeocodeTool;
-import uno.zhuchen.agent.mcpserver.tool.PoiSearchTool;
-import uno.zhuchen.agent.mcpserver.tool.RoutePlanningTool;
-import uno.zhuchen.agent.mcpserver.tool.WeatherQueryTool;
+import uno.zhuchen.agent.mcpserver.tool.*;
 
 /**
  * MCP 工具注册配置
@@ -23,9 +20,11 @@ public class ToolRegister {
     public ToolCallbackProvider amapTools(RoutePlanningTool routePlanningTool,
                                           PoiSearchTool poiSearchTool,
                                           WeatherQueryTool weatherQueryTool,
-                                          GeocodeTool geocodeTool) {
+                                          GeocodeTool geocodeTool,
+                                          PageFetchTool pagefetchTool,
+                                          WebSearchTool webSearchTool) {
         return MethodToolCallbackProvider.builder()
-                .toolObjects(routePlanningTool, poiSearchTool, weatherQueryTool, geocodeTool)
+                .toolObjects(routePlanningTool, poiSearchTool, weatherQueryTool, geocodeTool, pagefetchTool, webSearchTool)
                 .build();
     }
 }
