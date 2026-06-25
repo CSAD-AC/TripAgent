@@ -1,26 +1,22 @@
 import { cn } from '../lib/utils'
-import type { Conversation } from '../types'
-import { MessageSquare, Plus, Trash2 } from 'lucide-react'
+import { MapPin, Plus, Hash } from 'lucide-react'
 
 interface SidebarProps {
-  conversations: Conversation[]
-  activeId?: number
-  onSelect: (id: number) => void
+  /** 当前会话 ID(后端权威生成,前端不存) */
+  conversationId?: string
   onNew: () => void
-  onDelete: (id: number) => void
   open: boolean
   onToggle: () => void
 }
 
-export function Sidebar({
-  conversations,
-  activeId,
-  onSelect,
-  onNew,
-  onDelete,
-  open,
-  onToggle,
-}: SidebarProps) {
+/**
+ * 侧边栏(MVP 简化版)
+ *
+ * <p>设计取舍:不做历史会话列表(那需要用户身份系统,Phase 5+ 的事)
+ * <p>当前 tab 只显示"当前会话",允许新建对话
+ * <p>conversationId 简短展示前 8 位,方便用户辨识但不全显示
+ */
+export function Sidebar({ conversationId, onNew, open, onToggle }: SidebarProps) {
   return (
     <>
       {/* 遮罩（移动端） */}
@@ -38,10 +34,50 @@ export function Sidebar({
           open ? 'translate-x-0' : '-translate-x-full md:translate-x-0',
           'w-72'
         )}
-        aria-label="对话历史"
+        aria-label="侧边栏"
       >
-        {/* 头部 */}
+        {/* 头部:logo + 标题 */}
         <div className="p-4 border-b border-warm-white-200 dark:border-charcoal-700">
+          <div className="flex items-center gap-2">
+            <div className="w-8 h-8 rounded-lg bg-terracotta-500 flex items-center justify-center">
+              <MapPin className="w-4 h-4 text-white" />
+            </div>
+            <div>
+              <h1 className="font-display text-base font-semibold text-charcoal-900 dark:text-warm-white leading-tight">
+                TravelPal
+              </h1>
+              <p className="text-[11px] text-charcoal-400 dark:text-charcoal-500">旅途规划助手</p>
+            </div>
+          </div>
+        </div>
+
+        {/* 当前会话信息 */}
+        <div className="flex-1 overflow-y-auto p-3">
+          <div className="text-[10px] font-semibold uppercase tracking-wider text-charcoal-400 dark:text-charcoal-500 mb-2 px-2">
+            当前会话
+          </div>
+          {conversationId ? (
+            <div className="flex items-start gap-2 px-3 py-2.5 rounded-xl bg-warm-white dark:bg-charcoal-800 text-sm">
+              <Hash className="w-4 h-4 flex-shrink-0 mt-0.5 text-charcoal-400 dark:text-charcoal-500" />
+              <div className="flex-1 min-w-0">
+                <div className="font-mono text-xs text-charcoal-700 dark:text-charcoal-300 truncate">
+                  {conversationId.slice(0, 8)}...
+                </div>
+                <div className="text-[10px] text-charcoal-400 dark:text-charcoal-500 mt-0.5">
+                  URL hash 保留,刷新可继续
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="px-3 py-4 text-center text-sm text-charcoal-400 dark:text-charcoal-500">
+              <p>新对话</p>
+              <p className="text-[11px] mt-1">发消息后由后端生成 ID</p>
+            </div>
+          )}
+        </div>
+
+        {/* 新建对话按钮 */}
+        <div className="p-4 border-t border-warm-white-200 dark:border-charcoal-700">
           <button
             onClick={onNew}
             aria-label="新建对话"
@@ -52,57 +88,8 @@ export function Sidebar({
           </button>
         </div>
 
-        {/* 对话列表 */}
-        <div className="flex-1 overflow-y-auto p-2 space-y-1">
-          {conversations.length === 0 ? (
-            <div className="px-3 py-8 text-center text-sm text-charcoal-300 dark:text-charcoal-500">
-              <MessageSquare className="w-8 h-8 mx-auto mb-2 opacity-50" />
-              <p>暂无对话历史</p>
-            </div>
-          ) : (
-            conversations.map((conv) => (
-              <div
-                key={conv.id}
-                onClick={() => onSelect(conv.id)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault()
-                    onSelect(conv.id)
-                  }
-                }}
-                role="button"
-                tabIndex={0}
-                className={cn(
-                  'group flex items-center gap-2 w-full px-3 py-2.5 rounded-xl cursor-pointer transition-colors text-sm text-left min-h-[44px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-terracotta-500',
-                  conv.id === activeId
-                    ? 'bg-terracotta-50 dark:bg-terracotta-900/30 text-terracotta-700 dark:text-terracotta-300'
-                    : 'text-charcoal-600 dark:text-charcoal-300 hover:bg-warm-white dark:hover:bg-charcoal-800'
-                )}
-              >
-                <MessageSquare className="w-4 h-4 flex-shrink-0" />
-                <span className="flex-1 truncate">{conv.title}</span>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    onDelete(conv.id)
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      e.stopPropagation()
-                    }
-                  }}
-                  aria-label={`删除对话 ${conv.title}`}
-                  className="flex-shrink-0 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 p-2 rounded hover:bg-charcoal-100 dark:hover:bg-charcoal-700 text-charcoal-400 dark:text-charcoal-500 hover:text-red-500 dark:hover:text-red-400 transition-all min-h-[44px] min-w-[44px] flex items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400 focus-visible:opacity-100"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                </button>
-              </div>
-            ))
-          )}
-        </div>
-
         {/* 底部 branding */}
-        <div className="p-4 border-t border-warm-white-200 dark:border-charcoal-700">
+        <div className="px-4 pb-4">
           <p className="text-xs text-charcoal-300 dark:text-charcoal-600 font-display italic text-center">
             TravelPal · 旅途规划助手
           </p>

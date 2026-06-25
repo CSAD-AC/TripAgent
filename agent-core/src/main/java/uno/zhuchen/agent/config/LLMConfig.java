@@ -1,6 +1,5 @@
 package uno.zhuchen.agent.config;
 
-import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -23,19 +22,15 @@ import uno.zhuchen.agent.tool.ToolRegistry;
 @EnableConfigurationProperties(AgentConfig.class)
 public class LLMConfig {
 
-    private final ChatClient.Builder chatClientBuilder;
-
-    public LLMConfig(ChatClient.Builder chatClientBuilder) {
-        this.chatClientBuilder = chatClientBuilder;
-    }
-
     /**
      * LLM 调用层 — DashScope 实现
+     *
+     * 注入 Spring AI 的 ChatModel（由 dashscope-starter 自动配置），
+     * DashScopeChatModel 直接调用其 call/stream 方法，绕过 ChatClient 的 advisor 链。
      */
     @Bean
-    public ChatModel chatModel() {
-        ChatClient chatClient = chatClientBuilder.build();
-        return new DashScopeChatModel(chatClient);
+    public ChatModel chatModel(org.springframework.ai.chat.model.ChatModel dashScopeChatModel) {
+        return new DashScopeChatModel(dashScopeChatModel);
     }
 
     /**

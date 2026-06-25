@@ -96,7 +96,8 @@ export interface Conversation {
 
 /** API 请求 */
 export interface ChatRequest {
-  conversationId?: number | string
+  /** 后端权威生成;前端不带表示新会话,带表示续聊(UUID 格式) */
+  conversationId?: string
   message: string
 }
 
@@ -108,9 +109,35 @@ export interface ChatResponse {
   durationMs: number
 }
 
-/** SSE 事件数据类型（全流程流式协议 8 种事件） */
+/** 反问选项 */
+export interface ClarificationOption {
+  label: string
+  value: string
+}
+
+/** 等待回答的反问 */
+export interface PendingClarification {
+  questionId: string
+  conversationId: string
+  question: string
+  options: ClarificationOption[]
+  allowCustom: boolean
+}
+
+/** SSE 事件数据类型(全流程流式协议 11 种事件) */
 export interface SSEEvent {
-  type: 'thinking_token' | 'tool_call_start' | 'tool_call' | 'tool_result' | 'tool_error' | 'iteration_separator' | 'final' | 'error'
+  type:
+    | 'thinking_token'
+    | 'tool_call_start'
+    | 'tool_call'
+    | 'tool_result'
+    | 'tool_error'
+    | 'iteration_separator'
+    | 'final'
+    | 'error'
+    | 'session_init'
+    | 'heartbeat'
+    | 'clarification_request'
   content?: string
   toolName?: string
   toolArguments?: string
@@ -118,4 +145,7 @@ export interface SSEEvent {
   conversationId?: string
   durationMs?: number
   iterationInfo?: string
+  /** 反问事件专属 */
+  questionId?: string
+  allowCustom?: boolean
 }

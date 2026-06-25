@@ -20,5 +20,13 @@ public class ChatRequest {
     @Size(max = 4096, message = "消息内容不能超过 4096 字符")
     private String message;
 
+    /**
+     * 会话 ID（可选）
+     * <ul>
+     *   <li>null / 空字符串：视为新会话,由后端生成 UUID 并在首个 SSE 事件 (session_init) 中下发</li>
+     *   <li>非空：续聊,必须是合法 UUID 格式,否则后端返回 400</li>
+     * </ul>
+     * <p>前端不需要持久化此字段:同一 tab 可放 URL hash (#conversationId),新 tab 不带则视为新会话。
+     */
     private String conversationId;
 }

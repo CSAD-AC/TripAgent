@@ -28,6 +28,10 @@ agent:
     max-iterations: 20
     timeout-seconds: 30
 
+# 反问工具超时时间
+clarify:
+  timeout-minutes: 10
+
 
 
 server:
