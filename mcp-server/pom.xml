@@ -28,7 +28,7 @@
             <artifactId>spring-ai-starter-mcp-server-webflux</artifactId>
         </dependency>
 
-        <!-- HTML 解析（自建搜索爬虫用） -->
+        <!-- HTML 解析（抓取指定网页详情用） -->
         <dependency>
             <groupId>org.jsoup</groupId>
             <artifactId>jsoup</artifactId>

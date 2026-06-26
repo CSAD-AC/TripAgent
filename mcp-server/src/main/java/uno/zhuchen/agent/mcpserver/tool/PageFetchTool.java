@@ -49,7 +49,13 @@ public class PageFetchTool {
 
         log.info("抓取页面: url={}", url);
 
-        PageFetchService.PageContent result = fetchService.fetch(url);
+        PageFetchService.PageContent result;
+        try {
+            result = fetchService.fetch(url);
+        } catch (Exception e) {
+            log.error("抓取服务异常: url={}", url, e);
+            result = PageFetchService.PageContent.error(url, "抓取服务异常: " + e.getMessage());
+        }
 
         try {
             Map<String, Object> body = new LinkedHashMap<>();
