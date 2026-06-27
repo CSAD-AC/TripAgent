@@ -15,7 +15,7 @@ import static org.junit.jupiter.api.Assertions.*;
 /**
  * 验证 agent-core 的 .env 文件存在且包含必需的密钥
  *
- * <p>.env 位于 src/main/resources/.env，通过 spring.config.import 加载。
+ * .env 位于 src/main/resources/.env，通过 spring.config.import 加载。
  * 本测试直接读取文件验证内容，不依赖 Spring 上下文。
  */
 class EnvCheckTest {

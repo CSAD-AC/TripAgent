@@ -27,19 +27,15 @@ import java.util.UUID;
  *
  * 职责：接收外部请求 → 调用 Agent 核心 → DTO 转 VO 返回
  *
- * <p>支持反问工具的 SSE 推送：
- * <ul>
- *   <li>流式接口注册 ClarificationEmitter，让反问事件能推入 SSE</li>
- *   <li>新增 POST /api/chat/answer 端点接收用户回答</li>
- * </ul>
+ * 支持反问工具的 SSE 推送：
+ * - 流式接口注册 ClarificationEmitter，让反问事件能推入 SSE
+ * - 新增 POST /api/chat/answer 端点接收用户回答
  *
- * <p>conversationId 生命周期管理（后端权威）：
- * <ul>
- *   <li>新会话：前端不传 ID,后端生成 UUID 并通过 session_init 事件下发</li>
- *   <li>续聊：前端传 ID(从 URL hash 取),后端校验格式(必须是合法 UUID)</li>
- *   <li>非法 ID(非 UUID 格式):返回 400</li>
- *   <li>/chat/answer 强制要求 conversationId,用于路由校验</li>
- * </ul>
+ * conversationId 生命周期管理（后端权威）：
+ * - 新会话：前端不传 ID,后端生成 UUID 并通过 session_init 事件下发
+ * - 续聊：前端传 ID(从 URL hash 取),后端校验格式(必须是合法 UUID)
+ * - 非法 ID(非 UUID 格式):返回 400
+ * - /chat/answer 强制要求 conversationId,用于路由校验
  */
 @RestController
 @RequestMapping("/api")
@@ -104,13 +100,11 @@ public class AgentController {
      *   event: final
      *   data: {"type":"final","content":"...","conversationId":"f8e7-...","durationMs":1234}
      *
-     * <p>关键设计：
-     * <ul>
-     *   <li>session_init 是流的第一个事件,前端可从 conversationId 字段拿到后写进 URL hash</li>
-     *   <li>Sinks.Many 收集反问事件;emitter 按 conversationId 注册到 Broker</li>
-     *   <li>心跳流(Flux.interval)在主流未结束时持续推送,防止反向代理 timeout</li>
-     *   <li>所有源(主/旁路/心跳)通过 Flux.merge 并行推送</li>
-     * </ul>
+     * 关键设计：
+     * - session_init 是流的第一个事件,前端可从 conversationId 字段拿到后写进 URL hash
+     * - Sinks.Many 收集反问事件;emitter 按 conversationId 注册到 Broker
+     * - 心跳流(Flux.interval)在主流未结束时持续推送,防止反向代理 timeout
+     * - 所有源(主/旁路/心跳)通过 Flux.merge 并行推送
      */
     @PostMapping(value = "/chat/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<StreamChunk> stream(@Valid @RequestBody ChatRequest request) {
@@ -149,9 +143,9 @@ public class AgentController {
     /**
      * 提交用户对反问的回答
      *
-     * <p>前端弹出问题卡 → 用户点选/输入 → 调用此端点喂入 broker → 阻塞中的 AskUserTool 解除阻塞
+     * 前端弹出问题卡 → 用户点选/输入 → 调用此端点喂入 broker → 阻塞中的 AskUserTool 解除阻塞
      *
-     * <p>要求同时传 conversationId 和 questionId,后端校验两者匹配,防止跨会话误路由
+     * 要求同时传 conversationId 和 questionId,后端校验两者匹配,防止跨会话误路由
      */
     @PostMapping("/chat/answer")
     public Mono<Result<Void>> submitAnswer(@Valid @RequestBody AnswerRequest request) {
@@ -163,11 +157,10 @@ public class AgentController {
 
     /**
      * 解析并校验 conversationId:
-     * <ul>
-     *   <li>null / 空 → 新会话,生成 UUID</li>
-     *   <li>非空但格式非法 → 抛 IllegalArgumentException(由全局异常处理转 400)</li>
-     *   <li>合法 UUID → 原样返回</li>
-     * </ul>
+     * 规则：
+     * - null / 空 → 新会话,生成 UUID
+     * - 非空但格式非法 → 抛 IllegalArgumentException(由全局异常处理转 400)
+     * - 合法 UUID → 原样返回
      */
     private String resolveConversationId(String input) {
         if (input == null || input.isBlank()) {
@@ -185,7 +178,7 @@ public class AgentController {
 
     /**
      * 用户回答请求体
-     * <p>conversationId 和 questionId 都必填,用于路由校验
+     * conversationId 和 questionId 都必填,用于路由校验
      */
     public record AnswerRequest(String conversationId, String questionId, String answer) {}
 }

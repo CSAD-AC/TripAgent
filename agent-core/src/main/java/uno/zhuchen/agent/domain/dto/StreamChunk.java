@@ -169,7 +169,7 @@ public class StreamChunk {
     /**
      * 会话初始化事件 — SSE 流的第一个事件
      *
-     * <p>无论前端是否传 conversationId,后端都会在流的最开始下发一个 session_init,
+     * 无论前端是否传 conversationId,后端都会在流的最开始下发一个 session_init,
      * 告诉前端当前会话的 ID。前端拿到后可以写进 URL hash 实现刷新保活。
      *
      * @param conversationId 当前会话的 ID（由后端生成或校验通过后的值）

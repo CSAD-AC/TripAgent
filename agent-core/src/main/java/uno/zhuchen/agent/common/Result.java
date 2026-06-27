@@ -8,7 +8,7 @@ import lombok.NoArgsConstructor;
 /**
  * 通用 API 响应封装
  *
- * <p>统一所有非流式接口的返回格式，前端统一按 {@code {code, message, data}} 结构解析。
+ * 统一所有非流式接口的返回格式，前端统一按 {@code {code, message, data}} 结构解析。
  *
  * @param <T> data 字段的类型
  */
