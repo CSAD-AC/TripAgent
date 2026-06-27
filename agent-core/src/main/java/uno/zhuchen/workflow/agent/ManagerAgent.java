@@ -1,0 +1,345 @@
+package uno.zhuchen.workflow.agent;
+
+import com.alibaba.cloud.ai.graph.OverAllState;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Component;
+import uno.zhuchen.agent.llm.ChatModel;
+import uno.zhuchen.agent.tool.AskUserTool;
+import uno.zhuchen.workflow.state.Constraints;
+import uno.zhuchen.workflow.state.TripPlanningStateKeys;
+import uno.zhuchen.workflow.state.ValidationReport;
+
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+/**
+ * 主管 Agent — Supervisor 层
+ *
+ * 两种执行模式（通过 state[validation_report] 是否存在区分）:
+ * - 首次模式: 提取约束 + softRequirements + 调用 AskUserTool 复述确认
+ * - 回退模式: 接收 ValidationReport, LLM 决策 retry/ask_user/give_up
+ *
+ * 状态转移（state[next_node]）:
+ * - 首次: next_node = "confirmed" (用户确认后进 worker_group)
+ * - 首次用户否认: next_node = "first" (重新提取)
+ * - 回退 retry: next_node = 对应 worker (如 "itinerary" 部分重跑)
+ * - 回退 give_up: next_node = "report" (强制通过)
+ * - 回退 ask_user: next_node = "first" (再次反问用户)
+ *
+ * Day 3: 完整实现 + AskUserTool 集成
+ */
+@Component
+public class ManagerAgent extends BaseAgent {
+
+    private static final Logger log = LoggerFactory.getLogger(ManagerAgent.class);
+
+    /** 首次模式 Prompt — 提取约束 */
+    private static final String SYSTEM_PROMPT_EXTRACT = """
+            你是旅游规划助手，需要从用户需求中提取结构化约束。
+
+            用户消息示例：
+            "我想去北京玩 3 天，预算 5000，2 个人，希望包含故宫、长城等景点"
+
+            提取规则：
+            1. destination: 目的地城市（必填）
+            2. days: 天数（必填，正整数）
+            3. budget: 预算人民币元（必填，正整数）
+            4. companions: 同行人数（必填，正整数，包含用户本人）
+            5. preferences: 偏好列表（如 "自然", "文化", "美食"）
+            6. softRequirements: 软约束列表（自然语言描述的个性化需求）
+               例如 "中途要去游乐园玩一次", "想品尝当地特色小吃"
+
+            必须以严格的 JSON 格式返回（不要其他文字，不要 markdown 围栏）：
+            {
+              "destination": "...",
+              "days": 3,
+              "budget": 5000,
+              "companions": 2,
+              "preferences": ["..."],
+              "softRequirements": ["..."]
+            }
+
+            如果某必填字段无法推断，填 null 并在 softRequirements 中说明。
+            """;
+
+    /** 首次模式 Prompt — 生成复述确认问题 */
+    private static final String SYSTEM_PROMPT_CONFIRM = """
+            你是旅游规划助手，需要向用户复述你对需求的理解，让用户确认。
+
+            根据已提取的约束，生成一个简洁的确认问题。
+            问题要列举：目的地、天数、预算、人数、软约束。
+            用户可选择"全部正确"或"需要修改"。
+
+            必须以严格的 JSON 格式返回（不要其他文字）：
+            {
+              "question": "你希望去 XX 玩 X 天，预算 X 元，X 人同行，XXX。对吗？",
+              "summary": "北京 3 日游，预算 5000，2 人，含中途去游乐园"
+            }
+            """;
+
+    /** 回退模式 Prompt — 决策 retry/ask_user/give_up */
+    private static final String SYSTEM_PROMPT_DECIDE = """
+            你是旅游规划助手主管。Worker 团队产出的方案未通过校验。
+            你需要根据失败原因，决策下一步：
+            - retry: 让对应 Worker 重做（需要指明重跑哪个 worker）
+            - ask_user: 反问用户获取更多信息
+            - give_up: 当前轮次放弃，强制进入报告
+
+            决策原则：
+            1. 失败原因是预算超支 → 优先 retry 行程编排（减少景点）或住宿（降低标准）
+            2. 失败原因是软约束（如"中途要去游乐园"未满足）→ retry 行程编排
+            3. 失败原因连续 2 次无法解决 → ask_user 或 give_up
+            4. 用户已在当前轮确认过 → give_up（避免无限循环）
+
+            必须以严格的 JSON 格式返回（不要其他文字）：
+            {
+              "decision": "retry" | "ask_user" | "give_up",
+              "targetWorker": "itinerary" | "route" | "budget" | null,
+              "retryHint": "加入环球影城,替换王府井",
+              "reason": "软约束'中途要去游乐园'未满足,需要重排行程"
+            }
+            """;
+
+    private final AskUserTool askUserTool;
+    private final ObjectMapper objectMapper;
+
+    public ManagerAgent(ChatModel chatModel, AskUserTool askUserTool, ObjectMapper objectMapper) {
+        super("ManagerAgent", chatModel);
+        this.askUserTool = askUserTool;
+        this.objectMapper = objectMapper;
+    }
+
+    @Override
+    protected Map<String, Object> doExecute(OverAllState state) {
+        // 区分模式：state 中有 validation_report 则是回退模式
+        if (findValidationReport(state).isPresent()) {
+            return handleFallback(state);
+        }
+        return handleFirstTime(state);
+    }
+
+    /**
+     * 首次模式：提取约束 + 复述确认
+     */
+    private Map<String, Object> handleFirstTime(OverAllState state) {
+        String rawRequest = state.value(TripPlanningStateKeys.INPUT_RAW_REQUEST)
+                .map(Object::toString)
+                .orElseThrow(() -> new IllegalStateException("raw_request missing"));
+
+        log.info("[ManagerAgent] 首次模式: 提取约束, rawRequest={}", rawRequest);
+
+        // 1. LLM 提取约束
+        String extractJson = callLLM(SYSTEM_PROMPT_EXTRACT, rawRequest);
+        Constraints constraints = parseConstraints(extractJson);
+        log.info("[ManagerAgent] 提取结果: destination={}, days={}, budget={}, companions={}",
+                constraints.getDestination(), constraints.getDays(),
+                constraints.getBudget(), constraints.getCompanions());
+
+        // 2. 校验必填字段（缺则触发反问）
+        if (!constraints.isComplete()) {
+            log.warn("[ManagerAgent] 必填字段缺失: {}", constraints.missingRequiredFields());
+            return askUserForMissingFields(state, constraints);
+        }
+
+        // 3. 生成复述确认问题
+        String confirmJson = callLLM(SYSTEM_PROMPT_CONFIRM,
+                "约束:\n" + extractJson);
+        QuestionPayload confirm = parseConfirmQuestion(confirmJson);
+
+        // 4. 调用 AskUserTool 阻塞等用户确认
+        String conversationId = state.value(TripPlanningStateKeys.INPUT_CONVERSATION_ID)
+                .map(Object::toString)
+                .orElseThrow(() -> new IllegalStateException("conversation_id missing"));
+
+        String userAnswer;
+        try {
+            AskUserTool.setConversationId(conversationId);
+            userAnswer = askUserTool.askUser(
+                    confirm.question(),
+                    List.of(
+                            new AskUserTool.Option("全部正确", "confirmed"),
+                            new AskUserTool.Option("需要修改", "modify")
+                    ),
+                    true
+            );
+        } finally {
+            AskUserTool.clearConversationId();
+        }
+
+        // 5. 根据用户回答决定 next_node
+        boolean confirmed = userAnswer.contains("confirmed") || userAnswer.contains("正确");
+        if (confirmed) {
+            log.info("[ManagerAgent] 用户确认约束, 进入 worker_group");
+            return Map.of(
+                    TripPlanningStateKeys.CONSTRAINTS, constraints,
+                    TripPlanningStateKeys.CONTROL_NEXT_NODE, "worker_group",
+                    TripPlanningStateKeys.OUTPUT_STATUS, "constraints_confirmed"
+            );
+        } else {
+            log.info("[ManagerAgent] 用户需修改约束, 重新提取");
+            return Map.of(
+                    TripPlanningStateKeys.CONSTRAINTS, constraints,
+                    TripPlanningStateKeys.CONTROL_NEXT_NODE, "first",
+                    TripPlanningStateKeys.OUTPUT_STATUS, "constraints_rejected"
+            );
+        }
+    }
+
+    /**
+     * 必填字段缺失时反问
+     */
+    private Map<String, Object> askUserForMissingFields(OverAllState state, Constraints partial) {
+        List<String> missing = partial.missingRequiredFields();
+        String question = "请补充以下信息：" + String.join("、", missing);
+        String conversationId = state.value(TripPlanningStateKeys.INPUT_CONVERSATION_ID)
+                .map(Object::toString)
+                .orElseThrow(() -> new IllegalStateException("conversation_id missing"));
+
+        try {
+            AskUserTool.setConversationId(conversationId);
+            askUserTool.askUser(
+                    question,
+                    List.of(new AskUserTool.Option("我来补充", "supplement")),
+                    true
+            );
+        } catch (Exception e) {
+            log.warn("[ManagerAgent] 反问失败, 继续使用部分约束");
+        } finally {
+            AskUserTool.clearConversationId();
+        }
+
+        // Day 3 简化: 即使反问失败也允许用部分约束继续
+        return Map.of(
+                TripPlanningStateKeys.CONSTRAINTS, partial,
+                TripPlanningStateKeys.CONTROL_NEXT_NODE, "worker_group",
+                TripPlanningStateKeys.OUTPUT_STATUS, "constraints_partial"
+        );
+    }
+
+    /**
+     * 回退模式：接收 ValidationReport, LLM 决策
+     */
+    private Map<String, Object> handleFallback(OverAllState state) {
+        Constraints constraints = findConstraints(state).orElse(null);
+        ValidationReport report = findValidationReport(state).orElseThrow();
+        int iteration = state.value(TripPlanningStateKeys.CONTROL_ITERATION_COUNT)
+                .map(v -> ((Number) v).intValue())
+                .orElse(0);
+        int newIteration = iteration + 1;
+
+        log.info("[ManagerAgent] 回退模式: iteration={}→{}, failures={}",
+                iteration, newIteration, report.getFailures().size());
+
+        // 达上限 → 强制给报告
+        if (newIteration >= 2) {
+            log.warn("[ManagerAgent] 达到最大迭代次数, 强制给报告");
+            return Map.of(
+                    TripPlanningStateKeys.CONTROL_ITERATION_COUNT, newIteration,
+                    TripPlanningStateKeys.CONTROL_NEXT_NODE, "report",
+                    TripPlanningStateKeys.OUTPUT_STATUS, "force_passed"
+            );
+        }
+
+        // LLM 决策
+        String decideJson = callLLM(SYSTEM_PROMPT_DECIDE,
+                "约束:\n" + constraints + "\n失败原因:\n" + report.getFailures());
+        Decision decision = parseDecision(decideJson);
+        log.info("[ManagerAgent] LLM 决策: {} (target={}, reason={})",
+                decision.decision(), decision.targetWorker(), decision.reason());
+
+        String nextNode = switch (decision.decision()) {
+            case "retry" -> decision.targetWorker() != null ? decision.targetWorker() : "itinerary";
+            case "ask_user" -> "first";
+            case "give_up" -> "report";
+            default -> "report";
+        };
+
+        // 把 retryHint 注入 state 供目标 worker 看到
+        Map<String, Object> result = new HashMap<>();
+        result.put(TripPlanningStateKeys.CONTROL_ITERATION_COUNT, newIteration);
+        result.put(TripPlanningStateKeys.CONTROL_NEXT_NODE, nextNode);
+        result.put(TripPlanningStateKeys.OUTPUT_STATUS, "retry_" + decision.decision());
+        if (decision.retryHint() != null) {
+            result.put(TripPlanningStateKeys.CONTROL_WARNINGS, List.of(decision.retryHint()));
+        }
+        return result;
+    }
+
+    // ============ JSON 解析辅助 ============
+
+    private Constraints parseConstraints(String json) {
+        try {
+            // 容忍 LLM 在 JSON 前后夹带杂字
+            String clean = json.replaceAll("(?s)^.*?(\\{.*?\\}).*$", "$1");
+            var node = objectMapper.readTree(clean);
+
+            Constraints c = new Constraints();
+            if (node.hasNonNull("destination")) {
+                c.setDestination(node.get("destination").asText());
+            }
+            if (node.hasNonNull("days")) {
+                c.setDays(node.get("days").asInt());
+            }
+            if (node.hasNonNull("budget")) {
+                c.setBudget(node.get("budget").asInt());
+            }
+            if (node.hasNonNull("companions")) {
+                c.setCompanions(node.get("companions").asInt());
+            }
+            List<String> prefs = new ArrayList<>();
+            if (node.has("preferences") && node.get("preferences").isArray()) {
+                node.get("preferences").forEach(n -> prefs.add(n.asText()));
+            }
+            c.setPreferences(prefs);
+            List<String> softs = new ArrayList<>();
+            if (node.has("softRequirements") && node.get("softRequirements").isArray()) {
+                node.get("softRequirements").forEach(n -> softs.add(n.asText()));
+            }
+            c.setSoftRequirements(softs);
+            return c;
+        } catch (Exception e) {
+            log.error("[ManagerAgent] 解析约束 JSON 失败: {}, raw={}", e.getMessage(), json);
+            return new Constraints();
+        }
+    }
+
+    private QuestionPayload parseConfirmQuestion(String json) {
+        try {
+            String clean = json.replaceAll("(?s)^.*?(\\{.*?\\}).*$", "$1");
+            var node = objectMapper.readTree(clean);
+            String question = node.hasNonNull("question") ? node.get("question").asText() : "请确认需求";
+            String summary = node.hasNonNull("summary") ? node.get("summary").asText() : "";
+            return new QuestionPayload(question, summary);
+        } catch (Exception e) {
+            return new QuestionPayload("请确认你的需求", "");
+        }
+    }
+
+    private Decision parseDecision(String json) {
+        try {
+            String clean = json.replaceAll("(?s)^.*?(\\{.*?\\}).*$", "$1");
+            var node = objectMapper.readTree(clean);
+            return new Decision(
+                    node.hasNonNull("decision") ? node.get("decision").asText() : "give_up",
+                    node.hasNonNull("targetWorker") && !node.get("targetWorker").isNull()
+                            ? node.get("targetWorker").asText() : null,
+                    node.hasNonNull("retryHint") && !node.get("retryHint").isNull()
+                            ? node.get("retryHint").asText() : null,
+                    node.hasNonNull("reason") && !node.get("reason").isNull()
+                            ? node.get("reason").asText() : ""
+            );
+        } catch (Exception e) {
+            return new Decision("give_up", null, null, "JSON 解析失败");
+        }
+    }
+
+    /** 内部 record: 复述确认问题 */
+    private record QuestionPayload(String question, String summary) {}
+
+    /** 内部 record: LLM 决策 */
+    private record Decision(String decision, String targetWorker, String retryHint, String reason) {}
+}
