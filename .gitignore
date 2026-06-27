@@ -15,6 +15,10 @@ xiaohongshu-mcp-windows-amd64/cookies.json
 *.7z
 *.tz
 
+
+### dev
+dev-docs/
+
 ### IntelliJ IDEA ###
 .idea/
 *.iws
