@@ -50,7 +50,8 @@ public class ToolRegistry {
 
     /**
      * 注册本地内置工具（不走 MCP）
-     * <p>必须在 MCP 工具加载之后调用,优先级最高
+     *
+     * 必须在 MCP 工具加载之后调用,优先级最高
      */
     private void registerLocalTools() {
         toolMap.put(askUserToolCallback.getToolDefinition().name(), askUserToolCallback);

@@ -191,16 +191,16 @@ public class ReactAgent {
 
     /**
      * 全流程流式调用：LLM 思考 token、工具调用、最终答案全程流式推送
-     * <p>
+     *
      * 流式 SSE 事件序列示例：
      *   thinking_token → thinking_token → ... → tool_call_start → tool_call → tool_result
      *   → thinking_token → ... → iteration_separator
      *   → thinking_token → ... → final
-     * <p>
+     *
      * 核心改进：使用 stream() 替代阻塞的 call()，
      * 每个 token 在 flatMap 中实时推送 thinking_token 事件，
      * 工具调用阶段则推送 tool_call / tool_result / tool_error 事件。
-     * <p>
+     *
      * 采用纯响应式递归实现，避免 blockLast 导致的跨线程 sink.next() 问题，
      * 确保 SSE 事件逐条即时 flush 到前端。
      */
@@ -221,7 +221,7 @@ public class ReactAgent {
 
     /**
      * 递归执行一轮 ReAct 迭代
-     * <p>
+     *
      * 每轮分为两个阶段：
      *   阶段 1 — LLM 流式输出：实时推送 thinking_token，同时累计文本和工具调用
      *   阶段 2 — 工具执行：若本轮产生工具调用，在 boundedElastic 上执行同步工具调用后递归下一轮

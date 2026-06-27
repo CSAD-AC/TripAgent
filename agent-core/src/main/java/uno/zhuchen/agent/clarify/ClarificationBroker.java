@@ -15,20 +15,16 @@ import java.util.function.Consumer;
 /**
  * 反问工具的"问题-回答"通道管理器
  *
- * <p>职责：
- * <ul>
- *   <li>注册会话级 emitter：AgentController.stream() 注册一个 Consumer，用来把反问事件推入 SSE</li>
- *   <li>awaitAnswer：AskUserTool 调用，同步阻塞等用户回答（默认 10 分钟）</li>
- *   <li>submit：AgentController 收到 POST /api/chat/answer 时调用，喂入答案</li>
- * </ul>
+ * 职责：
+ * - 注册会话级 emitter：AgentController.stream() 注册一个 Consumer，用来把反问事件推入 SSE
+ * - awaitAnswer：AskUserTool 调用，同步阻塞等用户回答（默认 10 分钟）
+ * - submit：AgentController 收到 POST /api/chat/answer 时调用，喂入答案
  *
- * <p>设计要点：
- * <ul>
- *   <li>emitter 按 conversationId 隔离：多个会话并发不互相干扰</li>
- *   <li>answer 按 questionId 隔离：同一会话多次反问不互相覆盖</li>
- *   <li>阻塞使用 Thread.sleep(100) 轮询，避免 Thread.suspend/resume（已废弃）</li>
- *   <li>超时抛 TimeoutException，由 ReactAgent 转成"用户未回答,继续执行"注入 history</li>
- * </ul>
+ * 设计要点：
+ * - emitter 按 conversationId 隔离：多个会话并发不互相干扰
+ * - answer 按 questionId 隔离：同一会话多次反问不互相覆盖
+ * - 阻塞使用 Thread.sleep(100) 轮询，避免 Thread.suspend/resume（已废弃）
+ * - 超时抛 TimeoutException，由 ReactAgent 转成"用户未回答,继续执行"注入 history
  */
 @Component
 @Slf4j
@@ -68,7 +64,7 @@ public class ClarificationBroker {
     /**
      * 提交用户答案(由 AgentController.submitAnswer 调用)
      *
-     * <p>校验逻辑:questionId 必须属于传入的 conversationId,防止"A 会话的问题 B 会话来答"的越权
+     * 校验逻辑:questionId 必须属于传入的 conversationId,防止"A 会话的问题 B 会话来答"的越权
      *
      * @param conversationId 前端传来的会话 ID
      * @param questionId     前端传来的问题 ID
@@ -92,12 +88,10 @@ public class ClarificationBroker {
     /**
      * 阻塞等待用户回答（由 AskUserTool 调用）
      *
-     * <p>流程：
-     * <ol>
-     *   <li>通过 emitter 推送反问事件到 SSE（前端弹出问题卡）</li>
-     *   <li>轮询 answers Map 等用户提交答案</li>
-     *   <li>超时抛 TimeoutException</li>
-     * </ol>
+     * 流程：
+     * 1. 通过 emitter 推送反问事件到 SSE（前端弹出问题卡）
+     * 2. 轮询 answers Map 等用户提交答案
+     * 3. 超时抛 TimeoutException
      *
      * @param conversationId 会话 ID（用于查找 emitter）
      * @param questionId     问题 ID

@@ -18,19 +18,19 @@ import java.util.concurrent.TimeoutException;
 /**
  * 反问工具
  *
- * <p>当 LLM 缺少关键信息无法继续时调用，弹出结构化问题让用户选/填。
- * <p>与 MCP 工具不同，本工具是内置工具（不走 MCP）——它需要**长连接阻塞**直到用户回答。
- * <p>工作流：
- * <ol>
- *   <li>LLM 决定调用 askUser(question, options, allowCustom)</li>
- *   <li>Spring AI 自动包装成 ToolCallback，注册到 ToolRegistry</li>
- *   <li>ReactAgent 通过 ToolCallback.call() 调用本方法</li>
- *   <li>本方法通过 ClarificationBroker 阻塞等用户回答</li>
- *   <li>用户通过 POST /api/chat/answer 提交答案</li>
- *   <li>本方法返回答案字符串,继续 ReAct 循环</li>
- * </ol>
+ * 当 LLM 缺少关键信息无法继续时调用，弹出结构化问题让用户选/填。
  *
- * <p>conversationId 通过 ThreadLocal 传递（由 ReactAgent 在调用工具前 set）
+ * 与 MCP 工具不同，本工具是内置工具（不走 MCP）——它需要长连接阻塞直到用户回答。
+ *
+ * 工作流：
+ * 1. LLM 决定调用 askUser(question, options, allowCustom)
+ * 2. Spring AI 自动包装成 ToolCallback，注册到 ToolRegistry
+ * 3. ReactAgent 通过 ToolCallback.call() 调用本方法
+ * 4. 本方法通过 ClarificationBroker 阻塞等用户回答
+ * 5. 用户通过 POST /api/chat/answer 提交答案
+ * 6. 本方法返回答案字符串,继续 ReAct 循环
+ *
+ * conversationId 通过 ThreadLocal 传递（由 ReactAgent 在调用工具前 set）
  */
 @Component
 public class AskUserTool {

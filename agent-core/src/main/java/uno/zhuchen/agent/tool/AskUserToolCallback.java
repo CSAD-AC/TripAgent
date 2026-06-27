@@ -14,15 +14,13 @@ import java.util.List;
 /**
  * AskUserTool 的 ToolCallback 适配器
  *
- * <p>Spring AI 的 MCP 客户端只扫描 MCP 服务端工具，不会自动发现本地 @Tool 注解。
+ * Spring AI 的 MCP 客户端只扫描 MCP 服务端工具，不会自动发现本地 @Tool 注解。
  * 本类手动把 {@link AskUserTool} 包装成 ToolCallback，注册进 ToolRegistry，
  * 让 ReactAgent 把它暴露给 LLM。
  *
- * <p>职责：
- * <ul>
- *   <li>getToolDefinition: 暴露工具 schema (name, description, inputSchema) 给 LLM</li>
- *   <li>call: 解析 JSON 入参 → 调用 AskUserTool.askUser() → 返回字符串结果</li>
- * </ul>
+ * 职责：
+ * - getToolDefinition: 暴露工具 schema (name, description, inputSchema) 给 LLM
+ * - call: 解析 JSON 入参 → 调用 AskUserTool.askUser() → 返回字符串结果
  */
 @Component
 public class AskUserToolCallback implements ToolCallback {
