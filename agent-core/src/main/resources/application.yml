@@ -84,10 +84,10 @@ spring:
     openai:
       api-key: ${DEEPSEEK_API_KEY}
       base-url: https://api.deepseek.com
-      connection-timeout: 30s
+      connect-timeout: 30s
       read-timeout: 120s
       chat:
         options:
-          model: deepseek-chat
+          model: deepseek-v4-flash
           temperature: 0.8
           max-tokens: 16384
