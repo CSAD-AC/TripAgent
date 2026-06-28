@@ -30,24 +30,29 @@ export interface Message {
   iterationData?: StreamIteration[]
   /** 最后迭代编号 */
   iterationCount?: number
+  /** API 模式（react/graph）— 用于消息气泡标识 */
+  apiMode?: ApiMode
 }
 
-/** 工作流节点 */
+/** API 模式: react=ReAct 工具调用路径, graph=Graph 工作流路径 */
+export type ApiMode = 'react' | 'graph'
+
+/** SWV 工作流 6 节点（Graph 模式专用） */
 export type WorkflowNode =
-  | 'intent_analysis'
-  | 'route_planning'
-  | 'weather_check'
-  | 'knowledge_retrieval'
-  | 'daily_itinerary'
-  | 'result_assembly'
+  | 'manager'
+  | 'route'
+  | 'itinerary'
+  | 'budget'
+  | 'validation'
+  | 'report'
 
 export const WORKFLOW_STEPS: { node: WorkflowNode; label: string }[] = [
-  { node: 'intent_analysis', label: '解析意图' },
-  { node: 'route_planning', label: '规划路线' },
-  { node: 'weather_check', label: '查询天气' },
-  { node: 'knowledge_retrieval', label: '检索知识' },
-  { node: 'daily_itinerary', label: '编排行程' },
-  { node: 'result_assembly', label: '生成报告' },
+  { node: 'manager', label: '主管' },
+  { node: 'route', label: '路线' },
+  { node: 'itinerary', label: '行程' },
+  { node: 'budget', label: '预算' },
+  { node: 'validation', label: '校验' },
+  { node: 'report', label: '报告' },
 ]
 
 /** 结构化行程 */
@@ -124,7 +129,7 @@ export interface PendingClarification {
   allowCustom: boolean
 }
 
-/** SSE 事件数据类型(全流程流式协议 11 种事件) */
+/** SSE 事件数据类型(全流程流式协议) */
 export interface SSEEvent {
   type:
     | 'thinking_token'
@@ -138,6 +143,10 @@ export interface SSEEvent {
     | 'session_init'
     | 'heartbeat'
     | 'clarification_request'
+    | 'node_start'
+    | 'node_end'
+    | 'node_warning'
+    | 'branch_taken'
   content?: string
   toolName?: string
   toolArguments?: string
@@ -148,4 +157,16 @@ export interface SSEEvent {
   /** 反问事件专属 */
   questionId?: string
   allowCustom?: boolean
+}
+
+/** Graph 流式执行追踪(用于 WorkflowStatus 组件) */
+export interface GraphTrace {
+  /** 当前正在执行的节点 */
+  currentNode: string | null
+  /** 已完成的节点列表（用于连接线动画） */
+  completedNodes: string[]
+  /** 路由序列（用于可视化流向） */
+  branches: { from: string; to: string }[]
+  /** 警告信息 */
+  warnings: string[]
 }

@@ -3,12 +3,17 @@ import { Sidebar } from './components/Sidebar'
 import { ChatMessage } from './components/ChatMessage'
 import { ChatInput } from './components/ChatInput'
 import { ClarificationCard } from './components/ClarificationCard'
+import { WorkflowStatus } from './components/WorkflowStatus'
 import { useChat } from './hooks/useChat'
 import { useConversations } from './hooks/useConversations'
-import { Menu, MapPin } from 'lucide-react'
+import { Menu, MapPin, GitBranch, Zap } from 'lucide-react'
+import { cn } from './lib/utils'
+import type { ApiMode } from './types'
 
 export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  /** API 模式: 'react' = ReAct 工具调用, 'graph' = Graph 工作流 */
+  const [apiMode, setApiMode] = useState<ApiMode>('react')
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
   const { conversationId, setConversationId, newConversation } = useConversations()
@@ -19,6 +24,7 @@ export default function App() {
     streamContent,
     streamIterations,
     pendingClarification,
+    graphTrace,
     sendMessage,
     submitClarificationAnswer,
     stopStreaming,
@@ -36,9 +42,9 @@ export default function App() {
 
   const handleSend = useCallback(
     (content: string) => {
-      sendMessage(content, conversationId, handleSessionInit)
+      sendMessage(content, apiMode, conversationId, handleSessionInit)
     },
-    [conversationId, handleSessionInit, sendMessage]
+    [apiMode, conversationId, handleSessionInit, sendMessage]
   )
 
   // 自动滚动到底部(尊重 prefers-reduced-motion)
@@ -56,8 +62,6 @@ export default function App() {
         conversationId={conversationId}
         onNew={() => {
           newConversation()
-          // 注意:不清空 messages 列表,让用户切回老会话时能恢复
-          // 真要清空,需要额外加个清空按钮
         }}
         open={sidebarOpen}
         onToggle={() => setSidebarOpen(!sidebarOpen)}
@@ -85,14 +89,65 @@ export default function App() {
               <p className="text-[11px] text-charcoal-400 dark:text-charcoal-500">旅途规划助手</p>
             </div>
           </div>
+
+          {/* API 模式切换器 */}
+          <div
+            className="ml-auto flex items-center gap-1 p-1 rounded-lg bg-warm-white dark:bg-charcoal-800 border border-warm-white-200 dark:border-charcoal-700"
+            role="tablist"
+            aria-label="API 模式"
+          >
+            <button
+              role="tab"
+              aria-selected={apiMode === 'react'}
+              onClick={() => setApiMode('react')}
+              disabled={isLoading}
+              title="ReAct 工具调用路径(单 Agent 推理)"
+              className={cn(
+                'flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-terracotta-500',
+                apiMode === 'react'
+                  ? 'bg-white dark:bg-charcoal-700 text-terracotta-600 dark:text-terracotta-400 shadow-sm'
+                  : 'text-charcoal-500 dark:text-charcoal-400 hover:text-charcoal-700 dark:hover:text-charcoal-200',
+                isLoading && 'opacity-50 cursor-not-allowed'
+              )}
+            >
+              <Zap className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">ReAct</span>
+            </button>
+            <button
+              role="tab"
+              aria-selected={apiMode === 'graph'}
+              onClick={() => setApiMode('graph')}
+              disabled={isLoading}
+              title="Graph 工作流路径(Phase 3 SWV 三件套)"
+              className={cn(
+                'flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-terracotta-500',
+                apiMode === 'graph'
+                  ? 'bg-white dark:bg-charcoal-700 text-terracotta-600 dark:text-terracotta-400 shadow-sm'
+                  : 'text-charcoal-500 dark:text-charcoal-400 hover:text-charcoal-700 dark:hover:text-charcoal-200',
+                isLoading && 'opacity-50 cursor-not-allowed'
+              )}
+            >
+              <GitBranch className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Graph</span>
+            </button>
+          </div>
+
           {/* 当前会话 ID 标识(8 位缩写) */}
           {conversationId && (
-            <div className="ml-auto hidden sm:flex items-center gap-1.5 text-xs text-charcoal-400 dark:text-charcoal-500 font-mono">
+            <div className="hidden md:flex items-center gap-1.5 text-xs text-charcoal-400 dark:text-charcoal-500 font-mono">
               <span className="opacity-50">#</span>
               {conversationId.slice(0, 8)}
             </div>
           )}
         </header>
+
+        {/* Graph 模式进度条（仅 Graph 模式显示） */}
+        {apiMode === 'graph' && graphTrace && (
+          <WorkflowStatus
+            currentNode={graphTrace.currentNode}
+            visible={isLoading || graphTrace.completedNodes.length > 0}
+          />
+        )}
 
         {/* 消息列表 */}
         <div className="flex-1 overflow-y-auto">
@@ -108,6 +163,10 @@ export default function App() {
                 </h2>
                 <p className="text-sm text-charcoal-400 dark:text-charcoal-500 max-w-sm">
                   告诉我你的目的地和天数，让我为你规划一段独特的旅程
+                </p>
+                {/* 模式提示 */}
+                <p className="text-xs text-charcoal-300 dark:text-charcoal-600 mt-4">
+                  当前模式: {apiMode === 'graph' ? 'Graph 工作流(SWV 三件套)' : 'ReAct 工具调用'}
                 </p>
               </div>
             )}
