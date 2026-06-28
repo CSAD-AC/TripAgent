@@ -43,9 +43,12 @@ public class TicketFormatter {
         StringBuilder sb = new StringBuilder();
         sb.append(info.getStartTrainCode()).append("|");
         sb.append(info.getFromStation()).append(" -> ").append(info.getToStation()).append("|");
-        sb.append(info.getStartDate().substring(5)).append(" ").append(info.getStartTime());
+        if (info.getStartDate() != null) {
+            sb.append(info.getStartDate().substring(5)).append(" ");
+        }
+        sb.append(info.getStartTime());
         sb.append(" -> ");
-        if (!info.getStartDate().equals(info.getArriveDate())) {
+        if (info.getArriveDate() != null && !info.getArriveDate().equals(info.getStartDate())) {
             sb.append(info.getArriveDate().substring(5)).append(" ");
         }
         sb.append(info.getArriveTime()).append("|");

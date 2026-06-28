@@ -5,6 +5,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.stereotype.Component;
+import uno.zhuchen.agent.tools.ticket12306.model.TicketData;
 import uno.zhuchen.agent.tools.ticket12306.model.TicketFilterOptions;
 import uno.zhuchen.agent.tools.ticket12306.model.TicketInfo;
 import uno.zhuchen.agent.tools.ticket12306.service.Ticket12306Service;
@@ -12,6 +13,7 @@ import uno.zhuchen.agent.tools.ticket12306.service.TicketFormatter;
 import uno.zhuchen.agent.tools.ticket12306.service.TicketParser;
 
 import java.util.List;
+import java.util.Map;
 
 @Component
 public class TicketQueryTool {
@@ -62,10 +64,15 @@ public class TicketQueryTool {
 
         try {
             // 查询余票
-            List<TicketInfo> tickets = ticketService.queryTickets(date, fromStation, toStation);
-            if (tickets == null || tickets.isEmpty()) {
+            Ticket12306Service.LeftTicketQueryResult queryResult = ticketService.queryTickets(date, fromStation, toStation);
+            if (queryResult == null || queryResult.getRawData() == null || queryResult.getRawData().length == 0) {
                 return "未查询到 " + date + " " + fromStation + " -> " + toStation + " 的列车信息";
             }
+
+            // 解析原始管道分隔数据 -> TicketData -> TicketInfo
+            List<TicketData> ticketsData = ticketParser.parseTicketsData(queryResult.getRawData());
+            Map<String, String> stationMap = queryResult.getStationMap();
+            List<TicketInfo> tickets = ticketParser.parseTicketsInfo(ticketsData, stationMap);
 
             // 筛选/排序/限制
             TicketFilterOptions options = TicketFilterOptions.builder()

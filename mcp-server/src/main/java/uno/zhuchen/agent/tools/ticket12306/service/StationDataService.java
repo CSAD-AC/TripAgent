@@ -48,8 +48,10 @@ public class StationDataService {
         Matcher m = JS_PATH_PATTERN.matcher(html);
         if (!m.find()) throw new IllegalStateException("无法提取车站 JS 路径");
         String jsPath = m.group(1);
-        String jsContent = fetchString("https://www.12306.cn" + jsPath);
-        log.info("访问链接为 \"https://www.12306.cn\"{} ", jsPath);
+        String cleanPath = jsPath.startsWith("./") ? jsPath.substring(1) : jsPath;
+        String fullUrl = "https://www.12306.cn/index" + cleanPath;
+        String jsContent = fetchString(fullUrl);
+        log.info("访问链接为 {} ", fullUrl);
 
 
         Matcher sm = STATION_NAMES_PATTERN.matcher(jsContent);
@@ -103,10 +105,22 @@ public class StationDataService {
         catch (Exception e) { throw new RuntimeException("请求失败: " + url, e); }
     }
 
-    public StationData getStationByTelecode(String telecode) { return stations.get(telecode); }
-    public List<StationInfo> getStationsInCity(String city) { return cityStations.get(city); }
-    public StationInfo getCityCode(String city) { return cityCodes.get(city); }
-    public StationInfo getStationByName(String name) { return nameStations.get(name); }
+    public StationData getStationByTelecode(String telecode) {
+        if (telecode == null) return null;
+        return stations.get(telecode);
+    }
+    public List<StationInfo> getStationsInCity(String city) {
+        if (city == null) return null;
+        return cityStations.get(city);
+    }
+    public StationInfo getCityCode(String city) {
+        if (city == null) return null;
+        return cityCodes.get(city);
+    }
+    public StationInfo getStationByName(String name) {
+        if (name == null) return null;
+        return nameStations.get(name);
+    }
 
     public String parseStationCode(String station) {
         if (station == null) return null;

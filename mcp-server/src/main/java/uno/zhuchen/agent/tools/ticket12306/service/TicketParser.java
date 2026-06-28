@@ -6,10 +6,10 @@ import org.springframework.stereotype.Service;
 import uno.zhuchen.agent.tools.ticket12306.config.Ticket12306Config;
 import uno.zhuchen.agent.tools.ticket12306.model.*;
 
-import java.lang.reflect.Field;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.*;
 import java.util.function.BiFunction;
 import java.util.function.Function;
@@ -23,13 +23,13 @@ public class TicketParser {
 
     // 列车筛选器: 字母 -> (code, flag) -> boolean
     private static final Map<Character, BiFunction<String, List<String>, Boolean>> TRAIN_FILTERS = Map.of(
-            'G', (code, flag) -> code.startsWith("G") || code.startsWith("C"),
-            'D', (code, flag) -> code.startsWith("D"),
-            'Z', (code, flag) -> code.startsWith("Z"),
-            'T', (code, flag) -> code.startsWith("T"),
-            'K', (code, flag) -> code.startsWith("K"),
-            'O', (code, flag) -> !code.startsWith("G") && !code.startsWith("C") && !code.startsWith("D")
-                    && !code.startsWith("Z") && !code.startsWith("T") && !code.startsWith("K"),
+            'G', (code, flag) -> code != null && (code.startsWith("G") || code.startsWith("C")),
+            'D', (code, flag) -> code != null && code.startsWith("D"),
+            'Z', (code, flag) -> code != null && code.startsWith("Z"),
+            'T', (code, flag) -> code != null && code.startsWith("T"),
+            'K', (code, flag) -> code != null && code.startsWith("K"),
+            'O', (code, flag) -> code != null && !code.startsWith("G") && !code.startsWith("C")
+                    && !code.startsWith("D") && !code.startsWith("Z") && !code.startsWith("T") && !code.startsWith("K"),
             'F', (code, flag) -> flag != null && flag.contains("复兴号"),
             'S', (code, flag) -> flag != null && flag.contains("智能动车组")
     );
@@ -55,43 +55,124 @@ public class TicketParser {
 
     /**
      * 将管道分隔的原始字符串数组解析为 TicketData 列表
+     * 按 TicketDataKeys 定义的序号逐一映射字段
      */
     public List<TicketData> parseTicketsData(String[] rawData) {
         List<TicketData> list = new ArrayList<>();
-        Field[] fields = TicketData.class.getDeclaredFields();
         for (String row : rawData) {
             if (row == null || row.isBlank()) continue;
             String[] parts = row.split("\\|", -1);
             if (parts.length < TicketDataKeys.TOTAL_FIELDS) continue;
-            try {
-                TicketData.TicketDataBuilder builder = TicketData.builder();
-                for (Field f : fields) {
-                    f.setAccessible(true);
-                    try {
-                        int idx = TicketDataKeys.class.getField(f.getName().toUpperCase()).getInt(null);
-                        String val = idx < parts.length ? parts[idx] : "";
-                        if (f.getType() == String.class) {
-                            f.set(builder, val);
-                        }
-                    } catch (Exception ignored) {}
-                }
-                list.add(builder.build());
-            } catch (Exception e) {
-                log.warn("解析 TicketData 失败: {}", e.getMessage());
-            }
+            list.add(buildTicketData(parts));
         }
         return list;
     }
 
+    private TicketData buildTicketData(String[] p) {
+        return TicketData.builder()
+                .secretStr(val(p, TicketDataKeys.SECRET_STR))
+                .buttonTextInfo(val(p, TicketDataKeys.BUTTON_TEXT_INFO))
+                .trainNo(val(p, TicketDataKeys.TRAIN_NO))
+                .stationTrainCode(val(p, TicketDataKeys.STATION_TRAIN_CODE))
+                .startStationTelecode(val(p, TicketDataKeys.START_STATION_TELECODE))
+                .endStationTelecode(val(p, TicketDataKeys.END_STATION_TELECODE))
+                .fromStationTelecode(val(p, TicketDataKeys.FROM_STATION_TELECODE))
+                .toStationTelecode(val(p, TicketDataKeys.TO_STATION_TELECODE))
+                .startTime(val(p, TicketDataKeys.START_TIME))
+                .arriveTime(val(p, TicketDataKeys.ARRIVE_TIME))
+                .lishi(val(p, TicketDataKeys.LISHI))
+                .canWebBuy(val(p, TicketDataKeys.CAN_WEB_BUY))
+                .ypInfo(val(p, TicketDataKeys.YP_INFO))
+                .startTrainDate(val(p, TicketDataKeys.START_TRAIN_DATE))
+                .trainSeatFeature(val(p, TicketDataKeys.TRAIN_SEAT_FEATURE))
+                .locationCode(val(p, TicketDataKeys.LOCATION_CODE))
+                .fromStationNo(val(p, TicketDataKeys.FROM_STATION_NO))
+                .toStationNo(val(p, TicketDataKeys.TO_STATION_NO))
+                .isSupportCard(val(p, TicketDataKeys.IS_SUPPORT_CARD))
+                .controlledTrainFlag(val(p, TicketDataKeys.CONTROLLED_TRAIN_FLAG))
+                .ggNum(val(p, TicketDataKeys.GG_NUM))
+                .grNum(val(p, TicketDataKeys.GR_NUM))
+                .qtNum(val(p, TicketDataKeys.QT_NUM))
+                .rwNum(val(p, TicketDataKeys.RW_NUM))
+                .rzNum(val(p, TicketDataKeys.RZ_NUM))
+                .tzNum(val(p, TicketDataKeys.TZ_NUM))
+                .wzNum(val(p, TicketDataKeys.WZ_NUM))
+                .ybNum(val(p, TicketDataKeys.YB_NUM))
+                .ywNum(val(p, TicketDataKeys.YW_NUM))
+                .yzNum(val(p, TicketDataKeys.YZ_NUM))
+                .zeNum(val(p, TicketDataKeys.ZE_NUM))
+                .zyNum(val(p, TicketDataKeys.ZY_NUM))
+                .swzNum(val(p, TicketDataKeys.SWZ_NUM))
+                .srrbNum(val(p, TicketDataKeys.SRRB_NUM))
+                .ypEx(val(p, TicketDataKeys.YP_EX))
+                .seatTypes(val(p, TicketDataKeys.SEAT_TYPES))
+                .exchangeTrainFlag(val(p, TicketDataKeys.EXCHANGE_TRAIN_FLAG))
+                .houbuTrainFlag(val(p, TicketDataKeys.HOUBU_TRAIN_FLAG))
+                .houbuSeatLimit(val(p, TicketDataKeys.HOUBU_SEAT_LIMIT))
+                .ypInfoNew(val(p, TicketDataKeys.YP_INFO_NEW))
+                .field40(val(p, TicketDataKeys.FIELD_40))
+                .field41(val(p, TicketDataKeys.FIELD_41))
+                .field42(val(p, TicketDataKeys.FIELD_42))
+                .field43(val(p, TicketDataKeys.FIELD_43))
+                .field44(val(p, TicketDataKeys.FIELD_44))
+                .field45(val(p, TicketDataKeys.FIELD_45))
+                .dwFlag(val(p, TicketDataKeys.DW_FLAG))
+                .field47(val(p, TicketDataKeys.FIELD_47))
+                .stopcheckTime(val(p, TicketDataKeys.STOPCHECK_TIME))
+                .countryFlag(val(p, TicketDataKeys.COUNTRY_FLAG))
+                .localArriveTime(val(p, TicketDataKeys.LOCAL_ARRIVE_TIME))
+                .localStartTime(val(p, TicketDataKeys.LOCAL_START_TIME))
+                .field52(val(p, TicketDataKeys.FIELD_52))
+                .bedLevelInfo(val(p, TicketDataKeys.BED_LEVEL_INFO))
+                .seatDiscountInfo(val(p, TicketDataKeys.SEAT_DISCOUNT_INFO))
+                .saleTime(val(p, TicketDataKeys.SALE_TIME))
+                .field56(val(p, TicketDataKeys.FIELD_56))
+                .build();
+    }
+
+    private String val(String[] parts, int idx) {
+        return idx < parts.length ? parts[idx] : "";
+    }
+
     /**
      * 将 TicketData 列表解析为 TicketInfo (含票价、特色标签)
+     * stationNameMap: API 返回的 telecode -> 站名 映射
      */
-    public List<TicketInfo> parseTicketsInfo(List<TicketData> ticketsData, StationDataService stationService) {
+    public List<TicketInfo> parseTicketsInfo(List<TicketData> ticketsData, Map<String, String> stationNameMap) {
+        DateTimeFormatter yyyyMMdd = DateTimeFormatter.ofPattern("yyyyMMdd");
         return ticketsData.stream().map(td -> {
-            List<Price> prices = extractPrices(td.getYpInfo(), td.getSeatDiscountInfo(), td);
+            // 注意: 余票查询使用 yp_info_new(字段39), 中转换乘使用 yp_info(字段12)
+            List<Price> prices = extractPrices(td.getYpInfoNew(), td.getSeatDiscountInfo(), td);
             List<String> flags = extractDWFlags(td.getDwFlag());
-            String startDate = td.getStartTrainDate();
-            String arriveDate = calcArriveDate(startDate, td.getLishi(), td.getStartTime(), td.getArriveTime());
+
+            // start_train_date 格式为 yyyyMMdd (如 20260628)
+            String startDateRaw = td.getStartTrainDate();
+            String startDate = startDateRaw;
+            String arriveDate = startDateRaw;
+            if (startDateRaw != null && startDateRaw.length() == 8) {
+                try {
+                    LocalDate sd = LocalDate.parse(startDateRaw, yyyyMMdd);
+                    startDate = sd.format(DateTimeFormatter.ISO_LOCAL_DATE);
+                    // 到达日期 = 出发日期 + 历时
+                    int addDays = 0;
+                    String lishi = td.getLishi();
+                    if (lishi != null && lishi.contains(":")) {
+                        String[] parts = lishi.split(":");
+                        int h = Integer.parseInt(parts[0]);
+                        int m = Integer.parseInt(parts[1]);
+                        // 以出发时间为基准，加历时判断是否跨日
+                        if (td.getStartTime() != null && td.getStartTime().length() >= 5) {
+                            int sh = Integer.parseInt(td.getStartTime().substring(0, 2));
+                            int sm = Integer.parseInt(td.getStartTime().substring(3, 5));
+                            int totalMin = sh * 60 + sm + h * 60 + m;
+                            addDays = totalMin / (24 * 60);
+                        }
+                    }
+                    arriveDate = addDays > 0 ? sd.plusDays(addDays).format(DateTimeFormatter.ISO_LOCAL_DATE) : startDate;
+                } catch (Exception e) {
+                    // fallback
+                }
+            }
 
             return TicketInfo.builder()
                     .trainNo(td.getTrainNo())
@@ -101,12 +182,8 @@ public class TicketParser {
                     .arriveDate(arriveDate)
                     .arriveTime(td.getArriveTime())
                     .lishi(td.getLishi())
-                    .fromStation(stationService.getStationByTelecode(td.getFromStationTelecode()) != null
-                            ? stationService.getStationByTelecode(td.getFromStationTelecode()).getStationName()
-                            : td.getFromStationTelecode())
-                    .toStation(stationService.getStationByTelecode(td.getToStationTelecode()) != null
-                            ? stationService.getStationByTelecode(td.getToStationTelecode()).getStationName()
-                            : td.getToStationTelecode())
+                    .fromStation(stationNameMap != null ? stationNameMap.get(td.getFromStationTelecode()) : td.getFromStationTelecode())
+                    .toStation(stationNameMap != null ? stationNameMap.get(td.getToStationTelecode()) : td.getToStationTelecode())
                     .fromStationTelecode(td.getFromStationTelecode())
                     .toStationTelecode(td.getToStationTelecode())
                     .prices(prices)
