@@ -45,16 +45,17 @@ public class LLMConfig {
     /**
      * LLM 调用层 — DeepSeek 实现（deepseek profile）
      *
-     * 注入 Spring AI 的 DeepSeekChatModel（由 deepseek-starter 自动配置），
-     * 适配到我们的 ChatModel 接口。
+     * 使用 Spring AI OpenAI 客户端指向 DeepSeek API（https://api.deepseek.com），
+     * 因为 Spring AI DeepSeekChatModel 在 v1.1.2 中处理 ToolResponseMessage 有 bug，
+     * 改用更成熟的 OpenAiChatModel（兼容 DeepSeek API）。
      *
-     * ⚠️ 方法名不能叫 deepSeekChatModel，因为 DeepSeekChatAutoConfiguration
-     * 已注册了一个同名 bean。
+     * ⚠️ 在 deepseek profile 中已排除 DeepSeekChatAutoConfiguration，
+     * 避免与 OpenAiChatModel bean 冲突。
      */
     @Bean
     @Profile("deepseek")
-    public ChatModel myDeepSeekChatModel(org.springframework.ai.chat.model.ChatModel deepSeekChatModel) {
-        return new DeepSeekChatModel(deepSeekChatModel);
+    public ChatModel myDeepSeekChatModel(org.springframework.ai.chat.model.ChatModel openAiChatModel) {
+        return new DeepSeekChatModel(openAiChatModel);
     }
 
     /**
