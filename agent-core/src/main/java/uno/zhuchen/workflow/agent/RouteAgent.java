@@ -1,10 +1,12 @@
 package uno.zhuchen.workflow.agent;
 
 import com.alibaba.cloud.ai.graph.OverAllState;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
+import uno.zhuchen.agent.domain.dto.StreamChunk;
 import uno.zhuchen.agent.llm.ChatModel;
 import uno.zhuchen.agent.tool.ToolRegistry;
 import uno.zhuchen.workflow.state.Constraints;
@@ -114,6 +116,12 @@ public class RouteAgent extends BaseAgent {
 
         log.info("[RouteAgent] 路线规划完成: {} 段, 总费用={}, 总时长={}分",
                 route.getSegments().size(), route.getTotalCost(), route.getTotalDurationMin());
+
+        // 发射 route 数据事件
+        Map<String, Object> routeData = objectMapper.convertValue(route, new TypeReference<Map<String, Object>>() {});
+        String routeConvId = state.value(TripPlanningStateKeys.INPUT_CONVERSATION_ID)
+                .map(Object::toString).orElse("unknown");
+        emitEvent(StreamChunk.nodeData("route", "route", routeData, routeConvId));
 
         result.put(TripPlanningStateKeys.WORKER_ROUTE, route);
         result.put(TripPlanningStateKeys.CONTROL_NEXT_NODE, "itinerary");

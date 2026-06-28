@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
+import uno.zhuchen.agent.domain.dto.StreamChunk;
 import uno.zhuchen.agent.llm.ChatModel;
 import uno.zhuchen.agent.tool.ToolRegistry;
 import uno.zhuchen.workflow.state.BudgetPlan;
@@ -89,6 +90,14 @@ public class ReportAgent extends BaseAgent {
         }
 
         log.info("[ReportAgent] 报告生成完成,长度 {} 字符", report.length());
+
+        // 发射 report 数据事件（摘要信息）
+        Map<String, Object> reportData = new HashMap<>();
+        reportData.put("summary", report.length() > 200 ? report.substring(0, 200) + "..." : report);
+        reportData.put("length", report.length());
+        String reportConvId = state.value(TripPlanningStateKeys.INPUT_CONVERSATION_ID)
+                .map(Object::toString).orElse("unknown");
+        emitEvent(StreamChunk.nodeData("report", "report", reportData, reportConvId));
 
         Map<String, Object> result = new HashMap<>();
         result.put(TripPlanningStateKeys.OUTPUT_FINAL_REPORT, report);

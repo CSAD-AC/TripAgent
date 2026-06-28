@@ -1,10 +1,12 @@
 package uno.zhuchen.workflow.agent;
 
 import com.alibaba.cloud.ai.graph.OverAllState;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
+import uno.zhuchen.agent.domain.dto.StreamChunk;
 import uno.zhuchen.agent.llm.ChatModel;
 import uno.zhuchen.agent.tool.ToolRegistry;
 import uno.zhuchen.workflow.state.BudgetPlan;
@@ -95,6 +97,12 @@ public class ValidationAgent extends BaseAgent {
 
         log.info("[ValidationAgent] 校验完成: passed={}, failures={}, warnings={}",
                 report.getPassed(), report.getFailures().size(), report.getWarnings().size());
+
+        // 发射 validation 数据事件
+        Map<String, Object> validationData = objectMapper.convertValue(report, new TypeReference<Map<String, Object>>() {});
+        String validationConvId = state.value(TripPlanningStateKeys.INPUT_CONVERSATION_ID)
+                .map(Object::toString).orElse("unknown");
+        emitEvent(StreamChunk.nodeData("validation", "validation", validationData, validationConvId));
 
         String nextNode = Boolean.TRUE.equals(report.getPassed()) ? "report" : "manager";
         return Map.of(

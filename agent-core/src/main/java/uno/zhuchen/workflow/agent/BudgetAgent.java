@@ -1,10 +1,12 @@
 package uno.zhuchen.workflow.agent;
 
 import com.alibaba.cloud.ai.graph.OverAllState;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
+import uno.zhuchen.agent.domain.dto.StreamChunk;
 import uno.zhuchen.agent.llm.ChatModel;
 import uno.zhuchen.agent.tool.ToolRegistry;
 import uno.zhuchen.workflow.state.BudgetPlan;
@@ -111,6 +113,12 @@ public class BudgetAgent extends BaseAgent {
 
         log.info("[BudgetAgent] 精算完成: total={}, budget={}, overage={}",
                 budget.getTotalCost(), budget.getBudget(), budget.getOverageAmount());
+
+        // 发射 budget 数据事件
+        Map<String, Object> budgetData = objectMapper.convertValue(budget, new TypeReference<Map<String, Object>>() {});
+        String budgetConvId = state.value(TripPlanningStateKeys.INPUT_CONVERSATION_ID)
+                .map(Object::toString).orElse("unknown");
+        emitEvent(StreamChunk.nodeData("budget", "budget", budgetData, budgetConvId));
 
         result.put(TripPlanningStateKeys.WORKER_BUDGET, budget);
         result.put(TripPlanningStateKeys.CONTROL_NEXT_NODE, "validation");
