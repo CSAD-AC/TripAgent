@@ -5,6 +5,8 @@ import type {
   ToolCallInfo,
   StreamIteration,
   PendingClarification,
+  ApiMode,
+  GraphTrace,
 } from '../types'
 
 export function useChat() {
@@ -18,6 +20,8 @@ export function useChat() {
   const [currentIteration, setCurrentIteration] = useState(1)
   /** 当前等待回答的反问（null 表示无） */
   const [pendingClarification, setPendingClarification] = useState<PendingClarification | null>(null)
+  /** Graph 流追踪（仅 Graph 模式有值,用于 WorkflowStatus 可视化） */
+  const [graphTrace, setGraphTrace] = useState<GraphTrace | null>(null)
 
   const abortRef = useRef<AbortController | null>(null)
 
@@ -74,7 +78,6 @@ export function useChat() {
 
       // ── heartbeat: 静默忽略(防反向代理 timeout,前端不需要展示) ──
       case 'heartbeat': {
-        // 透传,什么都不做
         break
       }
 
@@ -166,6 +169,60 @@ export function useChat() {
         break
       }
 
+      // ── node_start: Graph 模式 - 节点开始执行 ──
+      case 'node_start': {
+        setGraphTrace((prev) => ({
+          currentNode: event.toolName || null,
+          completedNodes: prev?.completedNodes || [],
+          branches: prev?.branches || [],
+          warnings: prev?.warnings || [],
+        }))
+        break
+      }
+
+      // ── node_end: Graph 模式 - 节点执行完成 ──
+      case 'node_end': {
+        setGraphTrace((prev) => {
+          if (!prev) return prev
+          const completed = prev.completedNodes.includes(event.toolName || '')
+            ? prev.completedNodes
+            : [...prev.completedNodes, event.toolName || '']
+          return {
+            ...prev,
+            completedNodes: completed,
+            currentNode: prev.currentNode === event.toolName ? null : prev.currentNode,
+          }
+        })
+        break
+      }
+
+      // ── node_warning: Graph 模式 - 节点执行警告 ──
+      case 'node_warning': {
+        setGraphTrace((prev) => ({
+          currentNode: prev?.currentNode || null,
+          completedNodes: prev?.completedNodes || [],
+          branches: prev?.branches || [],
+          warnings: [...(prev?.warnings || []), event.content || ''],
+        }))
+        break
+      }
+
+      // ── branch_taken: Graph 模式 - 条件边选择 ──
+      case 'branch_taken': {
+        setGraphTrace((prev) => {
+          const from = event.toolName || ''
+          const to = event.toolArguments || ''
+          if (!from || !to) return prev
+          return {
+            currentNode: prev?.currentNode || null,
+            completedNodes: prev?.completedNodes || [],
+            branches: [...(prev?.branches || []), { from, to }],
+            warnings: prev?.warnings || [],
+          }
+        })
+        break
+      }
+
       // ── final: 最终答案——替换最后迭代的文本 ──
       case 'final': {
         const lastIdx = iterationRef.current - 1
@@ -184,8 +241,22 @@ export function useChat() {
     }
   }
 
+  /**
+   * 发送消息(根据 apiMode 选择端点)
+   *
+   * @param content 消息内容
+   * @param apiMode 'react' = /api/chat/stream  (ReAct 工具调用)
+   *               'graph' = /api/chat/graph   (Graph 工作流)
+   * @param conversationId 会话 ID(续聊时携带)
+   * @param onSessionInit 收到 session_init 时的回调
+   */
   const sendMessage = useCallback(
-    async (content: string, conversationId?: string, onSessionInit?: (id: string) => void) => {
+    async (
+      content: string,
+      apiMode: ApiMode,
+      conversationId?: string,
+      onSessionInit?: (id: string) => void
+    ) => {
       const userMsg: Message = {
         id: `user-${Date.now()}`,
         role: 'user',
@@ -199,6 +270,7 @@ export function useChat() {
         content: '',
         type: 'thinking' as const,
         timestamp: Date.now(),
+        apiMode,
       }
 
       setMessages((prev) => [...prev, userMsg, assistantMsg])
@@ -213,11 +285,20 @@ export function useChat() {
       setStreamIterations([])
       setCurrentToolCalls([])
       setCurrentIteration(1)
+      // Graph 模式重置追踪;ReAct 模式清空
+      if (apiMode === 'graph') {
+        setGraphTrace({ currentNode: null, completedNodes: [], branches: [], warnings: [] })
+      } else {
+        setGraphTrace(null)
+      }
 
       abortRef.current = new AbortController()
 
+      // 根据 mode 选择 endpoint
+      const endpoint = apiMode === 'graph' ? '/api/chat/graph' : '/api/chat/stream'
+
       try {
-        const response = await fetch('/api/chat/stream', {
+        const response = await fetch(endpoint, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ conversationId, message: content }),
@@ -324,7 +405,6 @@ export function useChat() {
         const errText = await res.text()
         throw new Error(`提交失败: HTTP ${res.status} ${errText}`)
       }
-      // 答案已提交,清掉卡片(后端会通过现有 SSE 推后续事件)
       setPendingClarification(null)
     } catch (err) {
       console.error('[useChat] submitClarificationAnswer error:', err)
@@ -339,6 +419,7 @@ export function useChat() {
   const clearMessages = useCallback(() => {
     setMessages([])
     setPendingClarification(null)
+    setGraphTrace(null)
   }, [])
 
   return {
@@ -348,6 +429,7 @@ export function useChat() {
     streamIterations,
     currentIteration,
     pendingClarification,
+    graphTrace,
     sendMessage,
     submitClarificationAnswer,
     stopStreaming,
