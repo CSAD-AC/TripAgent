@@ -16,10 +16,13 @@ public class ToolRegistry {
     private final Map<String, ToolCallback> toolMap = new ConcurrentHashMap<>();
     private ToolCallbackProvider toolCallbackProvider;
     private final AskUserToolCallback askUserToolCallback;
+    private final CalculatorTool calculatorTool;
 
-    ToolRegistry(ToolCallbackProvider toolCallbackProvider, AskUserToolCallback askUserToolCallback) {
+    ToolRegistry(ToolCallbackProvider toolCallbackProvider, AskUserToolCallback askUserToolCallback,
+                 CalculatorTool calculatorTool) {
         this.toolCallbackProvider = toolCallbackProvider;
         this.askUserToolCallback = askUserToolCallback;
+        this.calculatorTool = calculatorTool;
     }
 
     @PostConstruct
@@ -56,6 +59,9 @@ public class ToolRegistry {
     private void registerLocalTools() {
         toolMap.put(askUserToolCallback.getToolDefinition().name(), askUserToolCallback);
         log.info("注册本地内置工具: {}", askUserToolCallback.getToolDefinition().name());
+
+        toolMap.put(calculatorTool.getToolDefinition().name(), calculatorTool);
+        log.info("注册本地内置工具: {}", calculatorTool.getToolDefinition().name());
     }
 
     private void loadMockTools() {
