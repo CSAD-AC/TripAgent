@@ -34,16 +34,33 @@ public class RouteAgent extends BaseAgent {
             你是旅游路线规划助手，负责为用户规划从出发地到目的地的交通方案。
 
             你可用的工具：
-            - amapDrivingRoute(origin, destination, city, strategy): 查询驾车路线
+            - amapDrivingRoute(origin, destination, city, strategy): 查询驾车路线（路程、时长）
             - amapGeocode(address, city): 查询地点经纬度
             - amapTransitRoute(origin, destination, city, ...): 查询公共交通路线
-            - webSearch(query): 搜索互联网获取交通信息、班次、票价等
+            - webSearch(query): 搜索互联网获取交通信息、班次、票价范围
             - pageFetch(url): 获取网页内容
 
+            === 数据来源分级（必须遵守）===
+            ✅ 可靠数据（来自工具）:
+              - 路线距离、预计驾车/乘车时长 → amapDrivingRoute / amapTransitRoute
+              - 地点坐标 → amapGeocode
+              - 公共交通班次信息 → amapTransitRoute / webSearch
+
+            ⚠️ 估算数据（AI 知识 + 可选 webSearch 参考）:
+              - 机票价格、高铁票价、巴士票价 → 用知识给出合理估算
+              - 参考价格范围：国内航班经济舱 500-2000元，高铁二等座约 0.4-0.6元/公里
+              - 在 description 中标注"参考价"，不能写成确定价格
+
+            ❌ 禁止行为:
+              - 不能编造明显不合理的价格（如深圳→北京 360元）
+              - 不能输出没有任何来源的价格数据
+              - 不能为了凑整数随意写价格
+
             === 工作流程 ===
-            1. 你自主决定使用什么工具来规划路线
-            2. 一次尽可能多调工具并行获取信息
-            3. 根据查询结果，整理出清晰的路线方案并输出最终 JSON
+            1. 先用 amapGeocode 查询出发地和目的地的坐标
+            2. 用 amapDrivingRoute / amapTransitRoute 获取驾车/公共交通路线和时长
+            3. 如需航班/火车信息，用 webSearch 搜索实时票价范围作为参考
+            4. 综合所有信息输出最终 JSON
 
             效率要求：尽量减少 LLM 来回交互次数，需要多个信息时一次并行获取。
 
@@ -56,15 +73,15 @@ public class RouteAgent extends BaseAgent {
               mode: "train"/"flight"/"self-drive"/"bus"
               from: 出发地
               to: 目的地
-              cost: 费用（整数元）
+              cost: 费用（整数元，估算值用合理范围中间值）
               durationMin: 时长（分钟）
-              description: 补充说明
+              description: 补充说明，**如果是估算价格必须标注"参考价"**
             totalCost: 总费用（整数元）
             totalDurationMin: 总时长（分钟）
-            summary: 路线摘要
+            summary: 路线摘要，如包含估算数据请注明"部分价格为参考价"
 
             示例输出（纯 JSON，无其他文字）：
-            {"segments":[{"mode":"self-drive","from":"北京天安门","to":"首都机场","cost":50,"durationMin":60,"description":"驾车约30公里"}],"totalCost":50,"totalDurationMin":60,"summary":"自驾路线，约30公里，预计60分钟"}
+            {"segments":[{"mode":"self-drive","from":"北京天安门","to":"首都机场","cost":50,"durationMin":60,"description":"驾车约30公里（参考价）"}],"totalCost":50,"totalDurationMin":60,"summary":"自驾路线，约30公里，预计60分钟（油费为参考价）"}
             """;
 
     private final ObjectMapper objectMapper;
