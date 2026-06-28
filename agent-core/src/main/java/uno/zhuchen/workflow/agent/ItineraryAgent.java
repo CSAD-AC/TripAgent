@@ -1,10 +1,12 @@
 package uno.zhuchen.workflow.agent;
 
 import com.alibaba.cloud.ai.graph.OverAllState;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
+import uno.zhuchen.agent.domain.dto.StreamChunk;
 import uno.zhuchen.agent.llm.ChatModel;
 import uno.zhuchen.agent.tool.ToolRegistry;
 import uno.zhuchen.workflow.state.Constraints;
@@ -48,7 +50,7 @@ public class ItineraryAgent extends BaseAgent {
             效率要求：尽量减少 LLM 来回交互次数，需要多个信息时一次并行获取。
 
             === 输出要求（重要）===
-            直接输出纯 JSON，不要 markdown 代码块，不要 \`\`\`json 标记，不要任何解释文字。
+            直接输出纯 JSON，不要 markdown 代码块，不要 ```json``` 标记，不要任何解释文字。
             只输出 JSON，不要包含其他任何内容。
 
             JSON 字段含义：
@@ -116,6 +118,14 @@ public class ItineraryAgent extends BaseAgent {
         }
 
         log.info("[ItineraryAgent] 行程编排完成: {} 天", itinerary.size());
+
+        // 发射 dayplans 数据事件
+        List<Map<String, Object>> daysList = itinerary.stream()
+                .map(day -> objectMapper.convertValue(day, new TypeReference<Map<String, Object>>() {}))
+                .toList();
+        String itineraryConvId = state.value(TripPlanningStateKeys.INPUT_CONVERSATION_ID)
+                .map(Object::toString).orElse("unknown");
+        emitEvent(StreamChunk.nodeData("itinerary", "dayplans", Map.of("days", daysList), itineraryConvId));
 
         result.put(TripPlanningStateKeys.WORKER_ITINERARY, itinerary);
         result.put(TripPlanningStateKeys.CONTROL_NEXT_NODE, "budget");

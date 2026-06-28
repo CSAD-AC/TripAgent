@@ -172,8 +172,15 @@ public class AgentController {
      * 直接走 Supervisor-Worker-Validator 三件套,不走 ReAct。
      * 适用于旅游规划类请求（含个性化软约束）。
      *
-     * 事件序列：
-     *   session_init → node_start → node_end → branch_taken → ... → final
+     * 事件序列（由 GraphStreamRunner 内部发射）:
+     *   session_init → graph_topology
+     *     → node_status(manager, running)
+     *     → (node_status(node, done) → branch_taken → node_status(node, running))ⁿ
+     *     → (graph_iteration)? (回退时)
+     *     → final
+     *
+     * <p>GraphStreamRunner 已负责 session_init + graph_topology，
+     * 本方法只需合并反问旁路流。
      *
      * <p>反问机制：与 /api/chat/stream 端点相同，注册 emitter 到 ClarificationBroker，
      * 让 AskUserTool 在 Graph 跑过程中能阻塞等用户回答。
@@ -197,19 +204,24 @@ public class AgentController {
             }
         };
 
-        // 3. 主事件流（Graph 节点事件 + final）
+        // 3. 主事件流（GraphStreamRunner 内部已发射 session_init + graph_topology + 全生命周期事件）
+        //    注意: Sinks.Many.unicast() 只允许单订阅者，所以心跳不能用 mainStream.last() 做终止信号
+        Sinks.One<Void> graphCompletionSignal = Sinks.one();
         Flux<StreamChunk> mainStream = graphStreamRunner.runStream(request.getMessage(), conversationId)
+                .doFinally(signalType -> graphCompletionSignal.tryEmitEmpty())
                 .doOnTerminate(graphCleanup)
                 .doOnCancel(() -> {
                     log.info("SSE 客户端断开, conversationId={}", conversationId);
                     graphCleanup.run();
                 });
 
-        // 3. session_init 优先发送
-        Flux<StreamChunk> sessionInitEvent = Flux.just(StreamChunk.sessionInit(conversationId));
+        // 4. 心跳流（反问阻塞期间防止反向代理 timeout，用独立的 completionSignal 终止）
+        Flux<StreamChunk> heartbeat = Flux.interval(Duration.ofSeconds(HEARTBEAT_INTERVAL_SECONDS))
+                .map(tick -> StreamChunk.heartbeat(conversationId))
+                .takeUntilOther(graphCompletionSignal.asMono());
 
-        // 4. 合并主事件 + 反问旁路（任一源发射就推给客户端）
-        return Flux.merge(sessionInitEvent, mainStream, clarificationSink.asFlux());
+        // 5. 合并主事件 + 反问旁路 + 心跳（各自是独立的 sink，互不冲突）
+        return Flux.merge(mainStream, clarificationSink.asFlux(), heartbeat);
     }
 
     /**

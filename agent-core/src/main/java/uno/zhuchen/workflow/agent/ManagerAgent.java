@@ -1,11 +1,13 @@
 package uno.zhuchen.workflow.agent;
 
 import com.alibaba.cloud.ai.graph.OverAllState;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.stereotype.Component;
+import uno.zhuchen.agent.domain.dto.StreamChunk;
 import uno.zhuchen.agent.llm.ChatModel;
 import uno.zhuchen.agent.tool.AskUserTool;
 import uno.zhuchen.agent.tool.AskUserToolCallback;
@@ -163,13 +165,17 @@ public class ManagerAgent extends BaseAgent {
                 constraints.getDestination(), constraints.getDays(),
                 constraints.getBudget(), constraints.getCompanions());
 
-        // 2. 兜底: LLM 仍未提取完整时补默认值
+        // 2. 发射 constraints 数据事件
+        Map<String, Object> constraintData = objectMapper.convertValue(constraints, new TypeReference<Map<String, Object>>() {});
+        emitEvent(StreamChunk.nodeData("manager", "constraints", constraintData, conversationId));
+
+        // 3. 兜底: LLM 仍未提取完整时补默认值
         if (!constraints.isComplete()) {
             log.warn("[ManagerAgent] LLM 最终输出仍不完整: {}, 应用默认值", constraints.missingRequiredFields());
             applyDefaults(constraints);
         }
 
-        // 3. 生成复述确认问题 + 等待用户确认
+        // 4. 生成复述确认问题 + 等待用户确认
         String confirmJson = callLLM(SYSTEM_PROMPT_CONFIRM,
                 "约束:\n" + extractJson);
         QuestionPayload confirm = parseConfirmQuestion(confirmJson);
@@ -237,6 +243,16 @@ public class ManagerAgent extends BaseAgent {
         Decision decision = parseDecision(decideJson);
         log.info("[ManagerAgent] LLM 决策: {} (target={}, reason={})",
                 decision.decision(), decision.targetWorker(), decision.reason());
+
+        // 发射决策数据事件
+        Map<String, Object> decisionData = new HashMap<>();
+        decisionData.put("decision", decision.decision());
+        decisionData.put("targetWorker", decision.targetWorker());
+        decisionData.put("retryHint", decision.retryHint());
+        decisionData.put("reason", decision.reason());
+        String convId = state.value(TripPlanningStateKeys.INPUT_CONVERSATION_ID)
+                .map(Object::toString).orElse("unknown");
+        emitEvent(StreamChunk.nodeData("manager", "decision", decisionData, convId));
 
         String nextNode = switch (decision.decision()) {
             case "retry" -> decision.targetWorker() != null ? decision.targetWorker() : "itinerary";

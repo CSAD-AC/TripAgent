@@ -9,6 +9,7 @@ import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.ToolResponseMessage;
 import org.springframework.ai.chat.messages.UserMessage;
+import uno.zhuchen.agent.domain.dto.StreamChunk;
 import uno.zhuchen.agent.llm.ChatModel;
 import uno.zhuchen.agent.tool.AskUserTool;
 import uno.zhuchen.agent.tool.ToolRegistry;
@@ -23,6 +24,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.function.Consumer;
 
 /**
  * Agent 抽象基类
@@ -52,6 +54,38 @@ public abstract class BaseAgent implements NodeAction {
 
     /** Agent 名称（用于日志和 Graph 节点 ID） */
     protected final String agentName;
+
+    // ============ Graph 流事件发射器 ============
+
+    /**
+     * 线程局部的事件发射器 — GraphStreamRunner 在单个 boundedElastic 线程上串行执行，
+     * 该线程调用每个 Agent 的 apply()，在此线程上 set 的 emitter 在同一线程的 Agent 内可被读取。
+     */
+    private static final ThreadLocal<Consumer<StreamChunk>> eventEmitterHolder = new ThreadLocal<>();
+
+    /**
+     * 设置当前线程的事件发射器（由 GraphStreamRunner 在执行 Graph 前调用）
+     */
+    public static void setEventEmitterForThread(Consumer<StreamChunk> emitter) {
+        eventEmitterHolder.set(emitter);
+    }
+
+    /**
+     * 清除当前线程的事件发射器（由 GraphStreamRunner 在 Graph 执行完毕后调用）
+     */
+    public static void clearEventEmitterForThread() {
+        eventEmitterHolder.remove();
+    }
+
+    /**
+     * 发射 Graph 流事件 — 子类可通过此方法发送 node_data / node_progress 等事件
+     */
+    protected void emitEvent(StreamChunk event) {
+        Consumer<StreamChunk> emitter = eventEmitterHolder.get();
+        if (emitter != null) {
+            emitter.accept(event);
+        }
+    }
 
     protected BaseAgent(String agentName, ChatModel chatModel, ToolRegistry toolRegistry) {
         this.agentName = agentName;
@@ -130,6 +164,10 @@ public abstract class BaseAgent implements NodeAction {
         messages.add(new SystemMessage(systemPrompt));
         messages.add(new UserMessage(userPrompt));
 
+        String convId = extractConversationId(userPrompt);
+
+        emitEvent(StreamChunk.nodeProgress(agentName, "thinking", "开始分析...", convId));
+
         for (int round = 0; round < maxRounds; round++) {
             AssistantMessage response = chatModel.call(messages, tools);
             messages.add(response);
@@ -138,6 +176,8 @@ public abstract class BaseAgent implements NodeAction {
                 String text = response.getText();
                 log.debug("[{}] LLM 输出最终结果, text长度={}", agentName,
                         text != null ? text.length() : 0);
+                emitEvent(StreamChunk.nodeProgress(agentName, "thinking",
+                        "分析完成", convId));
                 return text != null ? text : "";
             }
 
@@ -154,15 +194,22 @@ public abstract class BaseAgent implements NodeAction {
                     continue;
                 }
 
+                // 发射工具调用事件 (Graph 流)
+                emitEvent(StreamChunk.nodeProgress(agentName, "tool_call",
+                        tc.name() + "(" + truncate(tc.arguments(), 60) + ")", convId));
+
                 try {
                     if ("askUser".equals(tc.name())) {
-                        AskUserTool.setConversationId(extractConversationId(userPrompt));
+                        AskUserTool.setConversationId(convId);
                     }
                     long t0 = System.currentTimeMillis();
                     String result = tool.call(tc.arguments());
                     long elapsed = System.currentTimeMillis() - t0;
                     log.debug("[{}] 工具 {} 返回 ({}ms): {}",
                             agentName, tc.name(), elapsed, truncate(result, 120));
+
+                    emitEvent(StreamChunk.nodeProgress(agentName, "tool_result",
+                            tc.name() + " 返回 (" + elapsed + "ms)", convId));
 
                     messages.add(ToolResponseMessage.builder()
                             .responses(List.of(new ToolResponseMessage.ToolResponse(
@@ -171,6 +218,8 @@ public abstract class BaseAgent implements NodeAction {
                 } catch (Exception e) {
                     log.warn("[{}] 工具 {} 异常 ({}): {}", agentName, tc.name(),
                             e.getClass().getSimpleName(), e.getMessage());
+                    emitEvent(StreamChunk.nodeProgress(agentName, "tool_result",
+                            tc.name() + " 异常: " + e.getMessage(), convId));
                     messages.add(ToolResponseMessage.builder()
                             .responses(List.of(new ToolResponseMessage.ToolResponse(
                                     tc.id(), tc.name(), "失败: " + e.getMessage())))
@@ -179,8 +228,13 @@ public abstract class BaseAgent implements NodeAction {
                     AskUserTool.clearConversationId();
                 }
             }
+
+            emitEvent(StreamChunk.nodeProgress(agentName, "thinking",
+                    "分析工具返回结果...", convId));
         }
         log.warn("[{}] 达到最大工具调用轮次 {}, 返回空", agentName, maxRounds);
+        emitEvent(StreamChunk.nodeProgress(agentName, "thinking",
+                "达到最大轮次，强制结束", convId));
         return "";
     }
 

@@ -5,17 +5,15 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.util.Map;
+
 /**
  * 流式响应块 — SSE 模式下逐块推送给前端
  *
- * 事件类型：
- *
- * - thinking — LLM 返回的一个文本片段，前端追加到对话气泡
- * - tool_call — LLM 发起了工具调用请求
- * - tool_result — 工具执行完成，返回结果摘要
- * - timestamp — 时间戳
- * - final — 整个 ReAct 循环完成，携带完整结果和元数据
- * - error — 执行过程中发生异常，前端展示错误状态
+ * 事件类型按场景分组:
+ * - ReAct 模式: thinking_token / tool_call / tool_result / tool_error / iteration_separator / final
+ * - Graph 模式: graph_topology → node_status → (node_progress → node_data)ⁿ → final
+ * - 通用: session_init / clarification_request / heartbeat / error
  */
 @Data
 @NoArgsConstructor
@@ -58,6 +56,23 @@ public class StreamChunk {
     /** 条件边选择（用于前端可视化 Graph 流向） */
     public static final String TYPE_BRANCH_TAKEN = "branch_taken";
 
+    // ============ Graph 流可视化新增事件（Phase 3 Day 7）============
+
+    /** Graph 拓扑定义 — 流的第 2 个事件（紧跟 session_init），描述 DAG 结构 */
+    public static final String TYPE_GRAPH_TOPOLOGY = "graph_topology";
+
+    /** 节点状态变化 — lifecycle: queued / running / completing / done / error / skipped */
+    public static final String TYPE_NODE_STATUS = "node_status";
+
+    /** 节点内部进展 — 如 LLM 思考片段 / 工具调用中间结果 */
+    public static final String TYPE_NODE_PROGRESS = "node_progress";
+
+    /** 节点输出数据 — 携带结构化 payload（route/budget/constraints 等） */
+    public static final String TYPE_NODE_DATA = "node_data";
+
+    /** 迭代跟踪 — Manager 回退决策时发射，前端显示 "第 X 轮重试" */
+    public static final String TYPE_GRAPH_ITERATION = "graph_iteration";
+
     /** 事件类型：thinking / tool_call / tool_result / final / error */
     private String type;
 
@@ -87,6 +102,38 @@ public class StreamChunk {
 
     /** 是否允许自定义输入（clarification_request 事件有效） */
     private Boolean allowCustom;
+
+    // ============ Graph 流可视化新增字段 ============
+
+    /** 节点名称（node_status / node_progress / node_data 事件有效） */
+    private String node;
+
+    /** 节点状态（node_status 事件有效: queued / running / completing / done / error / skipped） */
+    private String nodeStatus;
+
+    /** 数据类型（node_data 事件有效: constraints / route / dayplans / budget / validation / report / decision） */
+    private String dataType;
+
+    /** 复杂数据负载（node_data / graph_topology 事件有效，JSON 对象） */
+    private Map<String, Object> data;
+
+    /** 进度子类型（node_progress 事件有效: thinking / tool_call / tool_result） */
+    private String progressType;
+
+    /** 当前迭代次数（graph_iteration 事件有效） */
+    private int iterationCount;
+
+    /** 最大迭代次数（graph_iteration 事件有效） */
+    private int maxIterations;
+
+    /** 条件边标签（branch_taken 增强字段，如 "passed" / "failed" / "confirmed"） */
+    private String condition;
+
+    /** 起始节点（branch_taken 事件 from 字段） */
+    private String from;
+
+    /** 目标节点（branch_taken 事件 to 字段） */
+    private String to;
 
     public static StreamChunk thinking(String content, String conversationId) {
         return StreamChunk.builder()
@@ -238,6 +285,10 @@ public class StreamChunk {
 
     // ============ Graph 事件工厂方法（Phase 3 Day 6）============
 
+    /**
+     * @deprecated 由 {@link #nodeStatus(String, String, String)} 替代
+     */
+    @Deprecated
     public static StreamChunk nodeStart(String nodeName, String conversationId) {
         return StreamChunk.builder()
                 .type(TYPE_NODE_START)
@@ -266,12 +317,108 @@ public class StreamChunk {
                 .build();
     }
 
-    public static StreamChunk branchTaken(String fromNode, String toNode, String conversationId) {
+    public static StreamChunk branchTaken(String fromNode, String toNode, String condition, String conversationId) {
         return StreamChunk.builder()
                 .type(TYPE_BRANCH_TAKEN)
                 .toolName(fromNode)
                 .toolArguments(toNode)
+                .from(fromNode)
+                .to(toNode)
+                .condition(condition)
                 .content("路由: " + fromNode + " -> " + toNode)
+                .conversationId(conversationId)
+                .build();
+    }
+
+    // ============ Graph 流可视化新增工厂方法（Phase 3 Day 7）============
+
+    /**
+     * Graph 拓扑定义事件 — 流的第 2 个事件，描述 DAG 结构供前端绘制流程图
+     *
+     * @param nodes  节点定义列表 [{id, label, type, description}, ...]
+     * @param edges  边定义列表 [{from, to, label, conditions}, ...]
+     * @param startNode 起始节点 ID
+     * @param endNode   终止节点 ID
+     */
+    public static StreamChunk graphTopology(java.util.List<Map<String, Object>> nodes,
+                                             java.util.List<Map<String, Object>> edges,
+                                             String startNode, String endNode,
+                                             String conversationId) {
+        Map<String, Object> data = new java.util.LinkedHashMap<>();
+        data.put("nodes", nodes);
+        data.put("edges", edges);
+        data.put("startNode", startNode);
+        data.put("endNode", endNode);
+        return StreamChunk.builder()
+                .type(TYPE_GRAPH_TOPOLOGY)
+                .content("topology")
+                .data(data)
+                .conversationId(conversationId)
+                .build();
+    }
+
+    /**
+     * 节点状态变化事件
+     *
+     * @param node     节点 ID
+     * @param status   状态: queued / running / completing / done / error / skipped
+     */
+    public static StreamChunk nodeStatus(String node, String status, String conversationId) {
+        return StreamChunk.builder()
+                .type(TYPE_NODE_STATUS)
+                .node(node)
+                .nodeStatus(status)
+                .conversationId(conversationId)
+                .build();
+    }
+
+    /**
+     * 节点内部进展事件（LLM 思考片段 / 工具调用中间结果）
+     *
+     * @param node         节点 ID
+     * @param progressType 进展类型: thinking / tool_call / tool_result
+     * @param content      进展内容
+     */
+    public static StreamChunk nodeProgress(String node, String progressType, String content, String conversationId) {
+        return StreamChunk.builder()
+                .type(TYPE_NODE_PROGRESS)
+                .node(node)
+                .progressType(progressType)
+                .content(content)
+                .conversationId(conversationId)
+                .build();
+    }
+
+    /**
+     * 节点输出数据事件
+     *
+     * @param node     节点 ID
+     * @param dataType 数据类型: constraints / route / dayplans / budget / validation / report / decision
+     * @param data     结构化数据
+     */
+    public static StreamChunk nodeData(String node, String dataType, Map<String, Object> data, String conversationId) {
+        return StreamChunk.builder()
+                .type(TYPE_NODE_DATA)
+                .node(node)
+                .dataType(dataType)
+                .data(data)
+                .conversationId(conversationId)
+                .build();
+    }
+
+    /**
+     * 迭代跟踪事件 — Manager 回退时发射
+     *
+     * @param count 当前迭代次数（从 1 开始）
+     * @param max   最大迭代次数
+     * @param reason 回退原因
+     */
+    public static StreamChunk graphIteration(int count, int max, String reason, String conversationId) {
+        return StreamChunk.builder()
+                .type(TYPE_GRAPH_ITERATION)
+                .iterationCount(count)
+                .maxIterations(max)
+                .content(reason)
                 .conversationId(conversationId)
                 .build();
     }
