@@ -18,7 +18,9 @@ import uno.zhuchen.agent.tool.AskUserTool;
 import uno.zhuchen.agent.tool.ToolRegistry;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * ReAct 循环核心引擎
@@ -235,7 +237,9 @@ public class ReactAgent {
 
         int iterNum = iteration + 1;
         StringBuilder thoughtBuffer = new StringBuilder();
-        List<AssistantMessage.ToolCall> toolCalls = new ArrayList<>();
+        // 使用 Map<id, ToolCall> 去重：流式 chunk 中同一工具调用可能出现在多个 chunk 中
+        // 相同 id 只保留最后一个（包含最完整的 arguments）
+        Map<String, AssistantMessage.ToolCall> toolCallMap = new LinkedHashMap<>();
 
         // ========== 阶段 1：LLM 流式输出 ==========
         Flux<StreamChunk> thinkingFlux = chatModel.stream(state.getFullMessages(), tools)
@@ -245,8 +249,12 @@ public class ReactAgent {
                     if (msg.getText() != null && !msg.getText().isEmpty()) {
                         thoughtBuffer.append(msg.getText());
                     }
-                    if (msg.hasToolCalls() && msg.getToolCalls() != null) {
-                        toolCalls.addAll(msg.getToolCalls());
+                    if (msg.hasToolCalls()) {
+                        log.debug("LLM即将调用工具列表为{}",  msg.getToolCalls());
+                        // 按 toolCall.id 去重：同一 id 只保留最新 chunk（完整 arguments）
+                        for (AssistantMessage.ToolCall tc : msg.getToolCalls()) {
+                            toolCallMap.put(tc.id(), tc);
+                        }
                     }
                 })
                 .flatMap(chatResponse -> {
@@ -265,7 +273,7 @@ public class ReactAgent {
         Flux<StreamChunk> continuationFlux = Mono.fromCallable(() -> {
             // 累计完成，组装 AssistantMessage
             // 创建 toolCalls 快照，避免 doOnNext（reactor 线程）与遍历（boundedElastic 线程）的并发修改
-            List<AssistantMessage.ToolCall> toolCallsSnapshot = List.copyOf(toolCalls);
+            List<AssistantMessage.ToolCall> toolCallsSnapshot = List.copyOf(toolCallMap.values());
 
             AssistantMessage response = AssistantMessage.builder()
                     .content(thoughtBuffer.toString())
