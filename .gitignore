@@ -18,6 +18,8 @@ xiaohongshu-mcp-windows-amd64/cookies.json
 
 ### dev
 dev-docs/
+CLAUDE.md
+reasonix.toml
 
 ### IntelliJ IDEA ###
 .idea/
