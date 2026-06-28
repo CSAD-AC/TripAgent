@@ -18,9 +18,11 @@ import uno.zhuchen.agent.domain.dto.ChatDTO;
 import uno.zhuchen.agent.domain.dto.ChatRequest;
 import uno.zhuchen.agent.domain.dto.StreamChunk;
 import uno.zhuchen.agent.domain.vo.ChatVO;
+import uno.zhuchen.workflow.builder.GraphStreamRunner;
 
 import java.time.Duration;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Agent 聊天控制器
@@ -48,10 +50,13 @@ public class AgentController {
 
     private final ReactAgent reactAgent;
     private final ClarificationBroker clarificationBroker;
+    private final GraphStreamRunner graphStreamRunner;
 
-    public AgentController(ReactAgent reactAgent, ClarificationBroker clarificationBroker) {
+    public AgentController(ReactAgent reactAgent, ClarificationBroker clarificationBroker,
+                           GraphStreamRunner graphStreamRunner) {
         this.reactAgent = reactAgent;
         this.clarificationBroker = clarificationBroker;
+        this.graphStreamRunner = graphStreamRunner;
     }
 
     /**
@@ -117,22 +122,28 @@ public class AgentController {
         Sinks.Many<StreamChunk> clarificationSink = Sinks.many().unicast().onBackpressureBuffer();
         clarificationBroker.registerEmitter(conversationId, clarificationSink::tryEmitNext);
 
-        // 2. 主事件流(thinking_token / tool_call / tool_result / final)
+        // 2. cleanup guard: doOnTerminate 会在正常结束和 cancel 后都触发,
+        //    doOnCancel + doOnTerminate 会导致重复清理日志,使用 AtomicBoolean 确保只执行一次
+        AtomicBoolean cleaned = new AtomicBoolean(false);
+        Runnable doCleanup = () -> {
+            if (cleaned.compareAndSet(false, true)) {
+                clarificationBroker.unregisterEmitter(conversationId);
+                clarificationSink.tryEmitComplete();
+            }
+        };
+
+        // 3. 主事件流(thinking_token / tool_call / tool_result / final)
         Flux<StreamChunk> mainStream = reactAgent.stream(request.getMessage(), conversationId)
-                .doOnTerminate(() -> {
-                    clarificationBroker.unregisterEmitter(conversationId);
-                    clarificationSink.tryEmitComplete();
-                })
+                .doOnTerminate(doCleanup)
                 .doOnCancel(() -> {
                     log.info("SSE 客户端断开, conversationId={}", conversationId);
-                    clarificationBroker.unregisterEmitter(conversationId);
-                    clarificationSink.tryEmitComplete();
+                    doCleanup.run();
                 });
 
-        // 3. 第一个事件:session_init
+        // 4. 第一个事件:session_init
         Flux<StreamChunk> sessionInitEvent = Flux.just(StreamChunk.sessionInit(conversationId));
 
-        // 4. 心跳流(主事件流未结束时持续推送,主事件流结束则停止)
+        // 5. 心跳流(主事件流未结束时持续推送,主事件流结束则停止)
         Flux<StreamChunk> heartbeat = Flux.interval(Duration.ofSeconds(HEARTBEAT_INTERVAL_SECONDS))
                 .map(tick -> StreamChunk.heartbeat(conversationId))
                 .takeUntilOther(mainStream.last().flux());
@@ -153,6 +164,52 @@ public class AgentController {
                 request.conversationId(), request.questionId(), request.answer());
         clarificationBroker.submit(request.conversationId(), request.questionId(), request.answer());
         return Mono.just(Result.success(null));
+    }
+
+    /**
+     * Phase 3 Graph 工作流入口
+     *
+     * 直接走 Supervisor-Worker-Validator 三件套,不走 ReAct。
+     * 适用于旅游规划类请求（含个性化软约束）。
+     *
+     * 事件序列：
+     *   session_init → node_start → node_end → branch_taken → ... → final
+     *
+     * <p>反问机制：与 /api/chat/stream 端点相同，注册 emitter 到 ClarificationBroker，
+     * 让 AskUserTool 在 Graph 跑过程中能阻塞等用户回答。
+     */
+    @PostMapping(value = "/chat/graph", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public Flux<StreamChunk> graphStream(@Valid @RequestBody ChatRequest request) {
+        String conversationId = resolveConversationId(request.getConversationId());
+        log.info("收到 Graph 流式请求, conversationId={}, message长度={}",
+                conversationId, request.getMessage() != null ? request.getMessage().length() : 0);
+
+        // 1. 反问事件旁路 sink（与 /chat/stream 完全相同的模式）
+        Sinks.Many<StreamChunk> clarificationSink = Sinks.many().unicast().onBackpressureBuffer();
+        clarificationBroker.registerEmitter(conversationId, clarificationSink::tryEmitNext);
+
+        // 2. cleanup guard（与 /chat/stream 同样模式）
+        AtomicBoolean graphCleaned = new AtomicBoolean(false);
+        Runnable graphCleanup = () -> {
+            if (graphCleaned.compareAndSet(false, true)) {
+                clarificationBroker.unregisterEmitter(conversationId);
+                clarificationSink.tryEmitComplete();
+            }
+        };
+
+        // 3. 主事件流（Graph 节点事件 + final）
+        Flux<StreamChunk> mainStream = graphStreamRunner.runStream(request.getMessage(), conversationId)
+                .doOnTerminate(graphCleanup)
+                .doOnCancel(() -> {
+                    log.info("SSE 客户端断开, conversationId={}", conversationId);
+                    graphCleanup.run();
+                });
+
+        // 3. session_init 优先发送
+        Flux<StreamChunk> sessionInitEvent = Flux.just(StreamChunk.sessionInit(conversationId));
+
+        // 4. 合并主事件 + 反问旁路（任一源发射就推给客户端）
+        return Flux.merge(sessionInitEvent, mainStream, clarificationSink.asFlux());
     }
 
     /**
