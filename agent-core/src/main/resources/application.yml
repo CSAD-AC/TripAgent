@@ -37,6 +37,7 @@ logging:
     uno.zhuchen.agent: DEBUG
     uno.zhuchen.workflow: DEBUG
     org.springframework.ai: INFO
+    reactor.netty.http.client: DEBUG   # 打印 HTTP 请求/响应 body，调试 DeepSeek 400 时开启
 ---
 spring:
   config:
@@ -68,6 +69,7 @@ spring:
       on-profile: deepseek
   autoconfigure:
     exclude:
+      # spring-ai-alibaba-starter-dashscope 在 classpath 上，deepseek profile 下不需 DashScope
       - com.alibaba.cloud.ai.autoconfigure.dashscope.DashScopeChatAutoConfiguration
       - com.alibaba.cloud.ai.autoconfigure.dashscope.DashScopeAgentAutoConfiguration
       - com.alibaba.cloud.ai.autoconfigure.dashscope.DashScopeImageAutoConfiguration
@@ -77,8 +79,9 @@ spring:
       - com.alibaba.cloud.ai.autoconfigure.dashscope.DashScopeRerankAutoConfiguration
       - com.alibaba.cloud.ai.autoconfigure.dashscope.DashScopeEmbeddingAutoConfiguration
       - com.alibaba.cloud.ai.autoconfigure.dashscope.DashScopeAsyncToolCallingManagerAutoConfiguration
+  # 使用 OpenAI 客户端指向 DeepSeek API（消息转换格式更准确）
   ai:
-    deepseek:
+    openai:
       api-key: ${DEEPSEEK_API_KEY}
       base-url: https://api.deepseek.com
       chat:

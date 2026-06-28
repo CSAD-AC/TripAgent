@@ -21,6 +21,8 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * ReAct 循环核心引擎
@@ -44,6 +46,9 @@ public class ReactAgent {
     private final ChatMemory chatMemory;
     private final AgentConfig config;
     private final ToolRegistry toolRegistry;
+
+    /** 每会话并发控制，拒绝同一 conversationId 的并行请求 */
+    private final ConcurrentHashMap<String, AtomicBoolean> conversationLocks = new ConcurrentHashMap<>();
 
     public ReactAgent(ChatModel chatModel, ChatMemory chatMemory, AgentConfig config, ToolRegistry toolRegistry) {
         this.chatModel = chatModel;
@@ -145,9 +150,12 @@ public class ReactAgent {
                     }
 
                     // 将工具响应注入消息历史 → 回到 Reason 步骤开始下一轮迭代
-                    state.getMessages().add(ToolResponseMessage.builder()
-                            .responses(toolResponses)
-                            .build());
+                    // 每个 ToolResponse 单独作为一条消息（避免 DeepSeek 多响应合并问题）
+                    for (ToolResponseMessage.ToolResponse tr : toolResponses) {
+                        state.getMessages().add(ToolResponseMessage.builder()
+                                .responses(List.of(tr))
+                                .build());
+                    }
                     continue;
                 }
 
@@ -208,6 +216,17 @@ public class ReactAgent {
      */
     public Flux<StreamChunk> stream(String userInput, String conversationId) {
         long start = System.currentTimeMillis();
+
+        // 防止同一 conversationId 被并发请求处理（导致消息历史交叉污染）
+        AtomicBoolean inProgress =
+                conversationLocks.computeIfAbsent(conversationId,
+                        k -> new AtomicBoolean(false));
+        if (!inProgress.compareAndSet(false, true)) {
+            log.warn("会话[{}] 已在处理中，拒绝并发请求", conversationId);
+            return Flux.just(StreamChunk.error(conversationId,
+                    "当前会话正在处理中，请等待完成后再发新消息", System.currentTimeMillis() - start));
+        }
+
         AgentState state = new AgentState(conversationId, config.getSystemPrompt(), userInput);
 
         // 加载历史记忆（非阻塞操作）
@@ -218,7 +237,11 @@ public class ReactAgent {
 
         ToolCallback[] allTools = toolRegistry.getAll();
 
-        return nextIteration(state, allTools, 0, start);
+        return nextIteration(state, allTools, 0, start)
+                .doFinally(signalType -> {
+                    inProgress.set(false);
+                    conversationLocks.remove(conversationId);
+                });
     }
 
     /**
@@ -275,20 +298,19 @@ public class ReactAgent {
             // 创建 toolCalls 快照，避免 doOnNext（reactor 线程）与遍历（boundedElastic 线程）的并发修改
             List<AssistantMessage.ToolCall> toolCallsSnapshot = List.copyOf(toolCallMap.values());
 
-            AssistantMessage response = AssistantMessage.builder()
-                    .content(thoughtBuffer.toString())
-                    .toolCalls(toolCallsSnapshot.isEmpty() ? List.of() : toolCallsSnapshot)
-                    .build();
-            state.addReasoningResult(response);
-
             if (toolCallsSnapshot.isEmpty()) {
                 // 无工具调用 → 最终答案
+                AssistantMessage finalResponse = AssistantMessage.builder()
+                        .content(thoughtBuffer.toString())
+                        .build();
+                state.addReasoningResult(finalResponse);
                 chatMemory.save(state.getConversationId(), state.getMessages());
                 return Flux.just(StreamChunk.final_(
                         state.getConversationId(), thoughtBuffer.toString(),
                         System.currentTimeMillis() - start));
             }
 
+            // 先执行工具（不修改 state），再按顺序添加 Assistant + Tool 消息
             // 执行工具（去重：相同 name + 相同 arguments 只执行第一次）
             List<ToolResponseMessage.ToolResponse> toolResponses = new ArrayList<>();
             List<StreamChunk> toolEvents = new ArrayList<>();
@@ -344,10 +366,21 @@ public class ReactAgent {
                 }
             }
 
-            // 将工具响应注入消息历史，继续下一轮
-            state.getMessages().add(ToolResponseMessage.builder()
-                    .responses(toolResponses)
-                    .build());
+            // 先添加 ASSISTANT 消息（含 tool_calls），再添加 tool 响应
+            // 确保消息序列为：ASSISTANT(tool_calls) → TOOL → TOOL → ...
+            AssistantMessage response = AssistantMessage.builder()
+                    .content(thoughtBuffer.toString())
+                    .toolCalls(toolCallsSnapshot)
+                    .build();
+            state.addReasoningResult(response);
+
+            // 然后将工具响应注入消息历史
+            // 每个 ToolResponse 单独作为一条消息
+            for (ToolResponseMessage.ToolResponse tr : toolResponses) {
+                state.getMessages().add(ToolResponseMessage.builder()
+                        .responses(List.of(tr))
+                        .build());
+            }
 
             toolEvents.add(StreamChunk.iterationSeparator(state.getConversationId(),
                     "第" + iterNum + "轮完成"));
@@ -358,7 +391,13 @@ public class ReactAgent {
         }).subscribeOn(Schedulers.boundedElastic())
           .flatMapMany(flux -> flux);
 
-        return thinkingFlux.concatWith(continuationFlux);
+        return thinkingFlux.concatWith(continuationFlux)
+                .onErrorResume(e -> {
+                    log.error("Agent[{}] ReAct 流式处理异常", state.getConversationId(), e);
+                    chatMemory.save(state.getConversationId(), state.getMessages());
+                    return Flux.just(StreamChunk.error(state.getConversationId(),
+                            "处理异常: " + e.getMessage(), System.currentTimeMillis() - start));
+                });
     }
 
     private static String truncate(String text, int maxLen) {
