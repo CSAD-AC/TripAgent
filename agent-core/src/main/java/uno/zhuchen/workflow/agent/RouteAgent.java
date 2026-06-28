@@ -38,19 +38,20 @@ public class RouteAgent extends BaseAgent {
             - webSearch(query): 搜索互联网获取交通信息、班次、票价等
             - pageFetch(url): 获取网页内容
 
-            === 效率要求 ===
-            尽量减少 LLM 来回交互次数。需要多个信息时，一次调用多个工具并行获取。
-
-            === 工作方式（共 15 轮工具调用机会）===
+            === 工作流程 ===
             1. 你自主决定使用什么工具来规划路线
             2. 一次尽可能多调工具并行获取信息
             3. 根据查询结果，整理出清晰的路线方案并输出最终 JSON
-            每轮你会看到 "(第 X/15 轮)"，注意剩余轮次，不要浪费。
 
-            === 输出要求 ===
-            以严格 JSON 格式输出（不要其他文字），字段含义：
+            效率要求：尽量减少 LLM 来回交互次数，需要多个信息时一次并行获取。
+
+            === 输出要求（重要）===
+            直接输出纯 JSON，不要 markdown 代码块，不要 ```json 标记，不要任何解释文字。
+            只输出 JSON，不要包含其他任何内容。
+
+            JSON 字段含义：
             segments: 路线段列表
-              mode: 交通方式 ("train"/"flight"/"self-drive"/"bus")
+              mode: "train"/"flight"/"self-drive"/"bus"
               from: 出发地
               to: 目的地
               cost: 费用（整数元）
@@ -60,15 +61,8 @@ public class RouteAgent extends BaseAgent {
             totalDurationMin: 总时长（分钟）
             summary: 路线摘要
 
-            示例：
-            {
-              "segments": [
-                {"mode":"self-drive","from":"北京天安门","to":"首都机场","cost":50,"durationMin":60,"description":"驾车约30公里"}
-              ],
-              "totalCost": 50,
-              "totalDurationMin": 60,
-              "summary": "自驾路线，约30公里，预计60分钟"
-            }
+            示例输出（纯 JSON，无其他文字）：
+            {"segments":[{"mode":"self-drive","from":"北京天安门","to":"首都机场","cost":50,"durationMin":60,"description":"驾车约30公里"}],"totalCost":50,"totalDurationMin":60,"summary":"自驾路线，约30公里，预计60分钟"}
             """;
 
     private final ObjectMapper objectMapper;

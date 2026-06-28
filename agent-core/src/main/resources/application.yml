@@ -37,7 +37,7 @@ logging:
     uno.zhuchen.agent: DEBUG
     uno.zhuchen.workflow: DEBUG
     org.springframework.ai: INFO
-    reactor.netty.http.client: DEBUG   # 打印 HTTP 请求/响应 body，调试 DeepSeek 400 时开启
+    #reactor.netty.http.client: DEBUG   # 打印 HTTP 请求/响应 body，调试 DeepSeek 400 时开启
 ---
 spring:
   config:
@@ -84,6 +84,8 @@ spring:
     openai:
       api-key: ${DEEPSEEK_API_KEY}
       base-url: https://api.deepseek.com
+      connection-timeout: 30s
+      read-timeout: 120s
       chat:
         options:
           model: deepseek-chat

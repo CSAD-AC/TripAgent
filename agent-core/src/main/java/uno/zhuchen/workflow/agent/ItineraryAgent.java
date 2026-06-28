@@ -37,38 +37,35 @@ public class ItineraryAgent extends BaseAgent {
             - amapPoiAround(longitude, latitude, radius, keywords): 周边搜索
             - webSearch(query): 搜索互联网获取景点信息、门票价格、营业时间等
             - pageFetch(url): 获取网页内容，查看详细的旅游攻略
-            - calculator(op, x, y, values, part, total): 精确计算器，做费用/时间计算
+            - calculator(op, x, y, values, part, total): 精确计算器
 
-            === 效率要求 ===
-            尽量减少 LLM 来回交互次数。需要多个信息时，一次调用多个工具并行获取。
-
-            === 工作方式（共 15 轮工具调用机会）===
-            1. 先搜索目的地有什么景点、餐厅，一次搜索多个关键词
+            === 工作流程 ===
+            1. 先搜索目的地有什么景点、餐厅（一次搜索多个关键词）
             2. 查询当地天气
             3. 根据天数、预算、偏好编排每日行程
             4. 输出最终 JSON
-            每轮你会看到 "(第 X/15 轮)"，注意剩余轮次，不要浪费。
 
-            === 输出要求 ===
-            以严格 JSON 格式输出（不要其他文字），字段含义：
-            days: 天数数组
-              dayIndex: 第几天（从1开始）
-              pois: 当日活动列表
-                name: 名称
-                type: 类型 ("attraction"/"restaurant"/"hotel"/"transport"/"activity")
-                durationMin: 预计停留分钟数
-                cost: 费用（整数元）
-                note: 备注
-              weather: 天气摘要
-              dining: 餐饮建议
-              accommodation: 住宿建议
+            效率要求：尽量减少 LLM 来回交互次数，需要多个信息时一次并行获取。
 
-            示例：
-            {
-              "days": [
-                {"dayIndex":1,"pois":[{"name":"故宫","type":"attraction","durationMin":180,"cost":60,"note":"需提前预约"}],"weather":"晴","dining":"全聚德烤鸭","accommodation":"如家酒店"}
-              ]
-            }
+            === 输出要求（重要）===
+            直接输出纯 JSON，不要 markdown 代码块，不要 \`\`\`json 标记，不要任何解释文字。
+            只输出 JSON，不要包含其他任何内容。
+
+            JSON 字段含义：
+              days: 天数数组
+                dayIndex: 第几天（从1开始）
+                pois: 当日活动列表
+                  name: 名称
+                  type: "attraction"/"restaurant"/"hotel"/"transport"/"activity"
+                  durationMin: 预计停留分钟数
+                  cost: 费用（整数元）
+                  note: 备注
+                weather: 天气摘要
+                dining: 餐饮建议
+                accommodation: 住宿建议
+
+            示例输出（纯 JSON，无其他文字）：
+            {"days":[{"dayIndex":1,"pois":[{"name":"故宫","type":"attraction","durationMin":180,"cost":60,"note":"需提前预约"}],"weather":"晴","dining":"全聚德烤鸭","accommodation":"如家酒店"}]}
             """;
 
     private final ObjectMapper objectMapper;
