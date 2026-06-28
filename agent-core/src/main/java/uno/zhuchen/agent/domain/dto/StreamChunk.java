@@ -44,6 +44,20 @@ public class StreamChunk {
     /** 心跳事件 — 反问阻塞期间定期推送,防止反向代理 timeout */
     public static final String TYPE_HEARTBEAT = "heartbeat";
 
+    // ============ Graph 工作流新增事件（Phase 3 Day 6）============
+
+    /** 节点开始执行 */
+    public static final String TYPE_NODE_START = "node_start";
+
+    /** 节点执行结束 */
+    public static final String TYPE_NODE_END = "node_end";
+
+    /** 节点执行警告（如软约束未满足,触发回退） */
+    public static final String TYPE_NODE_WARNING = "node_warning";
+
+    /** 条件边选择（用于前端可视化 Graph 流向） */
+    public static final String TYPE_BRANCH_TAKEN = "branch_taken";
+
     /** 事件类型：thinking / tool_call / tool_result / final / error */
     private String type;
 
@@ -218,6 +232,46 @@ public class StreamChunk {
         return StreamChunk.builder()
                 .type(TYPE_THINKING)
                 .content(content)
+                .conversationId(conversationId)
+                .build();
+    }
+
+    // ============ Graph 事件工厂方法（Phase 3 Day 6）============
+
+    public static StreamChunk nodeStart(String nodeName, String conversationId) {
+        return StreamChunk.builder()
+                .type(TYPE_NODE_START)
+                .toolName(nodeName)
+                .content("节点开始")
+                .conversationId(conversationId)
+                .build();
+    }
+
+    public static StreamChunk nodeEnd(String nodeName, String conversationId, long durationMs) {
+        return StreamChunk.builder()
+                .type(TYPE_NODE_END)
+                .toolName(nodeName)
+                .content("节点完成")
+                .conversationId(conversationId)
+                .durationMs(durationMs)
+                .build();
+    }
+
+    public static StreamChunk nodeWarning(String nodeName, String message, String conversationId) {
+        return StreamChunk.builder()
+                .type(TYPE_NODE_WARNING)
+                .toolName(nodeName)
+                .content(message)
+                .conversationId(conversationId)
+                .build();
+    }
+
+    public static StreamChunk branchTaken(String fromNode, String toNode, String conversationId) {
+        return StreamChunk.builder()
+                .type(TYPE_BRANCH_TAKEN)
+                .toolName(fromNode)
+                .toolArguments(toNode)
+                .content("路由: " + fromNode + " -> " + toNode)
                 .conversationId(conversationId)
                 .build();
     }

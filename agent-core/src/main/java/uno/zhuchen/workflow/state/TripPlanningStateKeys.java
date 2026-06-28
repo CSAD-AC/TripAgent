@@ -41,11 +41,20 @@ public final class TripPlanningStateKeys {
     /** 路线规划结果 {@link RouteResult} */
     public static final String WORKER_ROUTE = "route";
 
+    /** 路线规划原始 LLM 输出（兜底） */
+    public static final String WORKER_ROUTE_RAW = "route_raw";
+
     /** 行程编排结果 {@code List<DayPlan>} */
     public static final String WORKER_ITINERARY = "itinerary";
 
+    /** 行程编排原始 LLM 输出（兜底） */
+    public static final String WORKER_ITINERARY_RAW = "itinerary_raw";
+
     /** 预算精算结果 {@link BudgetPlan} */
     public static final String WORKER_BUDGET = "budget";
+
+    /** 预算精算原始 LLM 输出（兜底） */
+    public static final String WORKER_BUDGET_RAW = "budget_raw";
 
     // ============ VALIDATION 校验层输出 ============
 
