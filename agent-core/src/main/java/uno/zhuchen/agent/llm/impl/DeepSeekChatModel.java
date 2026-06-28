@@ -4,7 +4,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
-import org.springframework.ai.chat.messages.ToolResponseMessage;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.openai.OpenAiChatOptions;
@@ -13,9 +12,8 @@ import org.springframework.web.reactive.function.client.WebClientResponseExcepti
 import reactor.core.publisher.Flux;
 import uno.zhuchen.agent.llm.ChatModel;
 
-import java.util.*;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.stream.Collectors;
+import java.util.Arrays;
+import java.util.List;
 
 /**
  * LLM 调用实现 — 基于 Spring AI OpenAI 客户端指向 DeepSeek API
@@ -91,33 +89,6 @@ public class DeepSeekChatModel implements ChatModel {
     @Override
     public Flux<ChatResponse> stream(List<Message> messages, ToolCallback... tools) {
         log.debug("DeepSeek 流式调用, messages 数量: {}", messages.size());
-
-        // 打印消息结构，用于调试 tool_calls 与 tool_response 匹配问题
-        if (log.isDebugEnabled()) {
-            for (int i = 0; i < messages.size(); i++) {
-                Message msg = messages.get(i);
-                if (msg instanceof AssistantMessage am) {
-                    int tcCount = am.getToolCalls() != null ? am.getToolCalls().size() : 0;
-                    log.debug("  Msg[{}] ASSISTANT textLen={} toolCalls={}", i,
-                            msg.getText() != null ? msg.getText().length() : 0, tcCount);
-                    if (tcCount > 0) {
-                        for (var tc : am.getToolCalls()) {
-                            log.debug("    tool_call id={} name={}", tc.id(), tc.name());
-                        }
-                    }
-                } else if (msg instanceof ToolResponseMessage trm) {
-                    var responses = trm.getResponses();
-                    log.debug("  Msg[{}] TOOL count={}", i, responses.size());
-                    for (var tr : responses) {
-                        log.debug("    tool_response id={} name={} dataLen={}",
-                                tr.id(), tr.name(), tr.responseData() != null ? tr.responseData().length() : 0);
-                    }
-                } else {
-                    log.debug("  Msg[{}] {} textLen={}", i,
-                            msg.getMessageType(), msg.getText() != null ? msg.getText().length() : 0);
-                }
-            }
-        }
 
         OpenAiChatOptions chatOptions = buildChatOptions(tools);
 

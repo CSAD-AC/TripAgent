@@ -131,10 +131,6 @@ public abstract class BaseAgent implements NodeAction {
         messages.add(new UserMessage(userPrompt));
 
         for (int round = 0; round < maxRounds; round++) {
-            // 每轮追加轮次提示，让 LLM 知道还剩多少轮
-            String roundHint = "(第 " + (round + 1) + "/" + maxRounds + " 轮工具调用，请在约 " + maxRounds + " 轮内完成)";
-            // 找到最后一条 UserMessage 追加轮次提示，或新增一条
-            messages.add(new UserMessage(roundHint));
             AssistantMessage response = chatModel.call(messages, tools);
             messages.add(response);
 

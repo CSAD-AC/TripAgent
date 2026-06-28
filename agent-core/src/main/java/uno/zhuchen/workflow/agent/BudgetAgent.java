@@ -31,7 +31,7 @@ public class BudgetAgent extends BaseAgent {
 
     private static final String SYSTEM_PROMPT = """
             你是旅游预算精算助手，负责根据用户的路线和行程信息，精算出详细的预算分解。
-            你最多有 15 轮工具调用机会。直接调用 calculator 或 webSearch 获取信息后输出即可。
+            你的计算准确，回复精简，完成计算后立即输出最终结果，避免多余步骤。
 
             === 输入 ===
             你会收到约束（目的地、天数、预算上限、人数）以及已规划的路线和每日行程。
@@ -43,22 +43,20 @@ public class BudgetAgent extends BaseAgent {
             - 门票: 行程中各景点费用累加 × 人数
             - 其他: 总和的 10%
 
-            需要查询价格时，可以同时使用 webSearch 和 pageFetch 获取信息，
-            使用 calculator 工具做精确运算。尽量一次获取所有需要的信息。
+            === 执行规则（重要）===
+            1. 先调用 calculator 做核心运算（累加各项费用）。
+            2. 调用 calculator 得到结果后，**立即**输出最终 JSON。
+            3. 不要重复调用 calculator，不要再次调用其他工具。
+            4. 如果还需价格信息，可在调用 calculator 之前一并使用 webSearch。
 
             === 输出要求 ===
-            以严格 JSON 格式输出（不要其他文字），字段含义：
+            直接输出纯 JSON，不要 markdown 代码块，不要 ```json 标记，不要任何解释文字。
+            字段含义：
             breakdown: 分项费用对象（键为中文名称，值为整数元，顺序：交通→住宿→餐饮→门票→其他）
             budget: 用户预算上限（整数元）
 
-            提示：可以使用 webSearch 和 pageFetch 工具查询当地实际价格水平，
-            用 calculator 工具做精确运算避免算术错误。
-
-            示例：
-            {
-              "breakdown": {"交通":100,"住宿":900,"餐饮":600,"门票":120,"其他":172},
-              "budget": 5000
-            }
+            示例输出（纯 JSON，无其他文字）：
+            {"breakdown":{"交通":500,"住宿":900,"餐饮":600,"门票":120,"其他":212},"budget":5000}
             """;
 
     private final ObjectMapper objectMapper;

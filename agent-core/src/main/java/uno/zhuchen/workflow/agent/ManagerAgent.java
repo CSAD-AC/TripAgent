@@ -47,19 +47,16 @@ public class ManagerAgent extends BaseAgent {
             你可用的工具：
             - askUser(question, options, allowCustom): 向用户追问。当信息不足时调用此工具。问题要自然，选项要清晰。
 
-            === 效率要求 ===
-            一次问完所有必要信息，不要只问一个字段。比如缺预算和天数时，一次问清楚。
-
             === 工作方式 ===
             你自主决定何时提问、何时输出最终结果。
-            你最多有 15 轮工具调用机会（含追问和输出）。
             典型流程：
             1. 先看用户需求能提取出哪些字段
             2. 如果缺少必填字段，调用 askUser 向用户追问
             3. 根据用户回答更新约束
             4. 如果仍然缺少信息，继续追问
             5. 当所有必填字段都明确后，输出最终 JSON
-            每轮你会看到 "(第 X/15 轮)"，注意剩余轮次，不要浪费。
+
+            效率要求：一次问完所有必要信息，不要只问一个字段。比如缺预算和天数时，一次问清楚。
 
             === 提取规则 ===
             destination: 目的地城市（必填）
@@ -70,16 +67,10 @@ public class ManagerAgent extends BaseAgent {
             softRequirements: 软约束列表，用户提到的个性化需求
 
             === 输出要求 ===
-            所有必填字段都明确后，以严格 JSON 格式输出（不要其他文字）：
-            {
-              "destination": "...",
-              "days": 3,
-              "budget": 5000,
-              "companions": 2,
-              "preferences": ["..."],
-              "softRequirements": ["..."]
-            }
+            所有必填字段都明确后，直接输出纯 JSON，不要 markdown 代码块，不要 ```json 标记，不要任何解释文字。
             softRequirements 只放用户明确表达的个性化需求。
+            示例输出（纯 JSON，无其他文字）：
+            {"destination":"北京","days":3,"budget":5000,"companions":2,"preferences":["文化","美食"],"softRequirements":["中途要去游乐园"]}
             """;
 
     /** 首次模式 Prompt — 生成复述确认问题 */
@@ -90,11 +81,8 @@ public class ManagerAgent extends BaseAgent {
             问题要列举：目的地、天数、预算、人数、软约束。
             用户可选择"全部正确"或"需要修改"。
 
-            必须以严格的 JSON 格式返回（不要其他文字）：
-            {
-              "question": "你希望去 XX 玩 X 天，预算 X 元，X 人同行，XXX。对吗？",
-              "summary": "北京 3 日游，预算 5000，2 人，含中途去游乐园"
-            }
+            直接输出纯 JSON，不要 markdown 代码块，不要 ```json 标记，不要任何解释文字：
+            {"question":"你希望去 XX 玩 X 天，预算 X 元，X 人同行。对吗？","summary":"北京 3 日游，预算 5000，2 人，含中途去游乐园"}
             """;
 
     /** 回退模式 Prompt — 决策 retry/ask_user/give_up */
@@ -111,13 +99,8 @@ public class ManagerAgent extends BaseAgent {
             3. 失败原因连续 2 次无法解决 → ask_user 或 give_up
             4. 用户已在当前轮确认过 → give_up（避免无限循环）
 
-            必须以严格的 JSON 格式返回（不要其他文字）：
-            {
-              "decision": "retry" | "ask_user" | "give_up",
-              "targetWorker": "itinerary" | "route" | "budget" | null,
-              "retryHint": "加入环球影城,替换王府井",
-              "reason": "软约束'中途要去游乐园'未满足,需要重排行程"
-            }
+            直接输出纯 JSON，不要 markdown 代码块，不要 ```json 标记，不要任何解释文字：
+            {"decision":"retry","targetWorker":"itinerary","retryHint":"加入环球影城,替换王府井","reason":"软约束'中途要去游乐园'未满足"}
             """;
 
     private final AskUserTool askUserTool;

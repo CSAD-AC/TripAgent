@@ -273,7 +273,6 @@ public class ReactAgent {
                         thoughtBuffer.append(msg.getText());
                     }
                     if (msg.hasToolCalls()) {
-                        log.debug("LLM即将调用工具列表为{}",  msg.getToolCalls());
                         // 按 toolCall.id 去重：同一 id 只保留最新 chunk（完整 arguments）
                         for (AssistantMessage.ToolCall tc : msg.getToolCalls()) {
                             toolCallMap.put(tc.id(), tc);
