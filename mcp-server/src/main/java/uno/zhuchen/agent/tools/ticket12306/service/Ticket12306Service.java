@@ -116,44 +116,53 @@ public class Ticket12306Service {
     /**
      * 查询余票
      */
-    public List<TicketInfo> queryTickets(String date, String fromStation, String toStation) {
+    @SuppressWarnings("unchecked")
+    public LeftTicketQueryResult queryTickets(String date, String fromStation, String toStation) {
         String fromCode = stationService.parseStationCode(fromStation);
         String toCode = stationService.parseStationCode(toStation);
-        if (fromCode == null || toCode == null) return List.of();
+        if (fromCode == null || toCode == null) return null;
 
         Map<String, String> cookies = getCookie();
-        String url = Ticket12306Config.API_BASE + "/otn/leftTicket/query?"
+        if (cookies == null || cookies.isEmpty()) return null;
+
+        // 12306 余票查询接口已变更为 queryI
+        String url = Ticket12306Config.API_BASE + "/otn/leftTicket/queryI?"
                 + "leftTicketDTO.train_date=" + date
                 + "&leftTicketDTO.from_station=" + fromCode
                 + "&leftTicketDTO.to_station=" + toCode
                 + "&purpose_codes=ADULT";
 
         JsonNode root = requestGetJson(url, cookies);
-        if (root == null) return List.of();
+        if (root == null) return null;
 
         JsonNode data = root.get("data");
-        if (data == null) return List.of();
+        if (data == null) return null;
 
-        // 原始数据可能是字符串数组或对象数组
-        List<String> rawList = new ArrayList<>();
-        if (data.isArray()) {
-            for (JsonNode item : data) {
-                if (item.isTextual()) rawList.add(item.asText());
-                else if (item.has("secret_str")) {
-                    // 已经是对象格式
-                    TicketData td = mapper.convertValue(item, TicketData.class);
-                    rawList.add(convertTicketDataToPipeString(td));
-                }
+        LeftTicketQueryResult result = new LeftTicketQueryResult();
+
+        // 解析站名映射 (telecode -> stationName)
+        JsonNode mapNode = data.get("map");
+        Map<String, String> stationMap = new HashMap<>();
+        if (mapNode != null) {
+            Iterator<String> it = mapNode.fieldNames();
+            while (it.hasNext()) {
+                String key = it.next();
+                stationMap.put(key, mapNode.get(key).asText());
             }
-        } else if (data.has("result")) {
-            for (JsonNode r : data.get("result")) {
+        }
+        result.setStationMap(stationMap);
+
+        // 解析原始票证数据 (管道分隔字符串数组)
+        List<String> rawList = new ArrayList<>();
+        JsonNode resultNode = data.get("result");
+        if (resultNode != null && resultNode.isArray()) {
+            for (JsonNode r : resultNode) {
                 if (r.isTextual()) rawList.add(r.asText());
             }
         }
+        result.setRawData(rawList.toArray(new String[0]));
 
-        String[] raw = rawList.toArray(new String[0]);
-        List<TicketData> ticketsData = ticketParser.parseTicketsData(raw);
-        return ticketParser.parseTicketsInfo(ticketsData, stationService);
+        return result;
     }
 
     // ==================== 中转换乘查询 ====================
@@ -341,6 +350,19 @@ public class Ticket12306Service {
     }
 
     // ==================== 内部结果类 ====================
+
+    /**
+     * 余票查询原始结果: 包含管道分隔数据和站名映射
+     */
+    public static class LeftTicketQueryResult {
+        private String[] rawData;
+        private Map<String, String> stationMap;
+
+        public String[] getRawData() { return rawData; }
+        public void setRawData(String[] rawData) { this.rawData = rawData; }
+        public Map<String, String> getStationMap() { return stationMap; }
+        public void setStationMap(Map<String, String> stationMap) { this.stationMap = stationMap; }
+    }
 
     public static class InterlineQueryResult {
         private String canQuery;
