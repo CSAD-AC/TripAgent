@@ -5,21 +5,19 @@ spring:
   config:
     import: optional:classpath:.env[.properties]
 
+  profiles:
+    default: deepseek
+
   ai:
-    dashscope:
-      api-key: ${DASHSCOPE_API_KEY}
-      chat:
-        options:
-          model: deepseek-v4-flash
     mcp:
       client:
         enabled: true
         name: agent-client
         version: 1.0.0
-        type: SYNC                                    # 同步模式
+        type: SYNC
         streamable-http:
           connections:
-            local-mcp: # 本地自建的 MCP 服务器
+            local-mcp:
               url: http://localhost:8081
               endpoint: /mcp
 
@@ -28,11 +26,8 @@ agent:
     max-iterations: 20
     timeout-seconds: 30
 
-# 反问工具超时时间
 clarify:
   timeout-minutes: 10
-
-
 
 server:
   port: ${SERVER_PORT:8080}
@@ -40,7 +35,22 @@ server:
 logging:
   level:
     uno.zhuchen.agent: DEBUG
+    uno.zhuchen.workflow: DEBUG
     org.springframework.ai: INFO
+---
+spring:
+  config:
+    activate:
+      on-profile: dashscope
+  ai:
+    dashscope:
+      api-key: ${DASHSCOPE_API_KEY}
+      connection-timeout: 30000
+      read-timeout: 120000
+      chat:
+        options:
+          model: qwen3.6-flash
+          multi-model: true
 ---
 spring:
   config:
@@ -51,3 +61,28 @@ spring:
       chat:
         options:
           model: qwen-turbo
+---
+spring:
+  config:
+    activate:
+      on-profile: deepseek
+  autoconfigure:
+    exclude:
+      - com.alibaba.cloud.ai.autoconfigure.dashscope.DashScopeChatAutoConfiguration
+      - com.alibaba.cloud.ai.autoconfigure.dashscope.DashScopeAgentAutoConfiguration
+      - com.alibaba.cloud.ai.autoconfigure.dashscope.DashScopeImageAutoConfiguration
+      - com.alibaba.cloud.ai.autoconfigure.dashscope.DashScopeVideoAutoConfiguration
+      - com.alibaba.cloud.ai.autoconfigure.dashscope.DashScopeAudioSpeechAutoConfiguration
+      - com.alibaba.cloud.ai.autoconfigure.dashscope.DashScopeAudioTranscriptionAutoConfiguration
+      - com.alibaba.cloud.ai.autoconfigure.dashscope.DashScopeRerankAutoConfiguration
+      - com.alibaba.cloud.ai.autoconfigure.dashscope.DashScopeEmbeddingAutoConfiguration
+      - com.alibaba.cloud.ai.autoconfigure.dashscope.DashScopeAsyncToolCallingManagerAutoConfiguration
+  ai:
+    deepseek:
+      api-key: ${DEEPSEEK_API_KEY}
+      base-url: https://api.deepseek.com
+      chat:
+        options:
+          model: deepseek-chat
+          temperature: 0.8
+          max-tokens: 16384
