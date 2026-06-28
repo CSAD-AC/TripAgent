@@ -4,12 +4,15 @@ import com.alibaba.cloud.ai.graph.OverAllState;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.ai.tool.ToolCallback;
 import org.springframework.stereotype.Component;
 import uno.zhuchen.agent.llm.ChatModel;
 import uno.zhuchen.agent.tool.AskUserTool;
+import uno.zhuchen.agent.tool.AskUserToolCallback;
 import uno.zhuchen.workflow.state.Constraints;
 import uno.zhuchen.workflow.state.TripPlanningStateKeys;
 import uno.zhuchen.workflow.state.ValidationReport;
+import uno.zhuchen.workflow.util.JsonExtractor;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -37,23 +40,37 @@ public class ManagerAgent extends BaseAgent {
 
     private static final Logger log = LoggerFactory.getLogger(ManagerAgent.class);
 
-    /** 首次模式 Prompt — 提取约束 */
+    /** 首次模式 Prompt — LLM 自主驱动需求澄清(可调用 askUser 工具) */
     private static final String SYSTEM_PROMPT_EXTRACT = """
-            你是旅游规划助手，需要从用户需求中提取结构化约束。
+            你是旅游规划助手，负责梳理用户的需求并提取结构化约束。
 
-            用户消息示例：
-            "我想去北京玩 3 天，预算 5000，2 个人，希望包含故宫、长城等景点"
+            你可用的工具：
+            - askUser(question, options, allowCustom): 向用户追问。当信息不足时调用此工具。问题要自然，选项要清晰。
 
-            提取规则：
-            1. destination: 目的地城市（必填）
-            2. days: 天数（必填，正整数）
-            3. budget: 预算人民币元（必填，正整数）
-            4. companions: 同行人数（必填，正整数，包含用户本人）
-            5. preferences: 偏好列表（如 "自然", "文化", "美食"）
-            6. softRequirements: 软约束列表（自然语言描述的个性化需求）
-               例如 "中途要去游乐园玩一次", "想品尝当地特色小吃"
+            === 效率要求 ===
+            一次问完所有必要信息，不要只问一个字段。比如缺预算和天数时，一次问清楚。
 
-            必须以严格的 JSON 格式返回（不要其他文字，不要 markdown 围栏）：
+            === 工作方式 ===
+            你自主决定何时提问、何时输出最终结果。
+            你最多有 15 轮工具调用机会（含追问和输出）。
+            典型流程：
+            1. 先看用户需求能提取出哪些字段
+            2. 如果缺少必填字段，调用 askUser 向用户追问
+            3. 根据用户回答更新约束
+            4. 如果仍然缺少信息，继续追问
+            5. 当所有必填字段都明确后，输出最终 JSON
+            每轮你会看到 "(第 X/15 轮)"，注意剩余轮次，不要浪费。
+
+            === 提取规则 ===
+            destination: 目的地城市（必填）
+            days: 天数（必填，正整数）
+            budget: 预算（必填，正整数，单位元）
+            companions: 同行人数（必填，正整数，包含用户本人）
+            preferences: 偏好列表，如 "自然"、"文化"、"美食"
+            softRequirements: 软约束列表，用户提到的个性化需求
+
+            === 输出要求 ===
+            所有必填字段都明确后，以严格 JSON 格式输出（不要其他文字）：
             {
               "destination": "...",
               "days": 3,
@@ -62,8 +79,7 @@ public class ManagerAgent extends BaseAgent {
               "preferences": ["..."],
               "softRequirements": ["..."]
             }
-
-            如果某必填字段无法推断，填 null 并在 softRequirements 中说明。
+            softRequirements 只放用户明确表达的个性化需求。
             """;
 
     /** 首次模式 Prompt — 生成复述确认问题 */
@@ -105,12 +121,17 @@ public class ManagerAgent extends BaseAgent {
             """;
 
     private final AskUserTool askUserTool;
+    private final AskUserToolCallback askUserToolCallback;
     private final ObjectMapper objectMapper;
+    private final JsonExtractor jsonExtractor;
 
-    public ManagerAgent(ChatModel chatModel, AskUserTool askUserTool, ObjectMapper objectMapper) {
-        super("ManagerAgent", chatModel);
+    public ManagerAgent(ChatModel chatModel, AskUserTool askUserTool,
+                        AskUserToolCallback askUserToolCallback, ObjectMapper objectMapper) {
+        super("ManagerAgent", chatModel, null);
         this.askUserTool = askUserTool;
+        this.askUserToolCallback = askUserToolCallback;
         this.objectMapper = objectMapper;
+        this.jsonExtractor = new JsonExtractor(objectMapper);
     }
 
     @Override
@@ -122,38 +143,53 @@ public class ManagerAgent extends BaseAgent {
         return handleFirstTime(state);
     }
 
+    /** 给缺失字段填充合理的默认值 */
+    private void applyDefaults(Constraints c) {
+        if (c.getBudget() == null) c.setBudget(3000);
+        if (c.getCompanions() == null) c.setCompanions(1);
+        if (c.getDays() == null) c.setDays(3);
+        if (c.getDestination() == null || c.getDestination().isBlank()) c.setDestination("北京");
+    }
+
     /**
-     * 首次模式：提取约束 + 复述确认
+     * 首次模式：LLM 自主驱动澄清 + 提取约束。
+     *
+     * <p>LLM 在此过程中可自主调用 {@code askUser} 工具向用户提问，
+     * 直到信息足够后输出完整的约束 JSON。Java 只负责执行工具调用并将结果喂回 LLM。
      */
     private Map<String, Object> handleFirstTime(OverAllState state) {
         String rawRequest = state.value(TripPlanningStateKeys.INPUT_RAW_REQUEST)
                 .map(Object::toString)
                 .orElseThrow(() -> new IllegalStateException("raw_request missing"));
 
-        log.info("[ManagerAgent] 首次模式: 提取约束, rawRequest={}", rawRequest);
-
-        // 1. LLM 提取约束
-        String extractJson = callLLM(SYSTEM_PROMPT_EXTRACT, rawRequest);
-        Constraints constraints = parseConstraints(extractJson);
-        log.info("[ManagerAgent] 提取结果: destination={}, days={}, budget={}, companions={}",
-                constraints.getDestination(), constraints.getDays(),
-                constraints.getBudget(), constraints.getCompanions());
-
-        // 2. 校验必填字段（缺则触发反问）
-        if (!constraints.isComplete()) {
-            log.warn("[ManagerAgent] 必填字段缺失: {}", constraints.missingRequiredFields());
-            return askUserForMissingFields(state, constraints);
-        }
-
-        // 3. 生成复述确认问题
-        String confirmJson = callLLM(SYSTEM_PROMPT_CONFIRM,
-                "约束:\n" + extractJson);
-        QuestionPayload confirm = parseConfirmQuestion(confirmJson);
-
-        // 4. 调用 AskUserTool 阻塞等用户确认
         String conversationId = state.value(TripPlanningStateKeys.INPUT_CONVERSATION_ID)
                 .map(Object::toString)
                 .orElseThrow(() -> new IllegalStateException("conversation_id missing"));
+
+        log.info("[ManagerAgent] 首次模式: LLM 自主驱动澄清, rawRequest={}", rawRequest);
+
+        // 1. LLM 自主驱动提取+反问循环(最多 15 轮工具调用)
+        String extractJson = callLLMWithTools(
+                SYSTEM_PROMPT_EXTRACT,
+                rawRequest + "\n(conversationId=" + conversationId + ")",
+                new ToolCallback[]{askUserToolCallback},
+                15
+        );
+        Constraints constraints = parseConstraints(extractJson);
+        log.info("[ManagerAgent] LLM 自主提取结果: destination={}, days={}, budget={}, companions={}",
+                constraints.getDestination(), constraints.getDays(),
+                constraints.getBudget(), constraints.getCompanions());
+
+        // 2. 兜底: LLM 仍未提取完整时补默认值
+        if (!constraints.isComplete()) {
+            log.warn("[ManagerAgent] LLM 最终输出仍不完整: {}, 应用默认值", constraints.missingRequiredFields());
+            applyDefaults(constraints);
+        }
+
+        // 3. 生成复述确认问题 + 等待用户确认
+        String confirmJson = callLLM(SYSTEM_PROMPT_CONFIRM,
+                "约束:\n" + extractJson);
+        QuestionPayload confirm = parseConfirmQuestion(confirmJson);
 
         String userAnswer;
         try {
@@ -170,7 +206,6 @@ public class ManagerAgent extends BaseAgent {
             AskUserTool.clearConversationId();
         }
 
-        // 5. 根据用户回答决定 next_node
         boolean confirmed = userAnswer.contains("confirmed") || userAnswer.contains("正确");
         if (confirmed) {
             log.info("[ManagerAgent] 用户确认约束, 进入 worker_group");
@@ -187,37 +222,6 @@ public class ManagerAgent extends BaseAgent {
                     TripPlanningStateKeys.OUTPUT_STATUS, "constraints_rejected"
             );
         }
-    }
-
-    /**
-     * 必填字段缺失时反问
-     */
-    private Map<String, Object> askUserForMissingFields(OverAllState state, Constraints partial) {
-        List<String> missing = partial.missingRequiredFields();
-        String question = "请补充以下信息：" + String.join("、", missing);
-        String conversationId = state.value(TripPlanningStateKeys.INPUT_CONVERSATION_ID)
-                .map(Object::toString)
-                .orElseThrow(() -> new IllegalStateException("conversation_id missing"));
-
-        try {
-            AskUserTool.setConversationId(conversationId);
-            askUserTool.askUser(
-                    question,
-                    List.of(new AskUserTool.Option("我来补充", "supplement")),
-                    true
-            );
-        } catch (Exception e) {
-            log.warn("[ManagerAgent] 反问失败, 继续使用部分约束");
-        } finally {
-            AskUserTool.clearConversationId();
-        }
-
-        // Day 3 简化: 即使反问失败也允许用部分约束继续
-        return Map.of(
-                TripPlanningStateKeys.CONSTRAINTS, partial,
-                TripPlanningStateKeys.CONTROL_NEXT_NODE, "worker_group",
-                TripPlanningStateKeys.OUTPUT_STATUS, "constraints_partial"
-        );
     }
 
     /**
@@ -273,31 +277,30 @@ public class ManagerAgent extends BaseAgent {
 
     private Constraints parseConstraints(String json) {
         try {
-            // 容忍 LLM 在 JSON 前后夹带杂字
-            String clean = json.replaceAll("(?s)^.*?(\\{.*?\\}).*$", "$1");
-            var node = objectMapper.readTree(clean);
+            var root = jsonExtractor.extract(json);
+            if (root == null) return new Constraints();
 
             Constraints c = new Constraints();
-            if (node.hasNonNull("destination")) {
-                c.setDestination(node.get("destination").asText());
+            if (root.hasNonNull("destination")) {
+                c.setDestination(root.get("destination").asText());
             }
-            if (node.hasNonNull("days")) {
-                c.setDays(node.get("days").asInt());
+            if (root.hasNonNull("days")) {
+                c.setDays(root.get("days").asInt());
             }
-            if (node.hasNonNull("budget")) {
-                c.setBudget(node.get("budget").asInt());
+            if (root.hasNonNull("budget")) {
+                c.setBudget(root.get("budget").asInt());
             }
-            if (node.hasNonNull("companions")) {
-                c.setCompanions(node.get("companions").asInt());
+            if (root.hasNonNull("companions")) {
+                c.setCompanions(root.get("companions").asInt());
             }
             List<String> prefs = new ArrayList<>();
-            if (node.has("preferences") && node.get("preferences").isArray()) {
-                node.get("preferences").forEach(n -> prefs.add(n.asText()));
+            if (root.has("preferences") && root.get("preferences").isArray()) {
+                root.get("preferences").forEach(n -> prefs.add(n.asText()));
             }
             c.setPreferences(prefs);
             List<String> softs = new ArrayList<>();
-            if (node.has("softRequirements") && node.get("softRequirements").isArray()) {
-                node.get("softRequirements").forEach(n -> softs.add(n.asText()));
+            if (root.has("softRequirements") && root.get("softRequirements").isArray()) {
+                root.get("softRequirements").forEach(n -> softs.add(n.asText()));
             }
             c.setSoftRequirements(softs);
             return c;
@@ -309,10 +312,11 @@ public class ManagerAgent extends BaseAgent {
 
     private QuestionPayload parseConfirmQuestion(String json) {
         try {
-            String clean = json.replaceAll("(?s)^.*?(\\{.*?\\}).*$", "$1");
-            var node = objectMapper.readTree(clean);
-            String question = node.hasNonNull("question") ? node.get("question").asText() : "请确认需求";
-            String summary = node.hasNonNull("summary") ? node.get("summary").asText() : "";
+            var root = jsonExtractor.extract(json);
+            if (root == null) return new QuestionPayload("请确认你的需求", "");
+
+            String question = root.hasNonNull("question") ? root.get("question").asText() : "请确认需求";
+            String summary = root.hasNonNull("summary") ? root.get("summary").asText() : "";
             return new QuestionPayload(question, summary);
         } catch (Exception e) {
             return new QuestionPayload("请确认你的需求", "");
@@ -321,16 +325,17 @@ public class ManagerAgent extends BaseAgent {
 
     private Decision parseDecision(String json) {
         try {
-            String clean = json.replaceAll("(?s)^.*?(\\{.*?\\}).*$", "$1");
-            var node = objectMapper.readTree(clean);
+            var root = jsonExtractor.extract(json);
+            if (root == null) return new Decision("give_up", null, null, "JSON 解析失败");
+
             return new Decision(
-                    node.hasNonNull("decision") ? node.get("decision").asText() : "give_up",
-                    node.hasNonNull("targetWorker") && !node.get("targetWorker").isNull()
-                            ? node.get("targetWorker").asText() : null,
-                    node.hasNonNull("retryHint") && !node.get("retryHint").isNull()
-                            ? node.get("retryHint").asText() : null,
-                    node.hasNonNull("reason") && !node.get("reason").isNull()
-                            ? node.get("reason").asText() : ""
+                    root.hasNonNull("decision") ? root.get("decision").asText() : "give_up",
+                    root.hasNonNull("targetWorker") && !root.get("targetWorker").isNull()
+                            ? root.get("targetWorker").asText() : null,
+                    root.hasNonNull("retryHint") && !root.get("retryHint").isNull()
+                            ? root.get("retryHint").asText() : null,
+                    root.hasNonNull("reason") && !root.get("reason").isNull()
+                            ? root.get("reason").asText() : ""
             );
         } catch (Exception e) {
             return new Decision("give_up", null, null, "JSON 解析失败");

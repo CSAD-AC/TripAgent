@@ -1,42 +1,196 @@
 package uno.zhuchen.workflow.agent;
 
 import com.alibaba.cloud.ai.graph.OverAllState;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 import uno.zhuchen.agent.llm.ChatModel;
+import uno.zhuchen.agent.tool.ToolRegistry;
+import uno.zhuchen.workflow.state.Constraints;
 import uno.zhuchen.workflow.state.RouteResult;
 import uno.zhuchen.workflow.state.TripPlanningStateKeys;
+import uno.zhuchen.workflow.util.JsonExtractor;
 
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
- * 路线规划 Agent — Worker 层
+ * 路线规划 Agent — LLM 驱动。
  *
- * 调 MCP 路线工具（驾车/步行/骑行/公交/火车），编排高铁/飞机/自驾方案。
- *
- * 输入: Constraints
- * 输出: RouteResult（多个 RouteSegment）
- *
- * Day 2: 空壳 — 返回 mock RouteResult，Day 4 接入真实 MCP 工具
+ * <p>LLM 可调用 amapDrivingRoute 等工具查询驾车路线，
+ * 也可调用 amapGeocode 查询地点经纬度，最终输出路线规划 JSON。</p>
  */
 @Component
 public class RouteAgent extends BaseAgent {
 
-    public RouteAgent(ChatModel chatModel) {
-        super("RouteAgent", chatModel);
+    private static final Logger log = LoggerFactory.getLogger(RouteAgent.class);
+
+    private static final String SYSTEM_PROMPT = """
+            你是旅游路线规划助手，负责为用户规划从出发地到目的地的交通方案。
+
+            你可用的工具：
+            - amapDrivingRoute(origin, destination, city, strategy): 查询驾车路线
+            - amapGeocode(address, city): 查询地点经纬度
+            - amapTransitRoute(origin, destination, city, ...): 查询公共交通路线
+            - webSearch(query): 搜索互联网获取交通信息、班次、票价等
+            - pageFetch(url): 获取网页内容
+
+            === 效率要求 ===
+            尽量减少 LLM 来回交互次数。需要多个信息时，一次调用多个工具并行获取。
+
+            === 工作方式（共 15 轮工具调用机会）===
+            1. 你自主决定使用什么工具来规划路线
+            2. 一次尽可能多调工具并行获取信息
+            3. 根据查询结果，整理出清晰的路线方案并输出最终 JSON
+            每轮你会看到 "(第 X/15 轮)"，注意剩余轮次，不要浪费。
+
+            === 输出要求 ===
+            以严格 JSON 格式输出（不要其他文字），字段含义：
+            segments: 路线段列表
+              mode: 交通方式 ("train"/"flight"/"self-drive"/"bus")
+              from: 出发地
+              to: 目的地
+              cost: 费用（整数元）
+              durationMin: 时长（分钟）
+              description: 补充说明
+            totalCost: 总费用（整数元）
+            totalDurationMin: 总时长（分钟）
+            summary: 路线摘要
+
+            示例：
+            {
+              "segments": [
+                {"mode":"self-drive","from":"北京天安门","to":"首都机场","cost":50,"durationMin":60,"description":"驾车约30公里"}
+              ],
+              "totalCost": 50,
+              "totalDurationMin": 60,
+              "summary": "自驾路线，约30公里，预计60分钟"
+            }
+            """;
+
+    private final ObjectMapper objectMapper;
+    private final JsonExtractor jsonExtractor;
+
+    public RouteAgent(ChatModel chatModel, ToolRegistry toolRegistry, ObjectMapper objectMapper) {
+        super("RouteAgent", chatModel, toolRegistry);
+        this.objectMapper = objectMapper;
+        this.jsonExtractor = new JsonExtractor(objectMapper);
     }
 
     @Override
     protected Map<String, Object> doExecute(OverAllState state) {
-        // Day 4 实现: 调 MCP 路线工具
-        log.warn("[RouteAgent] Day 2 空壳 — 待 Day 4 实现");
-        RouteResult mock = RouteResult.builder()
-                .totalCost(500)
-                .totalDurationMin(360)
-                .summary("[MOCK] 高铁去程 + 高铁返程")
-                .build();
+        Constraints constraints = findConstraints(state).orElse(null);
+        if (constraints == null || constraints.getDestination() == null) {
+            log.warn("[RouteAgent] 无约束, 使用 mock");
+            return mockResult(constraints != null ? constraints.getDestination() : "未知");
+        }
+
+        log.info("[RouteAgent] LLM 自主规划路线: destination={}", constraints.getDestination());
+
+        String conversationId = state.value(TripPlanningStateKeys.INPUT_CONVERSATION_ID)
+                .map(Object::toString)
+                .orElse("unknown");
+
+        String context = buildContext(constraints) + "\n(conversationId=" + conversationId + ")";
+        String llmOutput;
+        try {
+            llmOutput = callLLMWithTools(SYSTEM_PROMPT, context, toolRegistry.getAll(), 15);
+        } catch (Exception e) {
+            log.error("[RouteAgent] LLM 工具循环失败: {}", e.getMessage());
+            return mockResult(constraints.getDestination());
+        }
+
+        // 优先解析结构化对象；原始 LLM 文本始终保留
+        RouteResult route = parseRouteResult(llmOutput);
+        Map<String, Object> result = new HashMap<>();
+        result.put(TripPlanningStateKeys.WORKER_ROUTE_RAW, llmOutput);
+
+        if (route == null || route.getSegments() == null || route.getSegments().isEmpty()) {
+            log.warn("[RouteAgent] LLM 输出解析失败, 原始内容:\n---\n{}\n---\n已保留到 state[{}]",
+                    llmOutput, TripPlanningStateKeys.WORKER_ROUTE_RAW);
+            // 不再直接 mock——让下游 Agent 用原始文本兜底
+            result.put(TripPlanningStateKeys.WORKER_ROUTE, null);
+            result.put(TripPlanningStateKeys.CONTROL_NEXT_NODE, "itinerary");
+            result.put(TripPlanningStateKeys.OUTPUT_STATUS, "route_raw");
+            return result;
+        }
+
+        log.info("[RouteAgent] 路线规划完成: {} 段, 总费用={}, 总时长={}分",
+                route.getSegments().size(), route.getTotalCost(), route.getTotalDurationMin());
+
+        result.put(TripPlanningStateKeys.WORKER_ROUTE, route);
+        result.put(TripPlanningStateKeys.CONTROL_NEXT_NODE, "itinerary");
+        result.put(TripPlanningStateKeys.OUTPUT_STATUS, "route_done");
+        return result;
+    }
+
+    private String buildContext(Constraints c) {
+        return String.format("""
+                目的地: %s
+                天数: %s
+                预算: %s
+                同行人数: %s
+                偏好: %s
+                软约束: %s
+                """,
+                c.getDestination(), c.getDays(), c.getBudget(),
+                c.getCompanions(), c.getPreferences(), c.getSoftRequirements());
+    }
+
+    private RouteResult parseRouteResult(String json) {
+        try {
+            var root = jsonExtractor.extract(json);
+            if (root == null) return null;
+
+            RouteResult result = new RouteResult();
+            List<RouteResult.RouteSegment> segments = new ArrayList<>();
+
+            if (root.has("segments") && root.get("segments").isArray()) {
+                for (var segNode : root.get("segments")) {
+                    RouteResult.RouteSegment seg = new RouteResult.RouteSegment();
+                    seg.setMode(segNode.hasNonNull("mode") ? segNode.get("mode").asText() : "self-drive");
+                    seg.setFrom(segNode.hasNonNull("from") ? segNode.get("from").asText() : "");
+                    seg.setTo(segNode.hasNonNull("to") ? segNode.get("to").asText() : "");
+                    seg.setCost(segNode.hasNonNull("cost") ? segNode.get("cost").asInt() : 0);
+                    seg.setDurationMin(segNode.hasNonNull("durationMin") ? segNode.get("durationMin").asInt() : 0);
+                    seg.setDescription(segNode.hasNonNull("description") ? segNode.get("description").asText() : "");
+                    segments.add(seg);
+                }
+            }
+            result.setSegments(segments);
+            result.setTotalCost(root.hasNonNull("totalCost") ? root.get("totalCost").asInt() : 0);
+            result.setTotalDurationMin(root.hasNonNull("totalDurationMin") ? root.get("totalDurationMin").asInt() : 0);
+            result.setSummary(root.hasNonNull("summary") ? root.get("summary").asText() : "");
+            return result;
+        } catch (Exception e) {
+            log.error("[RouteAgent] 解析路线 JSON 失败: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    private Map<String, Object> mockResult(String destination) {
+        RouteResult mock = new RouteResult();
+        List<RouteResult.RouteSegment> segments = new ArrayList<>();
+        RouteResult.RouteSegment seg = new RouteResult.RouteSegment();
+        seg.setMode("self-drive");
+        seg.setFrom("出发地");
+        seg.setTo(destination);
+        seg.setCost(50);
+        seg.setDurationMin(60);
+        seg.setDescription("约30公里,预计60分钟");
+        segments.add(seg);
+        mock.setSegments(segments);
+        mock.setTotalCost(50);
+        mock.setTotalDurationMin(60);
+        mock.setSummary("自驾路线，" + destination);
+
         return Map.of(
                 TripPlanningStateKeys.WORKER_ROUTE, mock,
-                TripPlanningStateKeys.CONTROL_NEXT_NODE, "budget"
+                TripPlanningStateKeys.CONTROL_NEXT_NODE, "itinerary",
+                TripPlanningStateKeys.OUTPUT_STATUS, "route_mock"
         );
     }
 }

@@ -4,10 +4,14 @@ import com.alibaba.cloud.ai.graph.OverAllState;
 import com.alibaba.cloud.ai.graph.action.NodeAction;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.SystemMessage;
+import org.springframework.ai.chat.messages.ToolResponseMessage;
 import org.springframework.ai.chat.messages.UserMessage;
 import uno.zhuchen.agent.llm.ChatModel;
+import uno.zhuchen.agent.tool.AskUserTool;
+import uno.zhuchen.agent.tool.ToolRegistry;
 import uno.zhuchen.workflow.state.BudgetPlan;
 import uno.zhuchen.workflow.state.Constraints;
 import uno.zhuchen.workflow.state.DayPlan;
@@ -15,6 +19,7 @@ import uno.zhuchen.workflow.state.RouteResult;
 import uno.zhuchen.workflow.state.TripPlanningStateKeys;
 import uno.zhuchen.workflow.state.ValidationReport;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -39,15 +44,19 @@ public abstract class BaseAgent implements NodeAction {
 
     protected final Logger log = LoggerFactory.getLogger(getClass());
 
+    /** MCP 工具注册表（Worker Agent 用于调路线/POI/天气） */
+    protected final ToolRegistry toolRegistry;
+
     /** LLM 调用抽象（直接复用 agent 包的 ChatModel） */
     protected final ChatModel chatModel;
 
     /** Agent 名称（用于日志和 Graph 节点 ID） */
     protected final String agentName;
 
-    protected BaseAgent(String agentName, ChatModel chatModel) {
+    protected BaseAgent(String agentName, ChatModel chatModel, ToolRegistry toolRegistry) {
         this.agentName = agentName;
         this.chatModel = chatModel;
+        this.toolRegistry = toolRegistry;
     }
 
     /**
@@ -104,7 +113,116 @@ public abstract class BaseAgent implements NodeAction {
         return chatModel.call(messages, new org.springframework.ai.tool.ToolCallback[0]).getText();
     }
 
-    // ============ 类型安全的 state 读取辅助方法 ============
+    /**
+     * LLM 带工具循环调用 — LLM 可自主调用 askUser 等工具,Java 只负责执行并回传结果。
+     *
+     * <p>LLM 自主决定何时提问、何时输出最终答案,使需求澄清过程完全由 LLM 驱动。
+     *
+     * @param systemPrompt 系统提示词
+     * @param userPrompt   用户消息
+     * @param tools        可用工具
+     * @param maxRounds    最大工具调用轮次
+     * @return LLM 最终输出的文本
+     */
+    protected String callLLMWithTools(String systemPrompt, String userPrompt,
+                                       org.springframework.ai.tool.ToolCallback[] tools, int maxRounds) {
+        List<Message> messages = new ArrayList<>();
+        messages.add(new SystemMessage(systemPrompt));
+        messages.add(new UserMessage(userPrompt));
+
+        for (int round = 0; round < maxRounds; round++) {
+            // 每轮追加轮次提示，让 LLM 知道还剩多少轮
+            String roundHint = "(第 " + (round + 1) + "/" + maxRounds + " 轮工具调用，请在约 " + maxRounds + " 轮内完成)";
+            // 找到最后一条 UserMessage 追加轮次提示，或新增一条
+            messages.add(new UserMessage(roundHint));
+            AssistantMessage response = chatModel.call(messages, tools);
+            messages.add(response);
+
+            if (!response.hasToolCalls()) {
+                String text = response.getText();
+                log.debug("[{}] LLM 输出最终结果, text长度={}", agentName,
+                        text != null ? text.length() : 0);
+                return text != null ? text : "";
+            }
+
+            log.debug("[{}] LLM 请求调用 {} 个工具: {}", agentName,
+                    response.getToolCalls().size(),
+                    response.getToolCalls().stream()
+                            .map(tc -> tc.name() + "(" + truncate(tc.arguments(), 80) + ")")
+                            .toList());
+
+            for (AssistantMessage.ToolCall tc : response.getToolCalls()) {
+                org.springframework.ai.tool.ToolCallback tool = findTool(tools, tc.name());
+                if (tool == null) {
+                    log.warn("[{}] 未知工具: {}, 跳过", agentName, tc.name());
+                    continue;
+                }
+
+                try {
+                    if ("askUser".equals(tc.name())) {
+                        AskUserTool.setConversationId(extractConversationId(userPrompt));
+                    }
+                    long t0 = System.currentTimeMillis();
+                    String result = tool.call(tc.arguments());
+                    long elapsed = System.currentTimeMillis() - t0;
+                    log.debug("[{}] 工具 {} 返回 ({}ms): {}",
+                            agentName, tc.name(), elapsed, truncate(result, 120));
+
+                    messages.add(ToolResponseMessage.builder()
+                            .responses(List.of(new ToolResponseMessage.ToolResponse(
+                                    tc.id(), tc.name(), result)))
+                            .build());
+                } catch (Exception e) {
+                    log.warn("[{}] 工具 {} 异常 ({}): {}", agentName, tc.name(),
+                            e.getClass().getSimpleName(), e.getMessage());
+                    messages.add(ToolResponseMessage.builder()
+                            .responses(List.of(new ToolResponseMessage.ToolResponse(
+                                    tc.id(), tc.name(), "失败: " + e.getMessage())))
+                            .build());
+                } finally {
+                    AskUserTool.clearConversationId();
+                }
+            }
+        }
+        log.warn("[{}] 达到最大工具调用轮次 {}, 返回空", agentName, maxRounds);
+        return "";
+    }
+
+    private static String truncate(String s, int maxLen) {
+        if (s == null) return "null";
+        return s.length() <= maxLen ? s : s.substring(0, maxLen) + "...";
+    }
+
+    private org.springframework.ai.tool.ToolCallback findTool(
+            org.springframework.ai.tool.ToolCallback[] tools, String name) {
+        for (var t : tools) {
+            if (t.getToolDefinition().name().equals(name)) return t;
+        }
+        return null;
+    }
+
+    private String extractConversationId(String text) {
+        var m = java.util.regex.Pattern.compile("conversationId=([a-f0-9-]+)").matcher(text);
+        return m.find() ? m.group(1) : null;
+    }
+
+    /**
+     * 调用 MCP 工具
+     *
+     * @param toolName 工具名（如 "amapDrivingRoute"）
+     * @param argsJson JSON 字符串参数
+     * @return 工具返回的字符串结果
+     */
+    protected String callMcpTool(String toolName, String argsJson) {
+        if (toolRegistry == null) {
+            throw new IllegalStateException("[" + agentName + "] ToolRegistry 未注入");
+        }
+        org.springframework.ai.tool.ToolCallback tool = toolRegistry.getByName(toolName);
+        if (tool == null) {
+            throw new IllegalStateException("[" + agentName + "] MCP 工具不存在: " + toolName);
+        }
+        return tool.call(argsJson);
+    }
 
     /** 读取 Constraints（必填） */
     protected Constraints getConstraints(OverAllState state) {
