@@ -1,4 +1,4 @@
-package uno.zhuchen.agent.mcpserver.config;
+package uno.zhuchen.agent.tools.amap.config;
 
 import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;

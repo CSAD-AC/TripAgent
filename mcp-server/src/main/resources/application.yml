@@ -10,7 +10,7 @@ spring:
       server:
         enabled: true
         protocol: STREAMABLE
-        name: amap-mcp-server
+        name: mcp-server
         version: 1.0.0
         type: SYNC
 

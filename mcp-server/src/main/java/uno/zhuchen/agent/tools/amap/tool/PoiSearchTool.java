@@ -1,11 +1,11 @@
-package uno.zhuchen.agent.mcpserver.tool;
+package uno.zhuchen.agent.tools.amap.tool;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.stereotype.Component;
-import uno.zhuchen.agent.mcpserver.service.AmapService;
+import uno.zhuchen.agent.tools.amap.service.AmapService;
 
 /**
  * POI 搜索 MCP 工具

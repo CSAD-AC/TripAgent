@@ -1,4 +1,4 @@
-package uno.zhuchen.agent.mcpserver.service;
+package uno.zhuchen.agent.tools.amap.service;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -7,7 +7,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Mono;
-import uno.zhuchen.agent.mcpserver.config.SearchConfig;
+import uno.zhuchen.agent.tools.amap.config.SearchConfig;
 
 import java.time.Duration;
 import java.util.ArrayList;

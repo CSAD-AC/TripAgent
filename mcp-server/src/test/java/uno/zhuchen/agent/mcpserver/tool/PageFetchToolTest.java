@@ -6,8 +6,9 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import uno.zhuchen.agent.mcpserver.service.PageFetchService;
-import uno.zhuchen.agent.mcpserver.service.PageFetchService.PageContent;
+import uno.zhuchen.agent.tools.amap.service.PageFetchService;
+import uno.zhuchen.agent.tools.amap.service.PageFetchService.PageContent;
+import uno.zhuchen.agent.tools.amap.tool.PageFetchTool;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
