@@ -38,21 +38,6 @@ public class JsonExtractor {
             "(?s)```\\s*([\\s\\S]*?)```"
     );
 
-    /** 匹配顶层 JSON 对象：从第一个 { 到匹配的 } */
-    private static final Pattern TOP_LEVEL_OBJECT = Pattern.compile(
-            "(?s)\\{(?:[^{}]|(?:\\{[^{}]*\\}))*\\}"
-    );
-
-    /** 匹配顶层 JSON 数组：从第一个 [ 到匹配的 ] */
-    private static final Pattern TOP_LEVEL_ARRAY = Pattern.compile(
-            "(?s)\\[(?:[^\\[\\]]|(?:\\[[^\\[\\]]*\\]))*\\]"
-    );
-
-    /** 回退：最短 { ... } 匹配（可能不准确，作为最后手段） */
-    private static final Pattern FALLBACK_OBJECT = Pattern.compile(
-            "(?s)\\{(?:[^{}]|\\{[^{}]*\\})*\\}"
-    );
-
     private final ObjectMapper objectMapper;
 
     public JsonExtractor(ObjectMapper objectMapper) {
@@ -85,16 +70,12 @@ public class JsonExtractor {
         result = tryParse(trimmed);
         if (result != null) return result;
 
-        // 策略 4: 顶层 { ... } 对象
-        result = tryExtract(trimmed, TOP_LEVEL_OBJECT, 0);
+        // 策略 4: 括号计数提取顶层 { ... }（支持任意层嵌套）
+        result = tryExtractBrace(trimmed, '{', '}');
         if (result != null) return result;
 
-        // 策略 5: 顶层 [ ... ] 数组 → 包装为对象
-        result = tryExtractArray(trimmed, TOP_LEVEL_ARRAY, 0);
-        if (result != null) return result;
-
-        // 策略 6: 回退——最短 { ... }
-        result = tryExtract(trimmed, FALLBACK_OBJECT, 0);
+        // 策略 5: 括号计数提取顶层 [ ... ] → 包装为对象
+        result = tryExtractBracket(trimmed);
         if (result != null) return result;
 
         log.warn("[JsonExtractor] 所有策略均无法提取 JSON, input长度={}, 原始内容:\n---\n{}\n---",
@@ -133,25 +114,68 @@ public class JsonExtractor {
     }
 
     /**
-     * 提取数组并包装为对象
+     * 括号计数提取顶层 {…} 结构（支持任意层嵌套，不受正则递归深度限制）
+     *
+     * <p>逐字符扫描，跳过字符串内的 { }，遇到未匹配的 } 即视为完成。</p>
      */
-    private JsonNode tryExtractArray(String input, Pattern pattern, int group) {
-        Matcher matcher = pattern.matcher(input);
-        if (matcher.find()) {
-            String candidate = matcher.group(group).trim();
-            try {
-                // 先尝试直接解析为 JsonNode（可能是数组）
-                JsonNode arrayNode = objectMapper.readTree(candidate);
-                log.debug("[JsonExtractor] 提取数组成功, 长度={}", candidate.length());
-                // 包装成 {"items": [...]} 形式的对象
-                return objectMapper.createObjectNode().set("items", arrayNode);
-            } catch (JsonProcessingException e) {
-                JsonNode fixed = tryRepair(candidate);
-                if (fixed != null) {
-                    // 修复后的数组也包装
-                    try {
-                        return objectMapper.createObjectNode().set("items", fixed);
-                    } catch (Exception ignored) {
+    private JsonNode tryExtractBrace(String input, char open, char close) {
+        String candidate = extractBalanced(input, open, close);
+        if (candidate == null) return null;
+        JsonNode result = tryParse(candidate);
+        if (result != null) {
+            log.debug("[JsonExtractor] 括号计数提取成功, 长度={}", candidate.length());
+            return result;
+        }
+        return tryRepair(candidate);
+    }
+
+    /**
+     * 括号计数提取顶层 […] 并包装为对象
+     */
+    private JsonNode tryExtractBracket(String input) {
+        String candidate = extractBalanced(input, '[', ']');
+        if (candidate == null) return null;
+        JsonNode result = tryParse(candidate);
+        if (result != null) {
+            log.debug("[JsonExtractor] 数组提取成功, 长度={}", candidate.length());
+            return objectMapper.createObjectNode().set("items", result);
+        }
+        return null;
+    }
+
+    /**
+     * 核心算法：从文本中查找第一个 open 字符，计数括号深度，返回匹配 balanced close 的子串。
+     * 正确处理字符串转义，不会把字符串内的 { [ } ] 计入深度。
+     */
+    private String extractBalanced(String text, char open, char close) {
+        int start = text.indexOf(open);
+        if (start < 0) return null;
+
+        int depth = 0;
+        boolean inString = false;
+        boolean escaped = false;
+
+        for (int i = start; i < text.length(); i++) {
+            char c = text.charAt(i);
+
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if (c == '\\' && inString) {
+                escaped = true;
+                continue;
+            }
+            if (c == '"') {
+                inString = !inString;
+                continue;
+            }
+            if (!inString) {
+                if (c == open) depth++;
+                else if (c == close) {
+                    depth--;
+                    if (depth == 0) {
+                        return text.substring(start, i + 1);
                     }
                 }
             }
