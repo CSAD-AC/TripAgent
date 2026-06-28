@@ -3,7 +3,7 @@ import { Sidebar } from './components/Sidebar'
 import { ChatMessage } from './components/ChatMessage'
 import { ChatInput } from './components/ChatInput'
 import { ClarificationCard } from './components/ClarificationCard'
-import { WorkflowStatus } from './components/WorkflowStatus'
+import { GraphFlow } from './components/GraphFlow'
 import { useChat } from './hooks/useChat'
 import { useConversations } from './hooks/useConversations'
 import { Menu, MapPin, GitBranch, Zap } from 'lucide-react'
@@ -141,10 +141,14 @@ export default function App() {
           )}
         </header>
 
-        {/* Graph 模式进度条（仅 Graph 模式显示） */}
+        {/* Graph 模式 DAG 流程图 */}
         {apiMode === 'graph' && graphTrace && (
-          <WorkflowStatus
-            currentNode={graphTrace.currentNode}
+          <GraphFlow
+            graphTrace={
+              isLoading || graphTrace.completedNodes.length > 0
+                ? graphTrace
+                : null
+            }
             visible={isLoading || graphTrace.completedNodes.length > 0}
           />
         )}

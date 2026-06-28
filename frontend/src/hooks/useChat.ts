@@ -20,7 +20,7 @@ export function useChat() {
   const [currentIteration, setCurrentIteration] = useState(1)
   /** 当前等待回答的反问（null 表示无） */
   const [pendingClarification, setPendingClarification] = useState<PendingClarification | null>(null)
-  /** Graph 流追踪（仅 Graph 模式有值,用于 WorkflowStatus 可视化） */
+  /** Graph 流追踪（仅 Graph 模式有值,用于 GraphFlow DAG 可视化） */
   const [graphTrace, setGraphTrace] = useState<GraphTrace | null>(null)
 
   const abortRef = useRef<AbortController | null>(null)
@@ -169,7 +169,7 @@ export function useChat() {
         break
       }
 
-      // ── node_start: Graph 模式 - 节点开始执行 ──
+      // ── node_start: Graph 模式 - 节点开始执行(旧协议，过渡期保留) ──
       case 'node_start': {
         setGraphTrace((prev) => ({
           currentNode: event.toolName || null,
@@ -180,7 +180,7 @@ export function useChat() {
         break
       }
 
-      // ── node_end: Graph 模式 - 节点执行完成 ──
+      // ── node_end: Graph 模式 - 节点执行完成(旧协议，过渡期保留) ──
       case 'node_end': {
         setGraphTrace((prev) => {
           if (!prev) return prev
@@ -196,28 +196,123 @@ export function useChat() {
         break
       }
 
-      // ── node_warning: Graph 模式 - 节点执行警告 ──
-      case 'node_warning': {
+      // ── node_status: Graph 新模式 - 节点生命周期状态变化 ──
+      case 'node_status': {
+        const nodeName = event.node || ''
+        const status = event.nodeStatus || ''
+        setGraphTrace((prev) => {
+          if (!prev) {
+            return {
+              currentNode: status === 'running' ? nodeName : null,
+              completedNodes: status === 'done' ? [nodeName] : [],
+              branches: [],
+              warnings: [],
+              nodeStatusMap: { [nodeName]: status },
+            }
+          }
+          const nodeStatusMap = { ...(prev.nodeStatusMap || {}), [nodeName]: status }
+          let completedNodes = prev.completedNodes
+          if (status === 'done' && !completedNodes.includes(nodeName)) {
+            completedNodes = [...completedNodes, nodeName]
+          }
+          return {
+            ...prev,
+            currentNode: status === 'running' ? nodeName : null,
+            completedNodes,
+            nodeStatusMap,
+          }
+        })
+        break
+      }
+
+      // ── graph_topology: 存储拓扑数据 ──
+      case 'graph_topology': {
+        const topologyData = event.data as {
+          nodes: { id: string; label: string; type: string; description: string }[]
+          edges: { from: string; to: string; label: string; conditions: string[] }[]
+          startNode: string
+          endNode: string
+        } | undefined
+        if (topologyData) {
+          setGraphTrace((prev) => ({
+            currentNode: prev?.currentNode || null,
+            completedNodes: prev?.completedNodes || [],
+            branches: prev?.branches || [],
+            warnings: prev?.warnings || [],
+            topology: {
+              nodes: topologyData.nodes || [],
+              edges: topologyData.edges || [],
+              startNode: topologyData.startNode || 'manager',
+              endNode: topologyData.endNode || 'report',
+            },
+            nodeStatusMap: prev?.nodeStatusMap || {},
+            nodeDataMap: prev?.nodeDataMap || {},
+          }))
+        }
+        break
+      }
+
+      // ── node_data: 存储节点输出数据 ──
+      case 'node_data': {
+        setGraphTrace((prev) => {
+          if (!prev) return prev
+          const nodeName = event.node || ''
+          const existing = prev.nodeDataMap || {}
+          return {
+            ...prev,
+            nodeDataMap: {
+              ...existing,
+              [nodeName]: {
+                node: nodeName,
+                dataType: event.dataType || '',
+                data: (event.data as Record<string, unknown>) || {},
+              },
+            },
+          }
+        })
+        break
+      }
+
+      // ── graph_iteration: 更新迭代信息 ──
+      case 'graph_iteration': {
         setGraphTrace((prev) => ({
           currentNode: prev?.currentNode || null,
           completedNodes: prev?.completedNodes || [],
           branches: prev?.branches || [],
-          warnings: [...(prev?.warnings || []), event.content || ''],
+          warnings: prev?.warnings || [],
+          topology: prev?.topology,
+          nodeStatusMap: prev?.nodeStatusMap || {},
+          nodeDataMap: prev?.nodeDataMap || {},
+          iterationCount: event.iterationCount || 0,
+          maxIterations: event.maxIterations || 3,
+          iterationReason: event.content || '',
         }))
+        break
+      }
+
+      // ── node_warning: Graph 模式 - 节点执行警告 ──
+      case 'node_warning': {
+        setGraphTrace((prev) => {
+          if (!prev) return null
+          return {
+            ...prev,
+            warnings: [...(prev.warnings || []), event.content || ''],
+          }
+        })
         break
       }
 
       // ── branch_taken: Graph 模式 - 条件边选择 ──
       case 'branch_taken': {
         setGraphTrace((prev) => {
-          const from = event.toolName || ''
-          const to = event.toolArguments || ''
+          // 优先使用新协议的 from/to 字段，降级到旧协议的 toolName/toolArguments
+          const from = event.from || event.toolName || ''
+          const to = event.to || event.toolArguments || ''
           if (!from || !to) return prev
+          if (!prev) return null
           return {
-            currentNode: prev?.currentNode || null,
-            completedNodes: prev?.completedNodes || [],
-            branches: [...(prev?.branches || []), { from, to }],
-            warnings: prev?.warnings || [],
+            ...prev,
+            branches: [...(prev.branches || []), { from, to, condition: event.condition }],
           }
         })
         break

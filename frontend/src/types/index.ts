@@ -143,6 +143,13 @@ export interface SSEEvent {
     | 'session_init'
     | 'heartbeat'
     | 'clarification_request'
+    // Graph 新模式（替代 node_start/node_end/node_warning）
+    | 'graph_topology'
+    | 'node_status'
+    | 'node_progress'
+    | 'node_data'
+    | 'graph_iteration'
+    // Graph 旧模式（过渡期保留）
     | 'node_start'
     | 'node_end'
     | 'node_warning'
@@ -157,16 +164,78 @@ export interface SSEEvent {
   /** 反问事件专属 */
   questionId?: string
   allowCustom?: boolean
+  // ============ Graph 流可视化字段 ============
+  /** 节点名称（node_status / node_progress / node_data） */
+  node?: string
+  /** 节点状态（node_status: queued / running / done / error / skipped） */
+  nodeStatus?: string
+  /** 数据类型（node_data: constraints / route / dayplans / budget / validation / report / decision） */
+  dataType?: string
+  /** 复杂数据负载（node_data / graph_topology） */
+  data?: Record<string, unknown>
+  /** 进度子类型（node_progress: thinking / tool_call / tool_result） */
+  progressType?: string
+  /** 当前迭代次数（graph_iteration） */
+  iterationCount?: number
+  /** 最大迭代次数（graph_iteration） */
+  maxIterations?: number
+  /** 条件边标签（branch_taken: passed / failed / confirmed 等） */
+  condition?: string
+  /** 起始节点（branch_taken） */
+  from?: string
+  /** 目标节点（branch_taken） */
+  to?: string
 }
 
-/** Graph 流式执行追踪(用于 WorkflowStatus 组件) */
+/** 拓扑定义中的节点 */
+export interface TopologyNode {
+  id: string
+  label: string
+  type: string
+  description: string
+}
+
+/** 拓扑定义中的边 */
+export interface TopologyEdge {
+  from: string
+  to: string
+  label: string
+  conditions: string[]
+}
+
+/** 节点输出数据 */
+export interface NodeDataPayload {
+  node: string
+  dataType: string
+  data: Record<string, unknown>
+}
+
+/** Graph 流式执行追踪(用于 GraphFlow 组件) */
 export interface GraphTrace {
   /** 当前正在执行的节点 */
   currentNode: string | null
-  /** 已完成的节点列表（用于连接线动画） */
+  /** 已完成的节点列表（按完成顺序） */
   completedNodes: string[]
   /** 路由序列（用于可视化流向） */
-  branches: { from: string; to: string }[]
+  branches: { from: string; to: string; condition?: string }[]
   /** 警告信息 */
   warnings: string[]
+  // ============ 新协议字段 ============
+  /** Graph 拓扑定义（从 graph_topology 事件获取） */
+  topology?: {
+    nodes: TopologyNode[]
+    edges: TopologyEdge[]
+    startNode: string
+    endNode: string
+  }
+  /** 节点状态映射（nodeId → status） */
+  nodeStatusMap?: Record<string, string>
+  /** 节点数据映射（nodeId → NodeDataPayload） */
+  nodeDataMap?: Record<string, NodeDataPayload>
+  /** 当前迭代次数 */
+  iterationCount?: number
+  /** 最大迭代次数 */
+  maxIterations?: number
+  /** 迭代回退原因 */
+  iterationReason?: string
 }
