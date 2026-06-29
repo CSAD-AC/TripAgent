@@ -35,3 +35,30 @@ fetch:
 logging:
   level:
     uno.zhuchen.agent.mcpserver: DEBUG
+
+# ============================================================
+# MCP 工具开关配置（按次启动控制）
+# ============================================================
+# 所有工具默认启用。当次启动只需把想关闭的工具设为 false 即可。
+# 分组 enabled: false 可关闭整组工具（连同组内所有工具）。
+# 工具 key 由类名自动转换，规则：驼峰转 kebab-case + 去掉 Tool 后缀
+#   例如 WeatherQueryTool → weather-query,  GeocodeTool → geocode
+mcp:
+  tool-groups:
+    amap:
+      enabled: true
+      tools:
+        geocode: true
+        route-planning: true
+        poi-search: true
+        weather: true
+        page-fetch: false
+        web-search: false
+    ticket12306:
+      enabled: true
+      tools:
+        current-date: true
+        station: true
+        ticket-query: true
+        interline-ticket: true
+        train-route: true
