@@ -1,4 +1,4 @@
-package uno.zhuchen.agent.tools.amap.config;
+package uno.zhuchen.agent.tools.cloud.config;
 
 import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;

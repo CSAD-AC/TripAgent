@@ -52,8 +52,6 @@ mcp:
         route-planning: true
         poi-search: true
         weather: true
-        page-fetch: false
-        web-search: false
     ticket12306:
       enabled: true
       tools:
@@ -62,3 +60,10 @@ mcp:
         ticket-query: true
         interline-ticket: true
         train-route: true
+
+    # 云端工具（百度千帆搜索 / 网页抓取），不属于高德
+    cloud:
+      enabled: true
+      tools:
+        web-search: true
+        page-fetch: true

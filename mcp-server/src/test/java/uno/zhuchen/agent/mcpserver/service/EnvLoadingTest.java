@@ -7,7 +7,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.core.env.Environment;
-import uno.zhuchen.agent.tools.amap.config.SearchConfig;
+import uno.zhuchen.agent.tools.cloud.config.SearchConfig;
 
 /**
  * 快速诊断：检查 .env 中的 API 密钥是否正确加载到 Spring 环境

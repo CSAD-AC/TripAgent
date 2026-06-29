@@ -7,6 +7,8 @@ import org.springframework.ai.tool.method.MethodToolCallbackProvider;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import uno.zhuchen.agent.tools.amap.tool.*;
+import uno.zhuchen.agent.tools.cloud.tool.PageFetchTool;
+import uno.zhuchen.agent.tools.cloud.tool.WebSearchTool;
 import uno.zhuchen.agent.tools.ticket12306.tool.*;
 
 import java.util.AbstractMap;
@@ -33,16 +35,22 @@ public class ToolRegister {
                                           PoiSearchTool poiSearchTool,
                                           WeatherQueryTool weatherQueryTool,
                                           GeocodeTool geocodeTool,
-                                          PageFetchTool pagefetchTool,
-                                          WebSearchTool webSearchTool,
                                           McpToolProperties props) {
         return buildProvider("amap", props,
                 register("geocode", geocodeTool),
                 register("route-planning", routePlanningTool),
                 register("poi-search", poiSearchTool),
-                register("weather", weatherQueryTool),
-                register("page-fetch", pagefetchTool),
-                register("web-search", webSearchTool));
+                register("weather", weatherQueryTool));
+    }
+
+    /** 云端工具组（百度千帆搜索 / 网页抓取，不属于高德） */
+    @Bean
+    public ToolCallbackProvider cloudTools(WebSearchTool webSearchTool,
+                                           PageFetchTool pagefetchTool,
+                                           McpToolProperties props) {
+        return buildProvider("cloud", props,
+                register("web-search", webSearchTool),
+                register("page-fetch", pagefetchTool));
     }
 
     /** 12306 工具组 */
