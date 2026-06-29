@@ -1,4 +1,4 @@
-package uno.zhuchen.agent.tools.amap.tool;
+package uno.zhuchen.agent.tools.cloud.tool;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;

@@ -6,9 +6,9 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import uno.zhuchen.agent.tools.amap.service.CloudSearchService;
-import uno.zhuchen.agent.tools.amap.service.CloudSearchService.SearchResult;
-import uno.zhuchen.agent.tools.amap.tool.WebSearchTool;
+import uno.zhuchen.agent.tools.cloud.service.CloudSearchService;
+import uno.zhuchen.agent.tools.cloud.service.CloudSearchService.SearchResult;
+import uno.zhuchen.agent.tools.cloud.tool.WebSearchTool;
 
 import java.util.List;
 

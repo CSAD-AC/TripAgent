@@ -1,4 +1,4 @@
-package uno.zhuchen.agent.tools.amap.tool;
+package uno.zhuchen.agent.tools.cloud.tool;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -7,7 +7,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.stereotype.Component;
-import uno.zhuchen.agent.tools.amap.service.CloudSearchService;
+import uno.zhuchen.agent.tools.cloud.service.CloudSearchService;
 
 import java.util.LinkedHashMap;
 import java.util.List;
