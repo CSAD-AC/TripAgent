@@ -210,6 +210,13 @@ export interface NodeDataPayload {
   data: Record<string, unknown>
 }
 
+/** 节点实时进度条目(LLM 思考片段 / 工具调用中间结果) */
+export interface NodeProgressEntry {
+  progressType: 'thinking' | 'tool_call' | 'tool_result' | string
+  content: string
+  timestamp: number
+}
+
 /** Graph 流式执行追踪(用于 GraphFlow 组件) */
 export interface GraphTrace {
   /** 当前正在执行的节点 */
@@ -232,6 +239,8 @@ export interface GraphTrace {
   nodeStatusMap?: Record<string, string>
   /** 节点数据映射（nodeId → NodeDataPayload） */
   nodeDataMap?: Record<string, NodeDataPayload>
+  /** 节点进度映射（nodeId → NodeProgressEntry[]）,由 node_progress 事件累积 */
+  nodeProgressMap?: Record<string, NodeProgressEntry[]>
   /** 当前迭代次数 */
   iterationCount?: number
   /** 最大迭代次数 */

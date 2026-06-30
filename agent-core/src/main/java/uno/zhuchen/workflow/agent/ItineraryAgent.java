@@ -128,7 +128,8 @@ public class ItineraryAgent extends BaseAgent {
         if (itinerary == null || itinerary.isEmpty()) {
             log.warn("[ItineraryAgent] LLM 输出解析失败, 原始内容:\n---\n{}\n---\n已保留到 state[{}]",
                     llmOutput, TripPlanningStateKeys.WORKER_ITINERARY_RAW);
-            result.put(TripPlanningStateKeys.WORKER_ITINERARY, null);
+            // 注意:不要 put null value,Spring AI Alibaba Graph 的 ParallelNode 合并结果时
+            // 用 Map.of(...),会因 null value 抛 NPE;findItinerary() 通过 Optional.empty() 兜底
             result.put(TripPlanningStateKeys.CONTROL_NEXT_NODE, "budget");
             result.put(TripPlanningStateKeys.OUTPUT_STATUS, "itinerary_raw");
             return result;
