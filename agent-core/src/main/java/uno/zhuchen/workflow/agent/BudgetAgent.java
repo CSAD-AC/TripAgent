@@ -113,7 +113,8 @@ public class BudgetAgent extends BaseAgent {
         if (budget == null) {
             log.warn("[BudgetAgent] LLM 输出解析失败, 但原始文本已保留到 state[{}]",
                     TripPlanningStateKeys.WORKER_BUDGET_RAW);
-            result.put(TripPlanningStateKeys.WORKER_BUDGET, null);
+            // 注意:不要 put null value,Spring AI Alibaba Graph 的 ParallelNode 合并结果时
+            // 用 Map.of(...),会因 null value 抛 NPE;findBudget() 通过 Optional.empty() 兜底
             result.put(TripPlanningStateKeys.CONTROL_NEXT_NODE, "validation");
             result.put(TripPlanningStateKeys.OUTPUT_STATUS, "budget_raw");
             return result;

@@ -26,7 +26,7 @@ import static com.alibaba.cloud.ai.graph.action.AsyncNodeAction.node_async;
  * 节点编排:
  * <pre>
  *   START → manager → {first 模式: 提取约束 + 复述确认}
- *                      ├─ user_confirmed → worker_group (route 入口)
+ *                      ├─ user_confirmed → parallel_group (虚拟 fan-out 中转)
  *                      ├─ user_rejected → manager (重提取)
  *                      └─ 部分字段缺失 → 反问 → manager (重试)
  *
@@ -34,18 +34,26 @@ import static com.alibaba.cloud.ai.graph.action.AsyncNodeAction.node_async;
  *             ├─ iteration < 2: LLM 决策 retry/give_up
  *             └─ iteration >= 2: 强制 give_up → report
  *
- *   worker_group 串行入口（Day 4 改为真正并行）:
- *     route → itinerary → budget → validation
+ *   parallel_group 触发并行:
+ *     ┌─→ route     ─┐
+ *     └─→ itinerary ─┴─→ budget → validation
+ *     (两个 Worker 互不依赖,Budget 必须等两者都完成才启动)
  *
  *   validation → {passed: report, failed: manager}
  *   report → END
  * </pre>
  *
  * 路由表（manager 节点出口）:
- * - worker_group → route（Worker 入口）
- * - route / itinerary / budget → 对应节点（部分重跑）
+ * - worker_group → parallel_group（虚拟 fan-out,触发 Route + Itinerary 并行）
+ * - route / itinerary / budget → 对应节点（部分重跑,保留单线串行）
  * - report → report（强制通过）
  * - first / 其他 → manager（重提取）
+ *
+ * 并行实现机制:
+ * Spring AI Alibaba Graph 支持「同起点多条 addEdge 即并行触发」+「多源同汇入即 join 等待」。
+ * parallel_group 本身是无操作虚拟节点,仅作 fan-out 入口。
+ * manager 出口是 conditional edge(支持 first/report/retry 等分支),无法一条 condition 对应多目标,
+ * 所以需要中转节点让 fan-out 入口独立于 manager 的条件路由。
  */
 @Component
 public class TripPlanningGraphBuilder {
@@ -72,11 +80,14 @@ public class TripPlanningGraphBuilder {
     }
 
     /**
-     * 构建完整 SWV Graph
+     * 构建完整 SWV Graph(并行版)
+     *
+     * 拓扑:manager → parallel_group → {route, itinerary} → budget → validation → report
      */
     public CompiledGraph build() throws GraphStateException {
         StateGraph graph = new StateGraph(KeyStrategyFactoryProvider.create())
                 .addNode("manager", node_async(managerAgent))
+                .addNode("parallel_group", node_async(state -> Map.of()))
                 .addNode("route", node_async(routeAgent))
                 .addNode("itinerary", node_async(itineraryAgent))
                 .addNode("budget", node_async(budgetAgent))
@@ -88,10 +99,10 @@ public class TripPlanningGraphBuilder {
 
         // Manager 出口路由表
         // 读取 next_node,根据语义路由:
-        // - "worker_group" / "route" → route
-        // - "itinerary" / "budget" → 对应 worker(部分重跑)
-        // - "report" → report
-        // - "first" / 默认 → manager (重提取)
+        // - "worker_group" → parallel_group（虚拟 fan-out,触发 Route + Itinerary 并行）
+        // - "route" / "itinerary" / "budget" → 对应节点（部分重跑,单线串行）
+        // - "report" → report（强制通过）
+        // - "first" / 默认 → manager（重提取）
         graph.addConditionalEdges("manager",
                 edge_async(state -> {
                     String next = state.value(TripPlanningStateKeys.CONTROL_NEXT_NODE)
@@ -100,7 +111,7 @@ public class TripPlanningGraphBuilder {
                     return next;
                 }),
                 Map.of(
-                        "worker_group", "route",
+                        "worker_group", "parallel_group",
                         "route", "route",
                         "itinerary", "itinerary",
                         "budget", "budget",
@@ -108,9 +119,16 @@ public class TripPlanningGraphBuilder {
                         "first", "manager"
                 ));
 
-        // Route → Itinerary（串行入口；Day 4 改造为真正并行）
-        graph.addEdge("route", "itinerary");
+        // parallel_group 触发并行 fan-out:Route 和 Itinerary 同时启动
+        // 框架语义:同起点多条 addEdge 自动并行触发下游节点
+        graph.addEdge("parallel_group", "route");
+        graph.addEdge("parallel_group", "itinerary");
+
+        // 并行 join:Route 和 Itinerary 都完成后才进入 Budget
+        // 框架语义:多条 addEdge 同汇入会自动等待所有上游完成
+        graph.addEdge("route", "budget");
         graph.addEdge("itinerary", "budget");
+
         graph.addEdge("budget", "validation");
 
         // Validation 出口：passed → report, failed → manager

@@ -112,12 +112,13 @@ public class GraphStreamRunner {
             // 初始状态：startNode（manager）开始运行
             safelyEmit(sink, StreamChunk.nodeStatus("manager", "running", conversationId));
 
-            // 迭代跟踪
+            // 迭代跟踪 + 并行 join 计数
             AtomicInteger lastIteration = new AtomicInteger(0);
+            AtomicInteger parallelCompletionCount = new AtomicInteger(0);
 
             // 逐个处理 Graph 节点输出
             graph.stream(input, config)
-                    .doOnNext(output -> processOutput(output, conversationId, lastIteration, sink))
+                    .doOnNext(output -> processOutput(output, conversationId, lastIteration, parallelCompletionCount, sink))
                     .doOnError(err -> {
                         log.error("[GraphStreamRunner] Graph stream 异常: {}", err.getMessage(), err);
                         safelyEmit(sink, StreamChunk.error(conversationId,
@@ -140,61 +141,103 @@ public class GraphStreamRunner {
     /**
      * 处理单个节点输出 — 框架在每个节点完成后 emit 一个 NodeOutput
      *
-     * <p>处理逻辑：
-     * <ol>
-     *   <li>该节点已完成 → {@code node_status(node, "done")}</li>
-     *   <li>读 state.next_node 映射到物理节点 → {@code branch_taken(node, next)}</li>
-     *   <li>若下一个不是终止节点 → {@code node_status(next, "running")}</li>
+     * <p>处理逻辑（按节点类型分三支）：
+     * <ul>
+     *   <li>当前节点完成 → {@code node_status(node, "done")}</li>
+     *   <li>{@code parallel_group} 完成 → 显式 fan-out 到 route + itinerary,
+     *       各发 {@code branch_taken} + {@code node_status(running)}</li>
+     *   <li>{@code route} / {@code itinerary} 完成 → 累加计数;达到 2 时对称发两条 join 边
+     *       + {@code node_status(budget, running)},count<2 时不发任何 join 事件</li>
+     *   <li>其他节点（manager / budget / validation / report）→ 走常规 resolveNextRunning</li>
      *   <li>检测迭代计数变化 → {@code graph_iteration}</li>
-     * </ol>
+     * </ul>
      */
     private void processOutput(NodeOutput output, String conversationId,
                                 AtomicInteger lastIteration,
+                                AtomicInteger parallelCompletionCount,
                                 Sinks.Many<StreamChunk> sink) {
         String node = output.node();
         if (node == null || node.startsWith("__")) return;
 
         OverAllState outputState = output.state();
 
+        // 0. parallel_group 完成时重置并行计数器,新一轮并行重新计数
+        if ("parallel_group".equals(node)) {
+            parallelCompletionCount.set(0);
+        }
+
         // 1. 当前节点完成
         safelyEmit(sink, StreamChunk.nodeStatus(node, "done", conversationId));
 
-        // 2. 确定下一个物理节点
-        String nextPhysical = resolveNextRunning(node, outputState);
+        // ───────── 分支 A:parallel_group 完成 → fan-out 两路并行 ─────────
+        if ("parallel_group".equals(node)) {
+            // 两条 fan-out 边同时点亮,前端 DAG 立即可见
+            safelyEmit(sink, StreamChunk.branchTaken("parallel_group", "route", "fanout_route", conversationId));
+            safelyEmit(sink, StreamChunk.nodeStatus("route", "running", conversationId));
+            safelyEmit(sink, StreamChunk.branchTaken("parallel_group", "itinerary", "fanout_itinerary", conversationId));
+            safelyEmit(sink, StreamChunk.nodeStatus("itinerary", "running", conversationId));
+            // fan-out 跳过常规 next-node 解析,直接返回
+            emitIterationIfChanged(outputState, lastIteration, conversationId, sink);
+            return;
+        }
 
-        // 3. 发射边事件 + 下一个节点开始（非终态）
+        // ───────── 分支 B:并行节点 done(route / itinerary) → join 判定 ─────────
+        boolean isParallelNode = "route".equals(node) || "itinerary".equals(node);
+        if (isParallelNode) {
+            parallelCompletionCount.incrementAndGet();
+            if (parallelCompletionCount.get() >= 2) {
+                // 两边都完成,触发 join:对称发两条 join 边 + budget running
+                safelyEmit(sink, StreamChunk.branchTaken("route", "budget", "joined", conversationId));
+                safelyEmit(sink, StreamChunk.branchTaken("itinerary", "budget", "joined", conversationId));
+                safelyEmit(sink, StreamChunk.nodeStatus("budget", "running", conversationId));
+            }
+            // count<2 时不发任何 join/budget 事件,等待另一边
+            return;
+        }
+
+        // ───────── 分支 C:其他节点 → 常规 next-node 路由 ─────────
+        String nextPhysical = resolveNextRunning(node, outputState);
         if (!nextPhysical.isEmpty()) {
             String condition = resolveConditionLabel(node, nextPhysical, outputState);
             safelyEmit(sink, StreamChunk.branchTaken(node, nextPhysical, condition, conversationId));
             safelyEmit(sink, StreamChunk.nodeStatus(nextPhysical, "running", conversationId));
         }
 
-        // 4. 迭代跟踪（Manager 回退场景）
-        if (outputState != null) {
-            int currentIteration = outputState.value(TripPlanningStateKeys.CONTROL_ITERATION_COUNT)
-                    .map(v -> ((Number) v).intValue())
-                    .orElse(0);
-            if (currentIteration > lastIteration.get()) {
-                lastIteration.set(currentIteration);
-                String reason = outputState.value(TripPlanningStateKeys.CONTROL_WARNINGS)
-                        .map(Object::toString)
-                        .orElse("第 " + currentIteration + " 次回退");
-                safelyEmit(sink, StreamChunk.graphIteration(
-                        currentIteration, MAX_ITERATIONS, reason, conversationId));
-            }
+        // iteration 跟踪（Manager 回退场景）
+        emitIterationIfChanged(outputState, lastIteration, conversationId, sink);
+    }
+
+    /**
+     * 检测 iteration_count 变化并发射 graph_iteration 事件
+     */
+    private void emitIterationIfChanged(OverAllState outputState, AtomicInteger lastIteration,
+                                         String conversationId, Sinks.Many<StreamChunk> sink) {
+        if (outputState == null) return;
+        int currentIteration = outputState.value(TripPlanningStateKeys.CONTROL_ITERATION_COUNT)
+                .map(v -> ((Number) v).intValue())
+                .orElse(0);
+        if (currentIteration > lastIteration.get()) {
+            lastIteration.set(currentIteration);
+            String reason = outputState.value(TripPlanningStateKeys.CONTROL_WARNINGS)
+                    .map(Object::toString)
+                    .orElse("第 " + currentIteration + " 次回退");
+            safelyEmit(sink, StreamChunk.graphIteration(
+                    currentIteration, MAX_ITERATIONS, reason, conversationId));
         }
     }
 
     /**
      * 从当前节点 + state.next_node 确定下一个物理节点
      *
-     * <p>对固定边（route→itinerary 等）直接返回；对条件边（manager / validation）查 state。
+     * <p>对固定边直接返回；对条件边（manager / validation）查 state。
+     * <p>并行节点（route / itinerary）的 join 由调用方根据 parallelCompletionCount 控制,
+     * 本方法总是返回 "budget" 让框架语义正确,调用方在未达到 join 阈值时不会发射 running 事件。
      */
     private String resolveNextRunning(String fromNode, OverAllState state) {
         // ── 固定边 ──
         switch (fromNode) {
-            case "route":     return "itinerary";
-            case "itinerary": return "budget";
+            case "route":     return "budget";   // join 到 budget,实际触发由调用方根据并行计数控制
+            case "itinerary": return "budget";   // 同上
             case "budget":    return "validation";
             case "report":    return ""; // → END
         }
@@ -207,11 +250,12 @@ public class GraphStreamRunner {
 
         if ("manager".equals(fromNode)) {
             return switch (nextNode) {
-                case "worker_group", "route" -> "route";
-                case "itinerary" -> "itinerary";
-                case "budget"    -> "budget";
-                case "first"     -> "manager";
-                case "report"    -> "report";
+                case "worker_group" -> "parallel_group";  // 虚拟 fan-out 入口
+                case "route"        -> "route";            // 部分重跑 route
+                case "itinerary"    -> "itinerary";        // 部分重跑 itinerary
+                case "budget"       -> "budget";
+                case "first"        -> "manager";
+                case "report"       -> "report";
                 default -> "";
             };
         }
@@ -231,16 +275,25 @@ public class GraphStreamRunner {
                     .map(Object::toString)
                     .orElse("");
             return switch (nextNode) {
-                case "worker_group", "route" -> "confirmed";
-                case "itinerary" -> "retry_itinerary";
-                case "budget" -> "retry_budget";
-                case "first" -> "reject";
-                case "report" -> "give_up";
+                case "worker_group" -> "confirmed";
+                case "route"        -> "retry_route";
+                case "itinerary"    -> "retry_itinerary";
+                case "budget"       -> "retry_budget";
+                case "first"        -> "reject";
+                case "report"       -> "give_up";
                 default -> nextNode;
             };
         }
         if ("validation".equals(from)) {
             return "report".equals(to) ? "passed" : "failed";
+        }
+        if ("parallel_group".equals(from)) {
+            // fan-out 到 route / itinerary 两个分支都是无条件触发
+            return "route".equals(to) ? "fanout_route" : "fanout_itinerary";
+        }
+        // route / itinerary → budget 的 join 边
+        if ("route".equals(from) || "itinerary".equals(from)) {
+            return "joined";
         }
         return "";
     }
@@ -264,31 +317,38 @@ public class GraphStreamRunner {
     /**
      * 构建 graph_topology 事件
      *
-     * <p>拓扑结构与 {@link TripPlanningGraphBuilder} 保持同步。
+     * <p>拓扑结构与 {@link TripPlanningGraphBuilder} 保持同步（并行版）：
+     * manager → parallel_group → {route, itinerary} → budget → validation → report
      */
     private StreamChunk buildTopologyEvent(String conversationId) {
         List<Map<String, Object>> nodes = new ArrayList<>();
 
-        nodes.add(nodeDef("manager",    "主管",   "supervisor", "提取需求约束，决策回退/重试"));
-        nodes.add(nodeDef("route",      "路线",   "worker",    "规划交通路线方案"));
-        nodes.add(nodeDef("itinerary",  "行程",   "worker",    "编排每日景点和活动"));
-        nodes.add(nodeDef("budget",     "预算",   "worker",    "精算分解各项费用"));
-        nodes.add(nodeDef("validation", "校验",   "validator", "检查预算/约束是否满足"));
-        nodes.add(nodeDef("report",     "报告",   "report",    "生成最终旅行报告"));
+        nodes.add(nodeDef("manager",        "主管",       "supervisor", "提取需求约束，决策回退/重试"));
+        nodes.add(nodeDef("parallel_group", "并行中转",   "fanout",     "虚拟 fan-out 节点,触发 Route + Itinerary 并行"));
+        nodes.add(nodeDef("route",          "路线",       "worker",     "规划交通路线方案"));
+        nodes.add(nodeDef("itinerary",      "行程",       "worker",     "编排每日景点和活动"));
+        nodes.add(nodeDef("budget",         "预算",       "worker",     "精算分解各项费用"));
+        nodes.add(nodeDef("validation",     "校验",       "validator",  "检查预算/约束是否满足"));
+        nodes.add(nodeDef("report",         "报告",       "report",     "生成最终旅行报告"));
 
         List<Map<String, Object>> edges = new ArrayList<>();
-        edges.add(edgeDef("__start__", "manager",    "",       List.of()));
-        edges.add(edgeDef("manager",   "route",      "确认",   List.of("worker_group", "route")));
-        edges.add(edgeDef("manager",   "itinerary",  "重试行程", List.of("itinerary")));
-        edges.add(edgeDef("manager",   "budget",     "重试预算", List.of("budget")));
-        edges.add(edgeDef("manager",   "manager",    "重提取",  List.of("first")));
-        edges.add(edgeDef("manager",   "report",     "放弃",   List.of("report")));
-        edges.add(edgeDef("route",     "itinerary",  "",       List.of()));
-        edges.add(edgeDef("itinerary", "budget",     "",       List.of()));
-        edges.add(edgeDef("budget",    "validation", "",       List.of()));
-        edges.add(edgeDef("validation","report",     "通过",   List.of("report")));
-        edges.add(edgeDef("validation","manager",    "失败",   List.of("manager")));
-        edges.add(edgeDef("report",    "__end__",    "",       List.of()));
+        edges.add(edgeDef("__start__",       "manager",        "",        List.of()));
+        edges.add(edgeDef("manager",         "parallel_group", "确认",    List.of("worker_group")));
+        edges.add(edgeDef("manager",         "route",          "重试路线", List.of("route")));
+        edges.add(edgeDef("manager",         "itinerary",      "重试行程", List.of("itinerary")));
+        edges.add(edgeDef("manager",         "budget",         "重试预算", List.of("budget")));
+        edges.add(edgeDef("manager",         "manager",        "重提取",  List.of("first")));
+        edges.add(edgeDef("manager",         "report",         "放弃",    List.of("report")));
+        // parallel_group fan-out:无条件下发到 route 和 itinerary
+        edges.add(edgeDef("parallel_group", "route",          "fan-out",  List.of()));
+        edges.add(edgeDef("parallel_group", "itinerary",      "fan-out",  List.of()));
+        // route / itinerary → budget 并行 join
+        edges.add(edgeDef("route",          "budget",         "join",     List.of()));
+        edges.add(edgeDef("itinerary",      "budget",         "join",     List.of()));
+        edges.add(edgeDef("budget",         "validation",     "",         List.of()));
+        edges.add(edgeDef("validation",     "report",         "通过",     List.of("report")));
+        edges.add(edgeDef("validation",     "manager",        "失败",     List.of("manager")));
+        edges.add(edgeDef("report",         "__end__",        "",         List.of()));
 
         return StreamChunk.graphTopology(nodes, edges, "manager", "report", conversationId);
     }

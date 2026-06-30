@@ -337,6 +337,7 @@ export function GraphFlow({ graphTrace, visible = true }: GraphFlowProps) {
           <NodeDetailPanel
             nodeId={selectedNode}
             nodeData={nodeDataMap[selectedNode]}
+            progressEntries={graphTrace.nodeProgressMap?.[selectedNode]}
             onClose={() => setSelectedNode(null)}
           />
         )}

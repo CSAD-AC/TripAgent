@@ -125,7 +125,8 @@ public class RouteAgent extends BaseAgent {
             log.warn("[RouteAgent] LLM 输出解析失败, 原始内容:\n---\n{}\n---\n已保留到 state[{}]",
                     llmOutput, TripPlanningStateKeys.WORKER_ROUTE_RAW);
             // 不再直接 mock——让下游 Agent 用原始文本兜底
-            result.put(TripPlanningStateKeys.WORKER_ROUTE, null);
+            // 注意:不要 put null value,Spring AI Alibaba Graph 的 ParallelNode 合并结果时
+            // 用 Map.of(...),会因 null value 抛 NPE;findRoute() 通过 Optional.empty() 兜底
             result.put(TripPlanningStateKeys.CONTROL_NEXT_NODE, "itinerary");
             result.put(TripPlanningStateKeys.OUTPUT_STATUS, "route_raw");
             return result;

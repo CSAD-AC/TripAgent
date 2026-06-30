@@ -1,9 +1,10 @@
-import { X } from 'lucide-react'
-import type { NodeDataPayload } from '../types'
+import { X, Brain, Wrench, CheckCircle2 } from 'lucide-react'
+import type { NodeDataPayload, NodeProgressEntry } from '../types'
 
 interface NodeDetailPanelProps {
   nodeId: string
   nodeData: NodeDataPayload
+  progressEntries?: NodeProgressEntry[]
   onClose: () => void
 }
 
@@ -25,12 +26,12 @@ const NODE_ICONS: Record<string, string> = {
   report: '📋',
 }
 
-export function NodeDetailPanel({ nodeId, nodeData, onClose }: NodeDetailPanelProps) {
+export function NodeDetailPanel({ nodeId, nodeData, progressEntries, onClose }: NodeDetailPanelProps) {
   const label = NODE_LABELS[nodeId] || nodeId
   const icon = NODE_ICONS[nodeId] || '⬜'
 
   return (
-    <div className="absolute right-2 top-2 z-20 w-72 max-h-[180px] overflow-y-auto rounded-xl bg-white dark:bg-charcoal-800 border border-warm-white-200 dark:border-charcoal-700 shadow-lg">
+    <div className="absolute right-2 top-2 z-20 w-80 max-h-[260px] overflow-y-auto rounded-xl bg-white dark:bg-charcoal-800 border border-warm-white-200 dark:border-charcoal-700 shadow-lg">
       {/* header */}
       <div className="flex items-center justify-between px-3 py-2 border-b border-warm-white-100 dark:border-charcoal-700">
         <span className="text-sm font-semibold text-charcoal-900 dark:text-warm-white">
@@ -45,7 +46,7 @@ export function NodeDetailPanel({ nodeId, nodeData, onClose }: NodeDetailPanelPr
       </div>
 
       {/* content */}
-      <div className="p-3 text-xs text-charcoal-600 dark:text-charcoal-300 space-y-1.5">
+      <div className="p-3 text-xs text-charcoal-600 dark:text-charcoal-300 space-y-2">
         {nodeData.dataType === 'constraints' && (
           <ConstraintsView data={nodeData.data} />
         )}
@@ -72,7 +73,53 @@ export function NodeDetailPanel({ nodeId, nodeData, onClose }: NodeDetailPanelPr
             {JSON.stringify(nodeData.data, null, 2).slice(0, 500)}
           </pre>
         )}
+
+        {/* 节点实时进度(LLM 思考片段 / 工具调用中间结果) */}
+        {progressEntries && progressEntries.length > 0 && (
+          <ProgressList entries={progressEntries} />
+        )}
       </div>
+    </div>
+  )
+}
+
+// ─── 进度列表 ───
+
+const PROGRESS_ICON: Record<string, React.ReactNode> = {
+  thinking: <Brain className="w-3 h-3 text-terracotta-500" />,
+  tool_call: <Wrench className="w-3 h-3 text-mustard-500" />,
+  tool_result: <CheckCircle2 className="w-3 h-3 text-sage-500" />,
+}
+
+const PROGRESS_LABEL: Record<string, string> = {
+  thinking: '思考',
+  tool_call: '调用工具',
+  tool_result: '工具结果',
+}
+
+function ProgressList({ entries }: { entries: NodeProgressEntry[] }) {
+  // 最多展示最近 6 条,避免面板过高
+  const recent = entries.slice(-6)
+  return (
+    <div className="pt-2 border-t border-warm-white-100 dark:border-charcoal-700 space-y-1">
+      <div className="text-[10px] font-semibold text-charcoal-400 uppercase tracking-wide">
+        实时进度 ({entries.length})
+      </div>
+      {recent.map((e, i) => (
+        <div key={i} className="flex items-start gap-1.5">
+          <span className="flex-shrink-0 mt-0.5">
+            {PROGRESS_ICON[e.progressType] || <Brain className="w-3 h-3 text-charcoal-400" />}
+          </span>
+          <div className="flex-1 min-w-0">
+            <div className="text-[9px] text-charcoal-400">
+              {PROGRESS_LABEL[e.progressType] || e.progressType}
+            </div>
+            <div className="text-[10px] text-charcoal-600 dark:text-charcoal-300 break-all line-clamp-2">
+              {e.content}
+            </div>
+          </div>
+        </div>
+      ))}
     </div>
   )
 }

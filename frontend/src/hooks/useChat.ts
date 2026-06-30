@@ -273,6 +273,50 @@ export function useChat() {
         break
       }
 
+      // ── node_progress: 累积节点实时进度(LLM 思考 / 工具调用中间结果) ──
+      //    并行场景下 route 和 itinerary 会同时累积各自的进度,
+      //    NodeDetailPanel 选中节点时按时间序列展示
+      case 'node_progress': {
+        const nodeName = event.node || ''
+        if (!nodeName) break
+        setGraphTrace((prev) => {
+          const existingMap = prev?.nodeProgressMap || {}
+          const prevList = existingMap[nodeName] || []
+          // 同 progressType 连续多条累积成一条,避免抖动
+          const lastEntry = prevList[prevList.length - 1]
+          let nextList: typeof prevList
+          if (lastEntry && lastEntry.progressType === event.progressType) {
+            nextList = prevList.map((e, i) =>
+              i === prevList.length - 1
+                ? { ...e, content: e.content + (event.content || ''), timestamp: Date.now() }
+                : e
+            )
+          } else {
+            nextList = [
+              ...prevList,
+              {
+                progressType: event.progressType || 'thinking',
+                content: event.content || '',
+                timestamp: Date.now(),
+              },
+            ]
+          }
+          return {
+            ...(prev || {
+              currentNode: null,
+              completedNodes: [],
+              branches: [],
+              warnings: [],
+            }),
+            nodeProgressMap: {
+              ...existingMap,
+              [nodeName]: nextList,
+            },
+          }
+        })
+        break
+      }
+
       // ── graph_iteration: 更新迭代信息 ──
       case 'graph_iteration': {
         setGraphTrace((prev) => ({
