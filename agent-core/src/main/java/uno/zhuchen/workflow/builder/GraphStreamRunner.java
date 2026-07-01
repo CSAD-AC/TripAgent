@@ -14,6 +14,8 @@ import reactor.core.scheduler.Schedulers;
 import uno.zhuchen.agent.domain.dto.StreamChunk;
 import uno.zhuchen.workflow.agent.BaseAgent;
 import uno.zhuchen.workflow.state.TripPlanningStateKeys;
+import uno.zhuchen.workflow.state.WorkflowConstants;
+import uno.zhuchen.workflow.util.GraphEventEmitter;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -21,8 +23,10 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import org.slf4j.MDC;
 
 /**
  * Graph 流式执行器 — 实时事件推送版
@@ -53,8 +57,6 @@ public class GraphStreamRunner {
 
     private static final Logger log = LoggerFactory.getLogger(GraphStreamRunner.class);
 
-    private static final int MAX_ITERATIONS = 3;
-
     private final TripPlanningGraphBuilder graphBuilder;
 
     public GraphStreamRunner(TripPlanningGraphBuilder graphBuilder) {
@@ -65,25 +67,44 @@ public class GraphStreamRunner {
      * 执行 Graph 并返回实时 SSE 流
      */
     public Flux<StreamChunk> runStream(String rawRequest, String conversationId) {
+        return runStream(rawRequest, conversationId, UUID.randomUUID().toString().substring(0, 8));
+    }
+
+    /**
+     * 执行 Graph 并返回实时 SSE 流（带 traceId）
+     *
+     * @param traceId 链路追踪 ID（trace_id 优化 #8），用于贯穿 Graph 执行的所有日志
+     */
+    public Flux<StreamChunk> runStream(String rawRequest, String conversationId, String traceId) {
         if (conversationId == null || conversationId.isBlank()) {
             conversationId = UUID.randomUUID().toString();
         }
+        if (traceId == null || traceId.isBlank()) {
+            traceId = UUID.randomUUID().toString().substring(0, 8);
+        }
         final String convId = conversationId;
+        final String trace = traceId;
 
         // 1. 创建事件 sink（单发射器）
         Sinks.Many<StreamChunk> sink = Sinks.many().unicast().onBackpressureBuffer();
 
-        // 2. 发射前两个事件：会话初始化 + 拓扑定义
-        safelyEmit(sink, StreamChunk.sessionInit(convId));
+        // 用于异常回调中计算耗时（C5/M9：异步异常也要带真实耗时）
+        long startMs = System.currentTimeMillis();
+
+        // 2. 发射前两个事件：会话初始化（携带 traceId）+ 拓扑定义
+        safelyEmit(sink, StreamChunk.sessionInit(convId, trace));
         safelyEmit(sink, buildTopologyEvent(convId));
 
         // 3. 后台线程执行 Graph（boundedElastic 上不阻塞 Netty）
-        Mono.fromRunnable(() -> runGraphAndEmit(rawRequest, convId, sink))
+        Mono.fromRunnable(() -> runGraphAndEmit(rawRequest, convId, trace, sink))
                 .subscribeOn(Schedulers.boundedElastic())
+                .doFirst(() -> MDC.put("traceId", trace))
+                .doFinally(sig -> MDC.remove("traceId"))
                 .subscribe(null,
                         err -> {
                             log.error("[GraphStreamRunner] 异步异常: {}", err.getMessage(), err);
-                            safelyEmit(sink, StreamChunk.error(convId, "Graph 执行异常: " + err.getMessage(), 0L));
+                            long asyncDuration = System.currentTimeMillis() - startMs;
+                            safelyEmit(sink, StreamChunk.error(convId, "Graph 执行异常: " + err.getMessage(), asyncDuration));
                             sink.tryEmitComplete();
                         },
                         () -> { /* sink 已在 runGraphAndEmit 中完成 */ });
@@ -94,16 +115,22 @@ public class GraphStreamRunner {
     /**
      * 同步执行 Graph 并实时发射事件到 sink
      */
-    private void runGraphAndEmit(String rawRequest, String conversationId, Sinks.Many<StreamChunk> sink) {
+    private void runGraphAndEmit(String rawRequest, String conversationId, String traceId,
+                                  Sinks.Many<StreamChunk> sink) {
+        // 单一错误发射入口:doOnError / catch / subscribe 三条路径之间用 AtomicBoolean 把关,
+        // 避免同一个异常被推三次 error 事件 (C5 修复)
+        AtomicBoolean errorEmitted = new AtomicBoolean(false);
+        long startMs = System.currentTimeMillis();
+        // C1 修复: 实例级 emitter 替代 ThreadLocal,并行节点线程切换时事件不再丢失
+        GraphEventEmitter emitter = chunk -> safelyEmit(sink, chunk);
         try {
-            // 设置当前线程的事件发射器，供 Agent 内部（callLLMWithTools）使用
-            BaseAgent.setEventEmitterForThread(chunk -> safelyEmit(sink, chunk));
-
-            CompiledGraph graph = graphBuilder.build();
+            CompiledGraph graph = graphBuilder.build(emitter);
 
             Map<String, Object> input = new HashMap<>();
             input.put(TripPlanningStateKeys.INPUT_RAW_REQUEST, rawRequest);
             input.put(TripPlanningStateKeys.INPUT_CONVERSATION_ID, conversationId);
+            // trace_id 优化 #8: 写入 state 供 BaseAgent.apply 兜底 MDC
+            input.put(TripPlanningStateKeys.INPUT_TRACE_ID, traceId);
 
             RunnableConfig config = RunnableConfig.builder()
                     .threadId(conversationId)
@@ -120,20 +147,23 @@ public class GraphStreamRunner {
             graph.stream(input, config)
                     .doOnNext(output -> processOutput(output, conversationId, lastIteration, parallelCompletionCount, sink))
                     .doOnError(err -> {
-                        log.error("[GraphStreamRunner] Graph stream 异常: {}", err.getMessage(), err);
-                        safelyEmit(sink, StreamChunk.error(conversationId,
-                                "Graph stream 异常: " + err.getMessage(), 0L));
+                        // 不在这里发射 error 事件，统一交给下方 catch 块 (C5 修复)
+                        log.debug("[GraphStreamRunner] Graph stream 异常已上抛: {}", err.getMessage());
                     })
                     .blockLast();
 
             // Graph 正常结束
-            safelyEmit(sink, StreamChunk.final_(conversationId, extractReport(graph, config), 0L));
+            safelyEmit(sink, StreamChunk.final_(conversationId, extractReport(graph, config),
+                    System.currentTimeMillis() - startMs));
 
         } catch (Exception e) {
             log.error("[GraphStreamRunner] Graph 执行异常: {}", e.getMessage(), e);
-            safelyEmit(sink, StreamChunk.error(conversationId, "Graph 执行失败: " + e.getMessage(), 0L));
+            if (errorEmitted.compareAndSet(false, true)) {
+                safelyEmit(sink, StreamChunk.error(conversationId,
+                        "Graph 执行失败: " + e.getMessage(),
+                        System.currentTimeMillis() - startMs));
+            }
         } finally {
-            BaseAgent.clearEventEmitterForThread();
             sink.tryEmitComplete();
         }
     }
@@ -222,7 +252,7 @@ public class GraphStreamRunner {
                     .map(Object::toString)
                     .orElse("第 " + currentIteration + " 次回退");
             safelyEmit(sink, StreamChunk.graphIteration(
-                    currentIteration, MAX_ITERATIONS, reason, conversationId));
+                    currentIteration, WorkflowConstants.MAX_ITERATIONS, reason, conversationId));
         }
     }
 
