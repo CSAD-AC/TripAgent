@@ -12,6 +12,7 @@ import uno.zhuchen.agent.tool.ToolRegistry;
 import uno.zhuchen.workflow.state.BudgetPlan;
 import uno.zhuchen.workflow.state.Constraints;
 import uno.zhuchen.workflow.state.DayPlan;
+import uno.zhuchen.workflow.state.NextNode;
 import uno.zhuchen.workflow.state.RouteResult;
 import uno.zhuchen.workflow.state.TripPlanningStateKeys;
 import uno.zhuchen.workflow.util.JsonExtractor;
@@ -96,12 +97,17 @@ public class BudgetAgent extends BaseAgent {
                 .map(Object::toString)
                 .orElse("unknown");
 
-        String context = buildContext(state, constraints, route, itinerary) + "\n(conversationId=" + conversationId + ")";
+        // C6: 把 Manager 的 retryHint 拼入 context，让回退重试时 LLM 能看到上次失败原因
+        String retryHint = formatRetryHint(state);
+        String context = buildContext(state, constraints, route, itinerary) + "\n(conversationId=" + conversationId + ")"
+                + (retryHint.isEmpty() ? "" : "\n\n=== 上次校验未通过原因（请修复）===\n" + retryHint);
         String llmOutput;
         try {
             llmOutput = callLLMWithTools(SYSTEM_PROMPT, context, toolRegistry.getAll(), 15);
         } catch (Exception e) {
             log.error("[BudgetAgent] LLM 调用失败: {}", e.getMessage());
+            // M3 修复: 先 emit NodeError 事件让前端可见，再走 mock 兜底
+            emitEvent(StreamChunk.nodeError("budget", e.getMessage(), conversationId));
             return mockResult();
         }
 
@@ -115,7 +121,7 @@ public class BudgetAgent extends BaseAgent {
                     TripPlanningStateKeys.WORKER_BUDGET_RAW);
             // 注意:不要 put null value,Spring AI Alibaba Graph 的 ParallelNode 合并结果时
             // 用 Map.of(...),会因 null value 抛 NPE;findBudget() 通过 Optional.empty() 兜底
-            result.put(TripPlanningStateKeys.CONTROL_NEXT_NODE, "validation");
+            result.put(TripPlanningStateKeys.CONTROL_NEXT_NODE, NextNode.VALIDATION.key());
             result.put(TripPlanningStateKeys.OUTPUT_STATUS, "budget_raw");
             return result;
         }
@@ -130,7 +136,7 @@ public class BudgetAgent extends BaseAgent {
         emitEvent(StreamChunk.nodeData("budget", "budget", budgetData, budgetConvId));
 
         result.put(TripPlanningStateKeys.WORKER_BUDGET, budget);
-        result.put(TripPlanningStateKeys.CONTROL_NEXT_NODE, "validation");
+        result.put(TripPlanningStateKeys.CONTROL_NEXT_NODE, NextNode.VALIDATION.key());
         result.put(TripPlanningStateKeys.OUTPUT_STATUS, "budget_done");
         return result;
     }
@@ -214,7 +220,7 @@ public class BudgetAgent extends BaseAgent {
         BudgetPlan mock = BudgetPlan.of(breakdown, 5000);
         return Map.of(
                 TripPlanningStateKeys.WORKER_BUDGET, mock,
-                TripPlanningStateKeys.CONTROL_NEXT_NODE, "validation",
+                TripPlanningStateKeys.CONTROL_NEXT_NODE, NextNode.VALIDATION.key(),
                 TripPlanningStateKeys.OUTPUT_STATUS, "budget_mock"
         );
     }

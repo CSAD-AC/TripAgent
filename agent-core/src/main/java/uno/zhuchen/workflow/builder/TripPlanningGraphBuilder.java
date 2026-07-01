@@ -11,7 +11,9 @@ import uno.zhuchen.workflow.agent.ReportAgent;
 import uno.zhuchen.workflow.agent.RouteAgent;
 import uno.zhuchen.workflow.agent.ValidationAgent;
 import uno.zhuchen.workflow.state.KeyStrategyFactoryProvider;
+import uno.zhuchen.workflow.state.NextNode;
 import uno.zhuchen.workflow.state.TripPlanningStateKeys;
+import uno.zhuchen.workflow.util.GraphEventEmitter;
 
 import java.util.Map;
 
@@ -83,8 +85,29 @@ public class TripPlanningGraphBuilder {
      * 构建完整 SWV Graph(并行版)
      *
      * 拓扑:manager → parallel_group → {route, itinerary} → budget → validation → report
+     *
+     * @deprecated 由 {@link #build(GraphEventEmitter)} 替代;C1 修复后必须显式注入 emitter
      */
+    @Deprecated
     public CompiledGraph build() throws GraphStateException {
+        return build(chunk -> { /* no-op emitter,emitEvent 调用会被丢弃 */ });
+    }
+
+    /**
+     * 构建 Graph 并把 emitter 注入到每个 Agent（C1 修复配套）.
+     * <p>每个 Agent 调用 setEmitter(emitter) 后,即使 Graph 框架在并行调度时切换线程,
+     * 每个 Agent 仍然持有指向同一 sink 的引用,事件不会丢失.
+     *
+     * @param emitter Graph 事件发射器(由 GraphStreamRunner 提供)
+     */
+    public CompiledGraph build(GraphEventEmitter emitter) throws GraphStateException {
+        // C1 修复: 在装配时显式注入 emitter,避免 ThreadLocal 在并行线程下的事件丢失
+        managerAgent.setEmitter(emitter);
+        routeAgent.setEmitter(emitter);
+        itineraryAgent.setEmitter(emitter);
+        budgetAgent.setEmitter(emitter);
+        validationAgent.setEmitter(emitter);
+        reportAgent.setEmitter(emitter);
         StateGraph graph = new StateGraph(KeyStrategyFactoryProvider.create())
                 .addNode("manager", node_async(managerAgent))
                 .addNode("parallel_group", node_async(state -> Map.of()))
@@ -98,25 +121,22 @@ public class TripPlanningGraphBuilder {
         graph.addEdge(START, "manager");
 
         // Manager 出口路由表
-        // 读取 next_node,根据语义路由:
-        // - "worker_group" → parallel_group（虚拟 fan-out,触发 Route + Itinerary 并行）
-        // - "route" / "itinerary" / "budget" → 对应节点（部分重跑,单线串行）
-        // - "report" → report（强制通过）
-        // - "first" / 默认 → manager（重提取）
+        // 读取 next_node,根据语义路由(M2 修复:用 NextNode 枚举注册,避免拼写错误):
+        // - WORKER_GROUP → parallel_group（虚拟 fan-out,触发 Route + Itinerary 并行）
+        // - ROUTE / ITINERARY / BUDGET → 对应节点（部分重跑,单线串行）
+        // - REPORT → report（强制通过）
+        // - FIRST / 默认 → manager（重提取）
         graph.addConditionalEdges("manager",
-                edge_async(state -> {
-                    String next = state.value(TripPlanningStateKeys.CONTROL_NEXT_NODE)
-                            .map(Object::toString)
-                            .orElse("first");
-                    return next;
-                }),
+                edge_async(state -> state.value(TripPlanningStateKeys.CONTROL_NEXT_NODE)
+                        .map(Object::toString)
+                        .orElse(NextNode.FIRST.key())),
                 Map.of(
-                        "worker_group", "parallel_group",
-                        "route", "route",
-                        "itinerary", "itinerary",
-                        "budget", "budget",
-                        "report", "report",
-                        "first", "manager"
+                        NextNode.WORKER_GROUP.key(), "parallel_group",
+                        NextNode.ROUTE.key(), "route",
+                        NextNode.ITINERARY.key(), "itinerary",
+                        NextNode.BUDGET.key(), "budget",
+                        NextNode.REPORT.key(), "report",
+                        NextNode.FIRST.key(), "manager"
                 ));
 
         // parallel_group 触发并行 fan-out:Route 和 Itinerary 同时启动
@@ -131,14 +151,14 @@ public class TripPlanningGraphBuilder {
 
         graph.addEdge("budget", "validation");
 
-        // Validation 出口：passed → report, failed → manager
+        // Validation 出口：passed → report, failed → manager(M2 修复:枚举注册)
         graph.addConditionalEdges("validation",
                 edge_async(state -> state.value(TripPlanningStateKeys.CONTROL_NEXT_NODE)
                         .map(Object::toString)
-                        .orElse("report")),
+                        .orElse(NextNode.REPORT.key())),
                 Map.of(
-                        "report", "report",
-                        "manager", "manager"
+                        NextNode.REPORT.key(), "report",
+                        NextNode.MANAGER.key(), "manager"
                 ));
 
         // Report → END

@@ -11,6 +11,7 @@ import uno.zhuchen.agent.llm.ChatModel;
 import uno.zhuchen.agent.tool.ToolRegistry;
 import uno.zhuchen.workflow.state.Constraints;
 import uno.zhuchen.workflow.state.DayPlan;
+import uno.zhuchen.workflow.state.NextNode;
 import uno.zhuchen.workflow.state.TripPlanningStateKeys;
 import uno.zhuchen.workflow.util.JsonExtractor;
 
@@ -111,12 +112,17 @@ public class ItineraryAgent extends BaseAgent {
                 .map(Object::toString)
                 .orElse("unknown");
 
-        String context = buildContext(constraints) + "\n(conversationId=" + conversationId + ")";
+        // C6: 把 Manager 的 retryHint 拼入 context，让回退重试时 LLM 能看到上次失败原因
+        String retryHint = formatRetryHint(state);
+        String context = buildContext(constraints) + "\n(conversationId=" + conversationId + ")"
+                + (retryHint.isEmpty() ? "" : "\n\n=== 上次校验未通过原因（请修复）===\n" + retryHint);
         String llmOutput;
         try {
             llmOutput = callLLMWithTools(SYSTEM_PROMPT, context, toolRegistry.getAll(), 15);
         } catch (Exception e) {
             log.error("[ItineraryAgent] LLM 工具循环失败: {}", e.getMessage());
+            // M3 修复: 先 emit NodeError 事件让前端可见，再走 mock 兜底
+            emitEvent(StreamChunk.nodeError("itinerary", e.getMessage(), conversationId));
             return mockResult();
         }
 
@@ -130,7 +136,7 @@ public class ItineraryAgent extends BaseAgent {
                     llmOutput, TripPlanningStateKeys.WORKER_ITINERARY_RAW);
             // 注意:不要 put null value,Spring AI Alibaba Graph 的 ParallelNode 合并结果时
             // 用 Map.of(...),会因 null value 抛 NPE;findItinerary() 通过 Optional.empty() 兜底
-            result.put(TripPlanningStateKeys.CONTROL_NEXT_NODE, "budget");
+            result.put(TripPlanningStateKeys.CONTROL_NEXT_NODE, NextNode.BUDGET.key());
             result.put(TripPlanningStateKeys.OUTPUT_STATUS, "itinerary_raw");
             return result;
         }
@@ -146,7 +152,7 @@ public class ItineraryAgent extends BaseAgent {
         emitEvent(StreamChunk.nodeData("itinerary", "dayplans", Map.of("days", daysList), itineraryConvId));
 
         result.put(TripPlanningStateKeys.WORKER_ITINERARY, itinerary);
-        result.put(TripPlanningStateKeys.CONTROL_NEXT_NODE, "budget");
+        result.put(TripPlanningStateKeys.CONTROL_NEXT_NODE, NextNode.BUDGET.key());
         result.put(TripPlanningStateKeys.OUTPUT_STATUS, "itinerary_done");
         return result;
     }
@@ -223,7 +229,7 @@ public class ItineraryAgent extends BaseAgent {
 
         return Map.of(
                 TripPlanningStateKeys.WORKER_ITINERARY, mockDays,
-                TripPlanningStateKeys.CONTROL_NEXT_NODE, "budget",
+                TripPlanningStateKeys.CONTROL_NEXT_NODE, NextNode.BUDGET.key(),
                 TripPlanningStateKeys.OUTPUT_STATUS, "itinerary_mock"
         );
     }
