@@ -77,7 +77,11 @@ public final class TripPlanningStateKeys {
      */
     public static final String CONTROL_NEXT_NODE = "next_node";
 
-    /** 迭代计数（首次为 0，每次回退 +1，上限 2） */
+    /**
+     * 迭代计数（首次为 0，每次回退 +1，上限见 {@link WorkflowConstants#MAX_ITERATIONS}）。
+     * <p>当前 MAX_ITERATIONS = 3，即：首次执行 + 最多 2 次回退；达到上限后
+     * ManagerAgent 强制结束流程（next_node = "report"）。
+     */
     public static final String CONTROL_ITERATION_COUNT = "iteration_count";
 
     /** 警告信息列表（AppendStrategy） */
