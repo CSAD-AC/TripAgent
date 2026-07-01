@@ -42,17 +42,6 @@ public class StreamChunk {
     /** 心跳事件 — 反问阻塞期间定期推送,防止反向代理 timeout */
     public static final String TYPE_HEARTBEAT = "heartbeat";
 
-    // ============ Graph 工作流新增事件（Phase 3 Day 6）============
-
-    /** 节点开始执行 */
-    public static final String TYPE_NODE_START = "node_start";
-
-    /** 节点执行结束 */
-    public static final String TYPE_NODE_END = "node_end";
-
-    /** 节点执行警告（如软约束未满足,触发回退） */
-    public static final String TYPE_NODE_WARNING = "node_warning";
-
     /** 条件边选择（用于前端可视化 Graph 流向） */
     public static final String TYPE_BRANCH_TAKEN = "branch_taken";
 
@@ -134,6 +123,9 @@ public class StreamChunk {
 
     /** 目标节点（branch_taken 事件 to 字段） */
     private String to;
+
+    /** 链路追踪 ID（trace_id 优化 #8）— session_init 事件携带，前端用于错误反馈 */
+    private String traceId;
 
     public static StreamChunk thinking(String content, String conversationId) {
         return StreamChunk.builder()
@@ -234,11 +226,13 @@ public class StreamChunk {
      * 告诉前端当前会话的 ID。前端拿到后可以写进 URL hash 实现刷新保活。
      *
      * @param conversationId 当前会话的 ID（由后端生成或校验通过后的值）
+     * @param traceId        链路追踪 ID（trace_id 优化 #8），同一请求的所有日志都会带此 ID
      */
-    public static StreamChunk sessionInit(String conversationId) {
+    public static StreamChunk sessionInit(String conversationId, String traceId) {
         return StreamChunk.builder()
                 .type(TYPE_SESSION_INIT)
                 .conversationId(conversationId)
+                .traceId(traceId)
                 .build();
     }
 
@@ -284,38 +278,6 @@ public class StreamChunk {
     }
 
     // ============ Graph 事件工厂方法（Phase 3 Day 6）============
-
-    /**
-     * @deprecated 由 {@link #nodeStatus(String, String, String)} 替代
-     */
-    @Deprecated
-    public static StreamChunk nodeStart(String nodeName, String conversationId) {
-        return StreamChunk.builder()
-                .type(TYPE_NODE_START)
-                .toolName(nodeName)
-                .content("节点开始")
-                .conversationId(conversationId)
-                .build();
-    }
-
-    public static StreamChunk nodeEnd(String nodeName, String conversationId, long durationMs) {
-        return StreamChunk.builder()
-                .type(TYPE_NODE_END)
-                .toolName(nodeName)
-                .content("节点完成")
-                .conversationId(conversationId)
-                .durationMs(durationMs)
-                .build();
-    }
-
-    public static StreamChunk nodeWarning(String nodeName, String message, String conversationId) {
-        return StreamChunk.builder()
-                .type(TYPE_NODE_WARNING)
-                .toolName(nodeName)
-                .content(message)
-                .conversationId(conversationId)
-                .build();
-    }
 
     public static StreamChunk branchTaken(String fromNode, String toNode, String condition, String conversationId) {
         return StreamChunk.builder()
@@ -401,6 +363,23 @@ public class StreamChunk {
                 .type(TYPE_NODE_DATA)
                 .node(node)
                 .dataType(dataType)
+                .data(data)
+                .conversationId(conversationId)
+                .build();
+    }
+
+    /**
+     * 节点异常事件 — Worker / Validation 异常抛出前的可观测信号,
+     * 让前端能看到具体哪个节点在哪一步出错（C5/M3/M4 修复配套）
+     */
+    public static StreamChunk nodeError(String node, String errorMessage, String conversationId) {
+        Map<String, Object> data = new java.util.LinkedHashMap<>();
+        data.put("error", errorMessage);
+        return StreamChunk.builder()
+                .type("node_error")
+                .node(node)
+                .dataType("error")
+                .content(errorMessage)
                 .data(data)
                 .conversationId(conversationId)
                 .build();

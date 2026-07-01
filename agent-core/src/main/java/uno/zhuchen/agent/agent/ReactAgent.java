@@ -2,6 +2,7 @@ package uno.zhuchen.agent.agent;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.ToolResponseMessage;
@@ -216,6 +217,8 @@ public class ReactAgent {
      */
     public Flux<StreamChunk> stream(String userInput, String conversationId) {
         long start = System.currentTimeMillis();
+        // trace_id 优化 #8: 从 Controller 入口继承的 MDC 拿 traceId
+        String traceId = MDC.get("traceId");
 
         // 防止同一 conversationId 被并发请求处理（导致消息历史交叉污染）
         AtomicBoolean inProgress =
@@ -238,9 +241,14 @@ public class ReactAgent {
         ToolCallback[] allTools = toolRegistry.getAll();
 
         return nextIteration(state, allTools, 0, start)
+                // Reactor 跨线程时 MDC 不会自动传播,需要在 doFirst 重新 put
+                .doFirst(() -> {
+                    if (traceId != null) MDC.put("traceId", traceId);
+                })
                 .doFinally(signalType -> {
                     inProgress.set(false);
                     conversationLocks.remove(conversationId);
+                    MDC.remove("traceId");
                 });
     }
 

@@ -3,6 +3,7 @@ package uno.zhuchen.agent.controller;
 import jakarta.validation.Valid;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -48,6 +49,9 @@ public class AgentController {
     /** 心跳间隔(秒),小于多数反向代理 60s idle timeout */
     private static final int HEARTBEAT_INTERVAL_SECONDS = 15;
 
+    /** MDC 链路追踪 key,所有日志输出会自动带 [traceId=xxx] 前缀 */
+    private static final String MDC_TRACE_ID = "traceId";
+
     private final ReactAgent reactAgent;
     private final ClarificationBroker clarificationBroker;
     private final GraphStreamRunner graphStreamRunner;
@@ -57,6 +61,14 @@ public class AgentController {
         this.reactAgent = reactAgent;
         this.clarificationBroker = clarificationBroker;
         this.graphStreamRunner = graphStreamRunner;
+    }
+
+    /**
+     * 为每个请求生成 traceId 并放入 MDC,贯穿整个调用链路的日志都会带这个 ID
+     * (trace_id 优化 #8,ReAct / Graph 双模式共享)
+     */
+    private String newTraceId() {
+        return UUID.randomUUID().toString().substring(0, 8);
     }
 
     /**
@@ -114,6 +126,8 @@ public class AgentController {
     @PostMapping(value = "/chat/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<StreamChunk> stream(@Valid @RequestBody ChatRequest request) {
         String conversationId = resolveConversationId(request.getConversationId());
+        String traceId = newTraceId();
+        MDC.put(MDC_TRACE_ID, traceId);
         log.info("收到流式聊天请求, conversationId={}, message长度={}",
                 conversationId,
                 request.getMessage() != null ? request.getMessage().length() : 0);
@@ -129,6 +143,7 @@ public class AgentController {
             if (cleaned.compareAndSet(false, true)) {
                 clarificationBroker.unregisterEmitter(conversationId);
                 clarificationSink.tryEmitComplete();
+                MDC.remove(MDC_TRACE_ID);
             }
         };
 
@@ -140,8 +155,8 @@ public class AgentController {
                     doCleanup.run();
                 });
 
-        // 4. 第一个事件:session_init
-        Flux<StreamChunk> sessionInitEvent = Flux.just(StreamChunk.sessionInit(conversationId));
+        // 4. 第一个事件:session_init,携带 traceId
+        Flux<StreamChunk> sessionInitEvent = Flux.just(StreamChunk.sessionInit(conversationId, traceId));
 
         // 5. 心跳流(主事件流未结束时持续推送,主事件流结束则停止)
         Flux<StreamChunk> heartbeat = Flux.interval(Duration.ofSeconds(HEARTBEAT_INTERVAL_SECONDS))
@@ -188,6 +203,8 @@ public class AgentController {
     @PostMapping(value = "/chat/graph", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<StreamChunk> graphStream(@Valid @RequestBody ChatRequest request) {
         String conversationId = resolveConversationId(request.getConversationId());
+        String traceId = newTraceId();
+        MDC.put(MDC_TRACE_ID, traceId);
         log.info("收到 Graph 流式请求, conversationId={}, message长度={}",
                 conversationId, request.getMessage() != null ? request.getMessage().length() : 0);
 
@@ -201,13 +218,14 @@ public class AgentController {
             if (graphCleaned.compareAndSet(false, true)) {
                 clarificationBroker.unregisterEmitter(conversationId);
                 clarificationSink.tryEmitComplete();
+                MDC.remove(MDC_TRACE_ID);
             }
         };
 
         // 3. 主事件流（GraphStreamRunner 内部已发射 session_init + graph_topology + 全生命周期事件）
         //    注意: Sinks.Many.unicast() 只允许单订阅者，所以心跳不能用 mainStream.last() 做终止信号
         Sinks.One<Void> graphCompletionSignal = Sinks.one();
-        Flux<StreamChunk> mainStream = graphStreamRunner.runStream(request.getMessage(), conversationId)
+        Flux<StreamChunk> mainStream = graphStreamRunner.runStream(request.getMessage(), conversationId, traceId)
                 .doFinally(signalType -> graphCompletionSignal.tryEmitEmpty())
                 .doOnTerminate(graphCleanup)
                 .doOnCancel(() -> {
