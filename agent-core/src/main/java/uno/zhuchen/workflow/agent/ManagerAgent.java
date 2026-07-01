@@ -12,8 +12,10 @@ import uno.zhuchen.agent.llm.ChatModel;
 import uno.zhuchen.agent.tool.AskUserTool;
 import uno.zhuchen.agent.tool.AskUserToolCallback;
 import uno.zhuchen.workflow.state.Constraints;
+import uno.zhuchen.workflow.state.NextNode;
 import uno.zhuchen.workflow.state.TripPlanningStateKeys;
 import uno.zhuchen.workflow.state.ValidationReport;
+import uno.zhuchen.workflow.state.WorkflowConstants;
 import uno.zhuchen.workflow.util.JsonExtractor;
 
 import java.util.ArrayList;
@@ -24,9 +26,9 @@ import java.util.Map;
 /**
  * 主管 Agent — Supervisor 层
  *
- * 两种执行模式（通过 state[validation_report] 是否存在区分）:
- * - 首次模式: 提取约束 + softRequirements + 调用 AskUserTool 复述确认
- * - 回退模式: 接收 ValidationReport, LLM 决策 retry/ask_user/give_up
+ * 两种执行模式（通过 iteration_count 区分,#1 M1 修复）:
+ * - 首次模式 (iteration == 0): 提取约束 + softRequirements + 调用 AskUserTool 复述确认
+ * - 回退模式 (iteration > 0): 接收 ValidationReport, LLM 决策 retry/ask_user/give_up
  *
  * 状态转移（state[next_node]）:
  * - 首次: next_node = "confirmed" (用户确认后进 worker_group)
@@ -121,11 +123,17 @@ public class ManagerAgent extends BaseAgent {
 
     @Override
     protected Map<String, Object> doExecute(OverAllState state) {
-        // 区分模式：state 中有 validation_report 则是回退模式
-        if (findValidationReport(state).isPresent()) {
-            return handleFallback(state);
+        // M1 修复: 用 iteration_count 判别首次/回退模式,
+        // 避免 validation_report 状态污染导致的回退态误判。
+        // 旧实现: findValidationReport(state).isPresent() — validation_report 写入后永不删除,
+        // 一旦 state 出现过报告,后续 manager 节点会持续走 handleFallback,语义错误。
+        int iteration = state.value(TripPlanningStateKeys.CONTROL_ITERATION_COUNT)
+                .map(v -> ((Number) v).intValue())
+                .orElse(0);
+        if (iteration == 0) {
+            return handleFirstTime(state);
         }
-        return handleFirstTime(state);
+        return handleFallback(state);
     }
 
     /** 给缺失字段填充合理的默认值 */
@@ -200,14 +208,14 @@ public class ManagerAgent extends BaseAgent {
             log.info("[ManagerAgent] 用户确认约束, 进入 worker_group");
             return Map.of(
                     TripPlanningStateKeys.CONSTRAINTS, constraints,
-                    TripPlanningStateKeys.CONTROL_NEXT_NODE, "worker_group",
+                    TripPlanningStateKeys.CONTROL_NEXT_NODE, NextNode.WORKER_GROUP.key(),
                     TripPlanningStateKeys.OUTPUT_STATUS, "constraints_confirmed"
             );
         } else {
             log.info("[ManagerAgent] 用户需修改约束, 重新提取");
             return Map.of(
                     TripPlanningStateKeys.CONSTRAINTS, constraints,
-                    TripPlanningStateKeys.CONTROL_NEXT_NODE, "first",
+                    TripPlanningStateKeys.CONTROL_NEXT_NODE, NextNode.FIRST.key(),
                     TripPlanningStateKeys.OUTPUT_STATUS, "constraints_rejected"
             );
         }
@@ -227,12 +235,12 @@ public class ManagerAgent extends BaseAgent {
         log.info("[ManagerAgent] 回退模式: iteration={}→{}, failures={}",
                 iteration, newIteration, report.getFailures().size());
 
-        // 达上限 → 强制给报告
-        if (newIteration >= 2) {
-            log.warn("[ManagerAgent] 达到最大迭代次数, 强制给报告");
+        // 达上限 → 强制给报告（允许 2 次回退，即 iteration < MAX_ITERATIONS 仍可重试）
+        if (newIteration >= WorkflowConstants.MAX_ITERATIONS) {
+            log.warn("[ManagerAgent] 达到最大迭代次数 ({}), 强制给报告", WorkflowConstants.MAX_ITERATIONS);
             return Map.of(
                     TripPlanningStateKeys.CONTROL_ITERATION_COUNT, newIteration,
-                    TripPlanningStateKeys.CONTROL_NEXT_NODE, "report",
+                    TripPlanningStateKeys.CONTROL_NEXT_NODE, NextNode.REPORT.key(),
                     TripPlanningStateKeys.OUTPUT_STATUS, "force_passed"
             );
         }
@@ -255,10 +263,10 @@ public class ManagerAgent extends BaseAgent {
         emitEvent(StreamChunk.nodeData("manager", "decision", decisionData, convId));
 
         String nextNode = switch (decision.decision()) {
-            case "retry" -> decision.targetWorker() != null ? decision.targetWorker() : "itinerary";
-            case "ask_user" -> "first";
-            case "give_up" -> "report";
-            default -> "report";
+            case "retry" -> decision.targetWorker() != null ? decision.targetWorker() : NextNode.ITINERARY.key();
+            case "ask_user" -> NextNode.FIRST.key();
+            case "give_up" -> NextNode.REPORT.key();
+            default -> NextNode.REPORT.key();
         };
 
         // 把 retryHint 注入 state 供目标 worker 看到

@@ -12,6 +12,7 @@ import uno.zhuchen.agent.tool.ToolRegistry;
 import uno.zhuchen.workflow.state.BudgetPlan;
 import uno.zhuchen.workflow.state.Constraints;
 import uno.zhuchen.workflow.state.DayPlan;
+import uno.zhuchen.workflow.state.NextNode;
 import uno.zhuchen.workflow.state.TripPlanningStateKeys;
 import uno.zhuchen.workflow.state.ValidationReport;
 import uno.zhuchen.workflow.util.JsonExtractor;
@@ -70,8 +71,8 @@ public class ValidationAgent extends BaseAgent {
     protected Map<String, Object> doExecute(OverAllState state) {
         Constraints constraints = findConstraints(state).orElse(null);
         if (constraints == null) {
-            log.warn("[ValidationAgent] 无约束, 跳过校验");
-            return mockPassed();
+            // M4 修复: 无约束本身就是异常状态,不能再默认通过
+            throw new IllegalStateException("[ValidationAgent] state 缺少 constraints, 无法校验");
         }
 
         BudgetPlan budget = findBudget(state).orElse(null);
@@ -81,18 +82,22 @@ public class ValidationAgent extends BaseAgent {
                 constraints.getDestination(), constraints.getDays(), constraints.getBudget());
 
         String context = buildContext(state, constraints, budget, itinerary);
-        String llmJson;
-        try {
-            llmJson = callLLM(SYSTEM_PROMPT, context);
-        } catch (Exception e) {
-            log.error("[ValidationAgent] LLM 调用失败: {}", e.getMessage());
-            return mockPassed();
-        }
+        String convId = state.value(TripPlanningStateKeys.INPUT_CONVERSATION_ID)
+                .map(Object::toString).orElse("unknown");
 
-        ValidationReport report = parseValidation(llmJson);
+        // M5 修复: 用 callLLMWithTools 暴露 calculator 等工具,
+        // 让 prompt 中的"可用 calculator 精确计算"真正可行.
+        org.springframework.ai.tool.ToolCallback[] tools = toolRegistry != null
+                ? toolRegistry.getAll() : new org.springframework.ai.tool.ToolCallback[0];
+        String llmJson = callLLMWithTools(SYSTEM_PROMPT, context, tools, 5);
+
+        ValidationReport report = parseValidation(llmJson, convId);
         if (report == null) {
-            log.warn("[ValidationAgent] LLM 输出解析失败, 默认通过");
-            return mockPassed();
+            // M4 修复: 解析失败不再默认通过,改为抛出以 fail-closed,
+            // 让 Graph 框架终止而不是把"未校验"报告送出去.
+            emitEvent(StreamChunk.nodeError("validation",
+                    "校验 JSON 解析失败, 终止流程", convId));
+            throw new IllegalStateException("[ValidationAgent] LLM 输出解析失败, 终止流程以防假阳性");
         }
 
         log.info("[ValidationAgent] 校验完成: passed={}, failures={}, warnings={}",
@@ -100,11 +105,10 @@ public class ValidationAgent extends BaseAgent {
 
         // 发射 validation 数据事件
         Map<String, Object> validationData = objectMapper.convertValue(report, new TypeReference<Map<String, Object>>() {});
-        String validationConvId = state.value(TripPlanningStateKeys.INPUT_CONVERSATION_ID)
-                .map(Object::toString).orElse("unknown");
-        emitEvent(StreamChunk.nodeData("validation", "validation", validationData, validationConvId));
+        emitEvent(StreamChunk.nodeData("validation", "validation", validationData, convId));
 
-        String nextNode = Boolean.TRUE.equals(report.getPassed()) ? "report" : "manager";
+        String nextNode = Boolean.TRUE.equals(report.getPassed())
+                ? NextNode.REPORT.key() : NextNode.MANAGER.key();
         return Map.of(
                 TripPlanningStateKeys.VALIDATION_REPORT, report,
                 TripPlanningStateKeys.CONTROL_NEXT_NODE, nextNode,
@@ -162,12 +166,28 @@ public class ValidationAgent extends BaseAgent {
         return sb.toString();
     }
 
-    private ValidationReport parseValidation(String json) {
+    private ValidationReport parseValidation(String json, String convId) {
         try {
             var root = jsonExtractor.extract(json);
             if (root == null) return null;
 
-            boolean passed = !root.hasNonNull("passed") || root.get("passed").asBoolean();
+            // M4 修复: passed 缺失按 fail-closed 处理,而不是默认通过.
+            // 校验是安全关键路径,LLM 没明确表态时拒绝落地.
+            if (!root.hasNonNull("passed")) {
+                log.error("[ValidationAgent] LLM 输出缺少 passed 字段, 按 fail-closed 处理");
+                emitEvent(StreamChunk.nodeError("validation",
+                        "校验输出缺少 passed 字段, 按未通过处理", convId));
+                return ValidationReport.builder()
+                        .passed(false)
+                        .failures(List.of(ValidationReport.Failure.builder()
+                                .dimension("static.budget")
+                                .requirement("passed")
+                                .reason("LLM 输出缺少 passed 字段")
+                                .suggestion("重试或检查 LLM 输出格式").build()))
+                        .warnings(List.of())
+                        .build();
+            }
+            boolean passed = root.get("passed").asBoolean();
 
             List<ValidationReport.Failure> failures = new ArrayList<>();
             if (root.has("failures") && root.get("failures").isArray()) {
@@ -197,14 +217,5 @@ public class ValidationAgent extends BaseAgent {
             log.error("[ValidationAgent] 解析校验 JSON 失败: {}", e.getMessage());
             return null;
         }
-    }
-
-    private Map<String, Object> mockPassed() {
-        return Map.of(
-                TripPlanningStateKeys.VALIDATION_REPORT,
-                ValidationReport.builder().passed(true).failures(List.of()).warnings(List.of()).build(),
-                TripPlanningStateKeys.CONTROL_NEXT_NODE, "report",
-                TripPlanningStateKeys.OUTPUT_STATUS, "validation_passed"
-        );
     }
 }
