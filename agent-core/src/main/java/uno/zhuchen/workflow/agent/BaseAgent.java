@@ -4,6 +4,7 @@ import com.alibaba.cloud.ai.graph.OverAllState;
 import com.alibaba.cloud.ai.graph.action.NodeAction;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.SystemMessage;
@@ -55,35 +56,45 @@ public abstract class BaseAgent implements NodeAction {
     /** Agent 名称（用于日志和 Graph 节点 ID） */
     protected final String agentName;
 
-    // ============ Graph 流事件发射器 ============
+    // ============ M10: LLM 调用超时控制 ============
+
+    /** 单次 chatModel.call() 超时阈值(ms);超过则放弃该次调用走 mock 兜底 */
+    protected static final long LLM_TIMEOUT_MS = 120_000;
+
+    /** 单次 chatModel.call() 最大重试次数(超时或瞬时异常时);0 表示不重试 */
+    protected static final int LLM_MAX_RETRIES = 2;
+
+    /** 共享线程池用于把 chatModel.call() 包装成 Future,实现超时中断 */
+    private static final java.util.concurrent.ExecutorService LLM_TIMEOUT_POOL =
+            java.util.concurrent.Executors.newCachedThreadPool(r -> {
+                Thread t = new Thread(r, "agent-llm-timeout");
+                t.setDaemon(true);
+                return t;
+            });
+
+    // ============ Graph 流事件发射器(C1 修复: 构造器注入替代 ThreadLocal) ============
 
     /**
-     * 线程局部的事件发射器 — GraphStreamRunner 在单个 boundedElastic 线程上串行执行，
-     * 该线程调用每个 Agent 的 apply()，在此线程上 set 的 emitter 在同一线程的 Agent 内可被读取。
+     * 实例级 emitter 引用 — 由 GraphStreamRunner 在 build Graph 前通过 setEmitter() 注入.
+     * <p>不再使用 ThreadLocal,避免并行节点(route + itinerary)线程切换时事件丢失.
      */
-    private static final ThreadLocal<Consumer<StreamChunk>> eventEmitterHolder = new ThreadLocal<>();
+    private uno.zhuchen.workflow.util.GraphEventEmitter emitter;
 
     /**
-     * 设置当前线程的事件发射器（由 GraphStreamRunner 在执行 Graph 前调用）
+     * 注入 Graph 事件发射器(由 TripPlanningGraphBuilder.build(emitter) 在装配时调用).
+     * <p>对每个节点独立调用,确保即使 Graph 框架使用线程池调度,各 Agent 的 emitter
+     * 引用都指向同一个 sink,从而并行节点的事件能正确汇聚.
      */
-    public static void setEventEmitterForThread(Consumer<StreamChunk> emitter) {
-        eventEmitterHolder.set(emitter);
-    }
-
-    /**
-     * 清除当前线程的事件发射器（由 GraphStreamRunner 在 Graph 执行完毕后调用）
-     */
-    public static void clearEventEmitterForThread() {
-        eventEmitterHolder.remove();
+    public void setEmitter(uno.zhuchen.workflow.util.GraphEventEmitter emitter) {
+        this.emitter = emitter;
     }
 
     /**
      * 发射 Graph 流事件 — 子类可通过此方法发送 node_data / node_progress 等事件
      */
     protected void emitEvent(StreamChunk event) {
-        Consumer<StreamChunk> emitter = eventEmitterHolder.get();
         if (emitter != null) {
-            emitter.accept(event);
+            emitter.emit(event);
         }
     }
 
@@ -97,16 +108,23 @@ public abstract class BaseAgent implements NodeAction {
      * 模板方法 — Graph 框架调用入口
      *
      * 子类不应重写本方法，应重写 doExecute()。
+     *
+     * <p>trace_id 优化 #8：从 state[trace_id] 读取链路追踪 ID 并放入 MDC，
+     * 本节点所有日志自动带 [traceId=xxx] 前缀。finally 清理 MDC 避免线程复用串号。
      */
     @Override
     public final Map<String, Object> apply(OverAllState state) throws Exception {
         long start = System.currentTimeMillis();
-        log.debug("[{}] apply() 入口, conversationId={}, iterationCount={}",
-                agentName,
-                state.value(TripPlanningStateKeys.INPUT_CONVERSATION_ID).orElse("unknown"),
-                state.value(TripPlanningStateKeys.CONTROL_ITERATION_COUNT).orElse(0));
-
+        String traceId = state.value(TripPlanningStateKeys.INPUT_TRACE_ID).map(Object::toString).orElse(null);
+        if (traceId != null) {
+            MDC.put("traceId", traceId);
+        }
         try {
+            log.debug("[{}] apply() 入口, conversationId={}, iterationCount={}",
+                    agentName,
+                    state.value(TripPlanningStateKeys.INPUT_CONVERSATION_ID).orElse("unknown"),
+                    state.value(TripPlanningStateKeys.CONTROL_ITERATION_COUNT).orElse(0));
+
             Map<String, Object> result = doExecute(state);
             long duration = System.currentTimeMillis() - start;
             log.debug("[{}] doExecute 完成, 耗时 {}ms, 输出 keys={}",
@@ -117,6 +135,10 @@ public abstract class BaseAgent implements NodeAction {
             log.error("[{}] doExecute 失败, 耗时 {}ms, error={}",
                     agentName, duration, e.getMessage(), e);
             throw e;
+        } finally {
+            if (traceId != null) {
+                MDC.remove("traceId");
+            }
         }
     }
 
@@ -134,6 +156,9 @@ public abstract class BaseAgent implements NodeAction {
      * 把 (systemPrompt, userPrompt) 包装成 Message 列表调用 ChatModel。
      * 多数 Agent 只需要文本回复，不需要工具回调，所以不暴露 tools 参数。
      *
+     * <p>M10 修复：包装 {@link #callWithTimeout} 实现超时控制 + 重试，
+     * 防止 LLM API 慢响应阻塞 SSE 流。
+     *
      * @param systemPrompt 系统提示词
      * @param userPrompt   用户提示词
      * @return LLM 文本回复
@@ -144,7 +169,56 @@ public abstract class BaseAgent implements NodeAction {
                 new UserMessage(userPrompt)
         );
         // 显式传空 vararg,便于 mockito 严格模式 stub
-        return chatModel.call(messages, new org.springframework.ai.tool.ToolCallback[0]).getText();
+        AssistantMessage resp = callWithTimeout(messages, new org.springframework.ai.tool.ToolCallback[0]);
+        return resp.getText();
+    }
+
+    /**
+     * 把同步 chatModel.call 包装成有超时 + 重试的调用.
+     * <p>由于 ChatModel.call 是阻塞同步接口,无法真正中断正在执行的 HTTP 请求,
+     * 这里使用 Future.get(timeout) 模式:超时就放弃本次结果但线程仍会跑完.
+     * 实际生产建议在 Spring AI 层改用 ReactiveClient 才能彻底中断.
+     *
+     * @return LLM 响应;超时时抛 TimeoutException 让调用方走兜底
+     */
+    private AssistantMessage callWithTimeout(List<Message> messages,
+                                             org.springframework.ai.tool.ToolCallback[] tools) {
+        java.util.concurrent.TimeoutException lastTimeout = null;
+        for (int attempt = 0; attempt <= LLM_MAX_RETRIES; attempt++) {
+            java.util.concurrent.Future<AssistantMessage> future =
+                    LLM_TIMEOUT_POOL.submit(() -> chatModel.call(messages, tools));
+            try {
+                return future.get(LLM_TIMEOUT_MS, java.util.concurrent.TimeUnit.MILLISECONDS);
+            } catch (java.util.concurrent.TimeoutException te) {
+                lastTimeout = te;
+                future.cancel(true);
+                log.warn("[{}] LLM 调用超时 ({}ms), attempt={}/{}",
+                        agentName, LLM_TIMEOUT_MS, attempt + 1, LLM_MAX_RETRIES + 1);
+            } catch (java.util.concurrent.ExecutionException ee) {
+                // 拆包原始异常,如果是瞬时可重试错误(IOException/ConnectException)继续重试,否则抛出
+                Throwable cause = ee.getCause() != null ? ee.getCause() : ee;
+                if (attempt < LLM_MAX_RETRIES && isTransientError(cause)) {
+                    log.warn("[{}] LLM 调用瞬时异常 ({}), 重试 attempt={}",
+                            agentName, cause.getMessage(), attempt + 1);
+                    continue;
+                }
+                if (cause instanceof RuntimeException re) throw re;
+                throw new RuntimeException(cause);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                throw new RuntimeException("LLM 调用被中断", ie);
+            }
+        }
+        throw new RuntimeException("LLM 调用超时 " + LLM_TIMEOUT_MS + "ms (重试 " + LLM_MAX_RETRIES + " 次)",
+                lastTimeout);
+    }
+
+    private static boolean isTransientError(Throwable t) {
+        String name = t.getClass().getName();
+        return name.contains("IOException")
+                || name.contains("ConnectException")
+                || name.contains("SocketTimeoutException")
+                || name.contains("ResourceAccessException");
     }
 
     /**
@@ -169,7 +243,8 @@ public abstract class BaseAgent implements NodeAction {
         emitEvent(StreamChunk.nodeProgress(agentName, "thinking", "开始分析...", convId));
 
         for (int round = 0; round < maxRounds; round++) {
-            AssistantMessage response = chatModel.call(messages, tools);
+            // M10 修复: 走 callWithTimeout 包装,避免 LLM 卡死阻塞 SSE
+            AssistantMessage response = callWithTimeout(messages, tools);
             messages.add(response);
 
             if (!response.hasToolCalls()) {
@@ -289,11 +364,9 @@ public abstract class BaseAgent implements NodeAction {
         return findTyped(state, TripPlanningStateKeys.WORKER_ROUTE, RouteResult.class);
     }
 
-    /** 读取 List<DayPlan>（可选） */
-    @SuppressWarnings("unchecked")
+    /** 读取 List<DayPlan>（可选），元素类型做运行时校验（M7 修复） */
     protected Optional<List<DayPlan>> findItinerary(OverAllState state) {
-        return state.value(TripPlanningStateKeys.WORKER_ITINERARY)
-                .map(v -> (List<DayPlan>) v);
+        return findTypedList(state, TripPlanningStateKeys.WORKER_ITINERARY, DayPlan.class);
     }
 
     /** 读取 BudgetPlan（可选） */
@@ -332,5 +405,64 @@ public abstract class BaseAgent implements NodeAction {
                     }
                     return (T) v;
                 });
+    }
+
+    /**
+     * 通用类型安全读取 List<T>（M7 修复配套）.
+     * <p>对 List 元素也做 elementType.isInstance 校验,防止 Graph 框架
+     * 反序列化时元素类型丢失（如变成 {@code List<LinkedHashMap>}）导致下游 NPE.
+     *
+     * @param state       Graph 状态
+     * @param key         状态键
+     * @param elementType 列表元素类型
+     */
+    @SuppressWarnings("unchecked")
+    protected <T> Optional<List<T>> findTypedList(OverAllState state, String key, Class<T> elementType) {
+        return state.value(key).map(v -> {
+            if (v == null) return null;
+            if (!(v instanceof List<?> list)) {
+                throw new IllegalStateException(String.format(
+                        "[%s] state key=%s 期望 List 类型, 实际 %s",
+                        agentName, key, v.getClass().getSimpleName()));
+            }
+            for (int i = 0; i < list.size(); i++) {
+                Object elem = list.get(i);
+                if (elem != null && !elementType.isInstance(elem)) {
+                    throw new IllegalStateException(String.format(
+                            "[%s] state key=%s 第 %d 个元素类型不匹配: 期望 %s, 实际 %s",
+                            agentName, key, i, elementType.getSimpleName(),
+                            elem.getClass().getSimpleName()));
+                }
+            }
+            return (List<T>) list;
+        });
+    }
+
+    /**
+     * 读取 Manager 注入的 retryHint（C6 修复配套）。
+     * <p>ManagerAgent.handleFallback 把 ValidationAgent 的 failures 转写成 retryHint，
+     * 写入 {@link TripPlanningStateKeys#CONTROL_WARNINGS}。本方法提取文本片段供 Worker
+     * 拼入 context，让回退重试时 LLM 能看到上次失败原因。
+     *
+     * @param state Graph 状态
+     * @return 多行 hint 字符串；无则返回空串
+     */
+    protected String formatRetryHint(OverAllState state) {
+        Optional<Object> warnings = state.value(TripPlanningStateKeys.CONTROL_WARNINGS);
+        if (warnings.isEmpty()) return "";
+        Object raw = warnings.get();
+        if (raw == null) return "";
+        // CONTROL_WARNINGS 用 APPEND strategy,值可能是 List<String> 也可能是 String
+        if (raw instanceof List<?> list) {
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < list.size(); i++) {
+                if (list.get(i) != null) {
+                    sb.append("- ").append(list.get(i));
+                    if (i < list.size() - 1) sb.append("\n");
+                }
+            }
+            return sb.toString();
+        }
+        return raw.toString();
     }
 }
