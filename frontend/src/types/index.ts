@@ -32,6 +32,10 @@ export interface Message {
   iterationCount?: number
   /** API 模式（react/graph）— 用于消息气泡标识 */
   apiMode?: ApiMode
+  /** 错误标记 (true 表示流式过程发生不可恢复异常, ChatMessage 渲染红色边框) */
+  error?: boolean
+  /** 链路追踪 ID (仅 error=true 时携带, 用户报错反馈时用, #8 trace_id) */
+  traceId?: string
 }
 
 /** API 模式: react=ReAct 工具调用路径, graph=Graph 工作流路径 */
@@ -143,16 +147,13 @@ export interface SSEEvent {
     | 'session_init'
     | 'heartbeat'
     | 'clarification_request'
-    // Graph 新模式（替代 node_start/node_end/node_warning）
+    // Graph 工作流事件
     | 'graph_topology'
     | 'node_status'
     | 'node_progress'
     | 'node_data'
+    | 'node_error'
     | 'graph_iteration'
-    // Graph 旧模式（过渡期保留）
-    | 'node_start'
-    | 'node_end'
-    | 'node_warning'
     | 'branch_taken'
   content?: string
   toolName?: string
@@ -161,6 +162,8 @@ export interface SSEEvent {
   conversationId?: string
   durationMs?: number
   iterationInfo?: string
+  /** 链路追踪 ID (trace_id 优化 #8) -- session_init 携带, 前端展示在错误页 */
+  traceId?: string
   /** 反问事件专属 */
   questionId?: string
   allowCustom?: boolean

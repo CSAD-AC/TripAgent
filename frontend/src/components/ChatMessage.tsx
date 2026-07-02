@@ -3,7 +3,7 @@ import type { Message, ToolCallInfo, StreamIteration } from '../types'
 import { ItineraryCard } from './ItineraryCard'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { Loader2, CheckCircle2, XCircle, ChevronDown, ChevronRight } from 'lucide-react'
+import { Loader2, CheckCircle2, XCircle, ChevronDown, ChevronRight, AlertCircle } from 'lucide-react'
 import { useState } from 'react'
 
 interface ChatMessageProps {
@@ -299,19 +299,56 @@ export function ChatMessage({
     )
   }
 
+  // 错误态错误条 (红色边框 + trace_id, #8 trace_id 链路追踪)
+  const errorBanner = message.error ? (
+    <div
+      className="flex items-start gap-2 px-3 py-2 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800/60 text-xs text-red-700 dark:text-red-300"
+      role="alert"
+    >
+      <AlertCircle className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
+      <div className="flex-1 min-w-0">
+        <div className="font-medium">本次回答发生错误</div>
+        {message.traceId && (
+          <div className="mt-1 font-mono text-[11px] text-red-600/80 dark:text-red-400/80">
+            trace_id: {message.traceId}
+            <span className="ml-2 text-red-500/70 dark:text-red-400/70">
+              (反馈问题请附此 ID)
+            </span>
+          </div>
+        )}
+      </div>
+    </div>
+  ) : null
+
   // ── 无 segments 时的降级渲染（旧格式兼容） ──
   if (!iterations || iterations.length === 0) {
     return (
       <div className="flex w-full justify-start" role="log" aria-live="polite" aria-atomic="true">
         <div className="w-full space-y-2">
+          {errorBanner}
           {(isStreaming || message.type === 'thinking') && (
-            <div className="bg-warm-white dark:bg-charcoal-800 rounded-2xl rounded-tl-sm px-4 py-3 text-sm leading-relaxed text-charcoal-800 dark:text-charcoal-200" aria-live="polite">
+            <div
+              className={cn(
+                'rounded-2xl rounded-tl-sm px-4 py-3 text-sm leading-relaxed',
+                message.error
+                  ? 'bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800/60 text-red-700 dark:text-red-300'
+                  : 'bg-warm-white dark:bg-charcoal-800 text-charcoal-800 dark:text-charcoal-200'
+              )}
+              aria-live="polite"
+            >
               <span>{message.content}</span>
               {isStreaming && <span className="cursor-blink" />}
             </div>
           )}
           {!isStreaming && message.content && (
-            <div className="bg-warm-white dark:bg-charcoal-800 rounded-2xl rounded-tl-sm px-4 py-3 text-sm leading-relaxed text-charcoal-800 dark:text-charcoal-200 prose prose-sm max-w-none">
+            <div
+              className={cn(
+                'rounded-2xl rounded-tl-sm px-4 py-3 text-sm leading-relaxed prose prose-sm max-w-none',
+                message.error
+                  ? 'bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800/60 text-red-700 dark:text-red-300'
+                  : 'bg-warm-white dark:bg-charcoal-800 text-charcoal-800 dark:text-charcoal-200'
+              )}
+            >
               <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{message.content}</ReactMarkdown>
             </div>
           )}
@@ -327,6 +364,7 @@ export function ChatMessage({
   return (
     <div className="flex w-full justify-start" role="log" aria-live="polite" aria-atomic="true">
       <div className="w-full space-y-2">
+        {errorBanner}
         {iterations.map((iter, idx) => {
           const isLast = idx === iterations.length - 1
           return (

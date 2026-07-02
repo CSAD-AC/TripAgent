@@ -14,6 +14,8 @@ export function useChat() {
   const [isLoading, setIsLoading] = useState(false)
   /** 所有迭代的思考文字拼接（兼容旧版 + 简单文本展示） */
   const [streamContent, setStreamContent] = useState('')
+  /** 链路追踪 ID (trace_id 优化 #8) -- 后端 session_init 下发, 内部用 (error 事件写入 message.traceId) */
+  const [traceId, setTraceId] = useState<string | null>(null)
   /** 按迭代分段的完整流内容 */
   const [streamIterations, setStreamIterations] = useState<StreamIteration[]>([])
   /** 当前迭代编号 */
@@ -24,6 +26,8 @@ export function useChat() {
   const [graphTrace, setGraphTrace] = useState<GraphTrace | null>(null)
 
   const abortRef = useRef<AbortController | null>(null)
+  /** 当前正在流式写入的 assistant 消息 ID(error 事件需要标记这条消息) */
+  const currentAssistantIdRef = useRef<string | null>(null)
 
   // 按迭代存储（0-indexed；index 0 = iteration 1）
   const iterationTextsRef = useRef<string[]>([''])
@@ -68,10 +72,13 @@ export function useChat() {
    */
   function handleEvent(event: SSEEvent, onSessionInit?: (id: string) => void) {
     switch (event.type) {
-      // ── session_init: 后端权威下发 conversationId ──
+      // ── session_init: 后端权威下发 conversationId 与 traceId(#8 trace_id) ──
       case 'session_init': {
         if (event.conversationId && onSessionInit) {
           onSessionInit(event.conversationId)
+        }
+        if (event.traceId) {
+          setTraceId(event.traceId)
         }
         break
       }
@@ -169,33 +176,6 @@ export function useChat() {
         break
       }
 
-      // ── node_start: Graph 模式 - 节点开始执行(旧协议，过渡期保留) ──
-      case 'node_start': {
-        setGraphTrace((prev) => ({
-          currentNode: event.toolName || null,
-          completedNodes: prev?.completedNodes || [],
-          branches: prev?.branches || [],
-          warnings: prev?.warnings || [],
-        }))
-        break
-      }
-
-      // ── node_end: Graph 模式 - 节点执行完成(旧协议，过渡期保留) ──
-      case 'node_end': {
-        setGraphTrace((prev) => {
-          if (!prev) return prev
-          const completed = prev.completedNodes.includes(event.toolName || '')
-            ? prev.completedNodes
-            : [...prev.completedNodes, event.toolName || '']
-          return {
-            ...prev,
-            completedNodes: completed,
-            currentNode: prev.currentNode === event.toolName ? null : prev.currentNode,
-          }
-        })
-        break
-      }
-
       // ── node_status: Graph 新模式 - 节点生命周期状态变化 ──
       case 'node_status': {
         const nodeName = event.node || ''
@@ -273,6 +253,31 @@ export function useChat() {
         break
       }
 
+      // ── node_error: Graph 模式 - 节点执行失败 (M3/M4 修复配套)
+      //    在 nodeStatusMap 标 error, 同时累积到 warnings 供 GraphFlow 展示
+      case 'node_error': {
+        const nodeName = event.node || ''
+        if (!nodeName) break
+        setGraphTrace((prev) => {
+          const base = prev || {
+            currentNode: null,
+            completedNodes: [],
+            branches: [],
+            warnings: [],
+          }
+          return {
+            ...base,
+            currentNode: null,
+            nodeStatusMap: { ...(base.nodeStatusMap || {}), [nodeName]: 'error' },
+            warnings: [
+              ...(base.warnings || []),
+              `[${nodeName}] ${event.content || '节点执行失败'}`,
+            ],
+          }
+        })
+        break
+      }
+
       // ── node_progress: 累积节点实时进度(LLM 思考 / 工具调用中间结果) ──
       //    并行场景下 route 和 itinerary 会同时累积各自的进度,
       //    NodeDetailPanel 选中节点时按时间序列展示
@@ -334,18 +339,6 @@ export function useChat() {
         break
       }
 
-      // ── node_warning: Graph 模式 - 节点执行警告 ──
-      case 'node_warning': {
-        setGraphTrace((prev) => {
-          if (!prev) return null
-          return {
-            ...prev,
-            warnings: [...(prev.warnings || []), event.content || ''],
-          }
-        })
-        break
-      }
-
       // ── branch_taken: Graph 模式 - 条件边选择 ──
       case 'branch_taken': {
         setGraphTrace((prev) => {
@@ -371,10 +364,22 @@ export function useChat() {
         break
       }
 
-      // ── error: 不可恢复异常 ──
+      // ── error: 不可恢复异常
+      //    标记当前 assistant 消息为 error 状态并附 traceId(#8),
+      //    流结束 setMessages 时会把 content 写到 message 上,这里直接标记即可
       case 'error': {
         const lastIdx = iterationRef.current - 1
         iterationTextsRef.current[lastIdx] = event.content || '出错了'
+        const assistantId = currentAssistantIdRef.current
+        if (assistantId) {
+          setMessages((prev) =>
+            prev.map((msg) =>
+              msg.id === assistantId
+                ? { ...msg, error: true, traceId: traceId ?? undefined }
+                : msg
+            )
+          )
+        }
         break
       }
     }
@@ -415,6 +420,7 @@ export function useChat() {
       setMessages((prev) => [...prev, userMsg, assistantMsg])
       setIsLoading(true)
       setPendingClarification(null)  // 清空上一轮的反问
+      currentAssistantIdRef.current = assistantId  // error 事件标记用
 
       // 重置所有状态
       iterationTextsRef.current = ['']
@@ -500,7 +506,13 @@ export function useChat() {
         setMessages((prev) =>
           prev.map((msg) =>
             msg.id === assistantId
-              ? { ...msg, content: errorContent, type: 'final' as const }
+              ? {
+                  ...msg,
+                  content: errorContent,
+                  type: 'final' as const,
+                  error: true,
+                  traceId: traceId ?? undefined,
+                }
               : msg
           )
         )
@@ -512,6 +524,7 @@ export function useChat() {
         setCurrentIteration(1)
         iterationTextsRef.current = ['']
         iterationToolCallsRef.current = [[]]
+        currentAssistantIdRef.current = null
         abortRef.current = null
       }
     },
