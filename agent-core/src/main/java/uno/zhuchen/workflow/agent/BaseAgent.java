@@ -72,6 +72,23 @@ public abstract class BaseAgent implements NodeAction {
                 return t;
             });
 
+    // ============ 工具调用轮次硬上限(配合 Prompt 优化)============
+    //
+    // 旧实现各 Agent 硬编码 maxRounds=15,LLM 经常跑满 15 轮才输出 JSON,
+    // 既浪费 token 又触发 BaseAgent 强制收口。改用集中常量便于调优:
+    // - Worker (Route/Itinerary/Budget):Prompt 已约束 4-6 轮,留 8 轮缓冲
+    // - Validation:Prompt 已约束 ≤ 3 轮,留 4 轮缓冲
+    // - Manager 首次 (askUser 澄清):1-2 轮足够,留 3 轮
+
+    /** Worker (Route/Itinerary/Budget) 工具调用最大轮次。 */
+    protected static final int LLM_MAX_WORKER_ROUNDS = 8;
+
+    /** ValidationAgent 工具调用最大轮次(只需 calculator ≤ 1 次)。 */
+    protected static final int LLM_MAX_VALIDATION_ROUNDS = 4;
+
+    /** ManagerAgent 首次模式 (askUser 追问) 最大轮次。 */
+    protected static final int LLM_MAX_MANAGER_FIRST_ROUNDS = 3;
+
     // ============ Graph 流事件发射器(C1 修复: 构造器注入替代 ThreadLocal) ============
 
     /**
@@ -316,6 +333,41 @@ public abstract class BaseAgent implements NodeAction {
     private static String truncate(String s, int maxLen) {
         if (s == null) return "null";
         return s.length() <= maxLen ? s : s.substring(0, maxLen) + "...";
+    }
+
+    // ============ 纯 JSON 协议检查(Prompt 优化配套)============
+
+    /**
+     * 校验 LLM 输出是否严格符合"纯 JSON"协议。
+     * <p>判定条件:
+     * <ul>
+     *   <li>非 null / 非空</li>
+     *   <li>trim 后不含 markdown 代码块标记(```)</li>
+     *   <li>trim 后首字符是 { 或 [</li>
+     *   <li>trim 后末字符是 } 或 ]</li>
+     * </ul>
+     *
+     * @return true=合规, false=含 markdown / 前后文字 / 空内容
+     */
+    protected boolean isPureJson(String text) {
+        if (text == null || text.isBlank()) return false;
+        String trimmed = text.trim();
+        if (trimmed.contains("```")) return false;
+        char first = trimmed.charAt(0);
+        if (first != '{' && first != '[') return false;
+        char last = trimmed.charAt(trimmed.length() - 1);
+        return last == '}' || last == ']';
+    }
+
+    /**
+     * 当 LLM 输出不严格符合 JSON 协议时,记 WARN 日志(便于事后追溯)。
+     * <p>不抛异常,因为下游 JsonExtractor 还有 5 层兜底策略能抢救;
+     * 这里仅记录便于诊断哪些 Agent / 哪些场景下 LLM 经常违规。
+     */
+    protected void warnIfNotPureJson(String text) {
+        if (isPureJson(text)) return;
+        log.warn("[{}] LLM 输出不严格符合 JSON 协议(可能含 markdown/前后文字),内容前 200 字符: {}",
+                agentName, truncate(text, 200));
     }
 
     private org.springframework.ai.tool.ToolCallback findTool(
