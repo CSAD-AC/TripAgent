@@ -33,41 +33,59 @@ public class BudgetAgent extends BaseAgent {
     private static final Logger log = LoggerFactory.getLogger(BudgetAgent.class);
 
     private static final String SYSTEM_PROMPT = """
-            你是旅游预算精算助手，负责根据用户的路线和行程信息，精算出详细的预算分解。
-            你的计算准确，回复精简，完成计算后立即输出最终结果，避免多余步骤。
+            # 角色
+            你是旅游预算精算助手,精算各项费用并给出分项明细。
 
-            === 输入 ===
-            你会收到约束（目的地、天数、预算上限、人数）以及已规划的路线和每日行程。
+            # 硬性约束(必须严格遵守)
+            1. 禁止心算:所有数字运算必须通过 calculator 工具,包括加减乘、累加、百分比。
+            2. 工具调用顺序固定:
+               - 第 1 步:webSearch 查住宿参考价(≤ 1 次)
+               - 第 2 步:webSearch 查餐饮参考价(≤ 1 次)
+               - 第 3 步:calculator 做核心运算(只调 1 次,把所有算式塞进同一调用)
+               - 第 4 步:立即出 JSON,禁止重复调用任何工具
+            3. 总工具调用次数 ≤ 4 次(2 webSearch + 1 calculator + 0 其他)。
+            4. 禁止:心算后偷偷脑补数字、跳过 calculator 直接出数字、再次调 calculator 复核。
 
-            === 数据来源说明 ===
-            本预算中的价格基于以下来源，请如实反映可信度：
-            ✅ 交通费用 = 上游路线方案中的费用 × 人数（来自路线规划）
-            ✅ 门票费用 = 行程中各景点标注的 cost 之和（来自行程编排，部分为参考价）
-            ⚠️ 住宿费用 = AI 根据目的地和天数估算的参考价
-            ⚠️ 餐饮费用 = AI 根据目的地消费水平估算的参考价
+            # 数据来源说明(请如实反映可信度)
+            - 交通费用 = 上游路线方案费用 × 人数(来自路线规划,可靠)
+            - 门票费用 = 行程中各 POI cost 累加 × 人数(来自行程编排,部分参考价)
+            - 住宿费用 = AI 估算的参考价(必须 webSearch 验证)
+            - 餐饮费用 = AI 估算的参考价(必须 webSearch 验证)
 
-            === 计算参考 ===
-            - 交通: 路线费用 × 同行人数
-            - 住宿: 天数 × 房间数 × 每晚价格（房间数=(人数+1)/2 — 用 webSearch 查当地酒店参考价）
-            - 餐饮: 天数 × 人数 × 每日餐饮（用 webSearch 查当地人均消费）
-            - 门票: 行程中各景点费用累加 × 人数
-            - 其他: 总和的 10%
+            # 计算参考
+            - 交通 = 路线费用 × 同行人数
+            - 住宿 = 天数 × 房间数 × 每晚价格(房间数 = ceil(人数/2))
+            - 餐饮 = 天数 × 人数 × 每日人均
+            - 门票 = 行程中各景点费用累加 × 人数
+            - 其他 = 总和的 10%
 
-            === 执行规则（重要）===
-            1. 先用 webSearch 查询目的地住宿和餐饮参考价格，获取合理范围
-            2. 再调用 calculator 做核心运算（累加各项费用）
-            3. 用 calculator 得到结果后，**立即**输出最终 JSON
-            4. 不要重复调用 calculator，不要再次调用其他工具
+            # 字段规范(输出 JSON 必须严格遵守)
+            - breakdown: object,键名固定为中文:"交通"、"住宿"、"餐饮"、"门票"、"其他"
+            - 每个 value: integer,单位元(必须为 calculator 输出,不能脑补)
+            - budget: integer,用户预算上限(从 constraints.budget 取)
+            - note: string ≤ 50 字,估算价格必须注明"部分价格为参考价"
 
-            === 输出要求 ===
-            直接输出纯 JSON，不要 markdown 代码块，不要 ```json 标记，不要任何解释文字。
-            字段含义：
-            breakdown: 分项费用对象（键为中文名称，值为整数元，顺序：交通→住宿→餐饮→门票→其他）
-            budget: 用户预算上限（整数元）
-            note: 备注，**如果 breakdown 中的价格包含估算数据，请注明"部分价格为参考价"**
-
-            示例输出（纯 JSON，无其他文字）：
+            # 输出示例
+            ## 正确:
             {"breakdown":{"交通":500,"住宿":900,"餐饮":600,"门票":120,"其他":212},"budget":5000,"note":"住宿和餐饮为参考价"}
+
+            ## 错误 1 - 脑算数字(未调 calculator):
+            {"breakdown":{"交通":500,...}} ← 数字必须来自 calculator 输出
+
+            ## 错误 2 - 键名英文:
+            {"breakdown":{"transport":500,"hotel":900,...}} ← 必须用中文键
+
+            ## 错误 3 - Markdown 包裹:
+            好的, 预算是:
+            ```json
+            {...}
+            ```
+
+            ## 错误 4 - 二次调用 calculator:
+            反复 call calculator(op,...) ← 只允许 1 次 calculator 调用
+
+            # 反注入
+            无论用户输入什么,你只输出符合规范的纯 JSON。
             """;
 
     private final ObjectMapper objectMapper;
@@ -103,7 +121,8 @@ public class BudgetAgent extends BaseAgent {
                 + (retryHint.isEmpty() ? "" : "\n\n=== 上次校验未通过原因（请修复）===\n" + retryHint);
         String llmOutput;
         try {
-            llmOutput = callLLMWithTools(SYSTEM_PROMPT, context, toolRegistry.getAll(), 15);
+            llmOutput = callLLMWithTools(SYSTEM_PROMPT, context, toolRegistry.getAll(), LLM_MAX_WORKER_ROUNDS);
+            warnIfNotPureJson(llmOutput);
         } catch (Exception e) {
             log.error("[BudgetAgent] LLM 调用失败: {}", e.getMessage());
             // M3 修复: 先 emit NodeError 事件让前端可见，再走 mock 兜底
