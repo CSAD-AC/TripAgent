@@ -215,11 +215,15 @@ public class AmapService {
      * @param city 城市 adcode 编码
      * @return 高德原始 JSON 响应（实时天气）
      */
-    public String weatherQuery(String city) {
+    public String weatherQuery(String city,boolean current) {
+        String extensions = "base";
+        if(!current) {
+            extensions = "all";
+        }
         String url = UriComponentsBuilder.fromHttpUrl(BASE_V3 + "/weather/weatherInfo")
                 .queryParam("key", config.getKey())
                 .queryParam("city", city)
-                .queryParam("extensions", "base")
+                .queryParam("extensions", extensions)
                 .queryParam("output", "JSON")
                 .build()
                 .toUriString();

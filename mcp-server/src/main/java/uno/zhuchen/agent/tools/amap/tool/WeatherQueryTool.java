@@ -23,10 +23,11 @@ public class WeatherQueryTool {
         this.amapService = amapService;
     }
 
-    @Tool(description = "实时天气查询 — 查询指定城市当前天气（温度、天气状况、风向风力等）")
+    @Tool(description = "实时天气查询 — 查询指定城市当前/未来天气（温度、天气状况、风向风力等）")
     public String amapWeather(
-            @ToolParam(required = true, description = "城市 adcode 编码，例如 110000 代表北京、310000 代表上海、440100 代表广州、440300 代表深圳。注意不是城市名称，是 adcode 数字编码") String city) {
+            @ToolParam(required = true, description = "城市 adcode 编码，例如 110000 代表北京、310000 代表上海、440100 代表广州、440300 代表深圳。注意不是城市名称，是 adcode 数字编码") String city,
+            @ToolParam(required = true, description = "查询当前天气填充ture，未来天气填充false")boolean current) {
         log.info("天气查询: city={}", city);
-        return amapService.weatherQuery(city);
+        return amapService.weatherQuery(city, current);
     }
 }
