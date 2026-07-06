@@ -99,17 +99,19 @@ public class BudgetAgent extends BaseAgent {
 
     @Override
     protected Map<String, Object> doExecute(OverAllState state) {
+        String traceId = state.value(TripPlanningStateKeys.INPUT_TRACE_ID)
+                .map(Object::toString).orElse("");
         Constraints constraints = findConstraints(state).orElse(null);
         if (constraints == null) {
-            log.warn("[BudgetAgent] 无约束, 使用 mock");
+            log.warn("[traceId={}] [BudgetAgent] 无约束, 使用 mock", traceId);
             return mockResult();
         }
 
         RouteResult route = findRoute(state).orElse(null);
         List<DayPlan> itinerary = findItinerary(state).orElse(List.of());
 
-        log.info("[BudgetAgent] LLM 精算预算: destination={}, days={}, companions={}",
-                constraints.getDestination(), constraints.getDays(), constraints.getCompanions());
+        log.info("[traceId={}] [BudgetAgent] LLM 精算预算: destination={}, days={}, companions={}",
+                traceId, constraints.getDestination(), constraints.getDays(), constraints.getCompanions());
 
         String conversationId = state.value(TripPlanningStateKeys.INPUT_CONVERSATION_ID)
                 .map(Object::toString)
@@ -121,10 +123,10 @@ public class BudgetAgent extends BaseAgent {
                 + (retryHint.isEmpty() ? "" : "\n\n=== 上次校验未通过原因（请修复）===\n" + retryHint);
         String llmOutput;
         try {
-            llmOutput = callLLMWithTools(SYSTEM_PROMPT, context, toolRegistry.getAll(), LLM_MAX_WORKER_ROUNDS);
+            llmOutput = callLLMWithTools(traceId, SYSTEM_PROMPT, context, toolRegistry.getAll(), LLM_MAX_WORKER_ROUNDS);
             warnIfNotPureJson(llmOutput);
         } catch (Exception e) {
-            log.error("[BudgetAgent] LLM 调用失败: {}", e.getMessage());
+            log.error("[traceId={}] [BudgetAgent] LLM 调用失败: {}", traceId, e.getMessage());
             // M3 修复: 先 emit NodeError 事件让前端可见，再走 mock 兜底
             emitEvent(StreamChunk.nodeError("budget", e.getMessage(), conversationId));
             return mockResult();
@@ -136,8 +138,8 @@ public class BudgetAgent extends BaseAgent {
         result.put(TripPlanningStateKeys.WORKER_BUDGET_RAW, llmOutput);
 
         if (budget == null) {
-            log.warn("[BudgetAgent] LLM 输出解析失败, 但原始文本已保留到 state[{}]",
-                    TripPlanningStateKeys.WORKER_BUDGET_RAW);
+            log.warn("[traceId={}] [BudgetAgent] LLM 输出解析失败, 但原始文本已保留到 state[{}]",
+                    traceId, TripPlanningStateKeys.WORKER_BUDGET_RAW);
             // 注意:不要 put null value,Spring AI Alibaba Graph 的 ParallelNode 合并结果时
             // 用 Map.of(...),会因 null value 抛 NPE;findBudget() 通过 Optional.empty() 兜底
             result.put(TripPlanningStateKeys.CONTROL_NEXT_NODE, NextNode.VALIDATION.key());
@@ -145,8 +147,8 @@ public class BudgetAgent extends BaseAgent {
             return result;
         }
 
-        log.info("[BudgetAgent] 精算完成: total={}, budget={}, overage={}",
-                budget.getTotalCost(), budget.getBudget(), budget.getOverageAmount());
+        log.info("[traceId={}] [BudgetAgent] 精算完成: total={}, budget={}, overage={}",
+                traceId, budget.getTotalCost(), budget.getBudget(), budget.getOverageAmount());
 
         // 发射 budget 数据事件
         Map<String, Object> budgetData = objectMapper.convertValue(budget, new TypeReference<Map<String, Object>>() {});

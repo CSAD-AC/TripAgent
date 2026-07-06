@@ -189,13 +189,15 @@ public class ManagerAgent extends BaseAgent {
         // 避免 validation_report 状态污染导致的回退态误判。
         // 旧实现: findValidationReport(state).isPresent() — validation_report 写入后永不删除,
         // 一旦 state 出现过报告,后续 manager 节点会持续走 handleFallback,语义错误。
+        String traceId = state.value(TripPlanningStateKeys.INPUT_TRACE_ID)
+                .map(Object::toString).orElse("");
         int iteration = state.value(TripPlanningStateKeys.CONTROL_ITERATION_COUNT)
                 .map(v -> ((Number) v).intValue())
                 .orElse(0);
         if (iteration == 0) {
-            return handleFirstTime(state);
+            return handleFirstTime(state, traceId);
         }
-        return handleFallback(state);
+        return handleFallback(state, traceId);
     }
 
     /** 给缺失字段填充合理的默认值 */
@@ -212,7 +214,7 @@ public class ManagerAgent extends BaseAgent {
      * <p>LLM 在此过程中可自主调用 {@code askUser} 工具向用户提问，
      * 直到信息足够后输出完整的约束 JSON。Java 只负责执行工具调用并将结果喂回 LLM。
      */
-    private Map<String, Object> handleFirstTime(OverAllState state) {
+    private Map<String, Object> handleFirstTime(OverAllState state, String traceId) {
         String rawRequest = state.value(TripPlanningStateKeys.INPUT_RAW_REQUEST)
                 .map(Object::toString)
                 .orElseThrow(() -> new IllegalStateException("raw_request missing"));
@@ -221,10 +223,12 @@ public class ManagerAgent extends BaseAgent {
                 .map(Object::toString)
                 .orElseThrow(() -> new IllegalStateException("conversation_id missing"));
 
-        log.info("[ManagerAgent] 首次模式: LLM 自主驱动澄清, rawRequest={}", rawRequest);
+        log.info("[traceId={}] [ManagerAgent] 首次模式: LLM 自主驱动澄清, rawRequest={}",
+                traceId, rawRequest);
 
         // 1. LLM 自主驱动提取+反问循环(最多 LLM_MAX_MANAGER_FIRST_ROUNDS 轮工具调用)
         String extractJson = callLLMWithTools(
+                traceId,
                 SYSTEM_PROMPT_EXTRACT,
                 rawRequest + "\n(conversationId=" + conversationId + ")",
                 new ToolCallback[]{askUserToolCallback},
@@ -232,8 +236,8 @@ public class ManagerAgent extends BaseAgent {
         );
         warnIfNotPureJson(extractJson);
         Constraints constraints = parseConstraints(extractJson);
-        log.info("[ManagerAgent] LLM 自主提取结果: destination={}, days={}, budget={}, companions={}",
-                constraints.getDestination(), constraints.getDays(),
+        log.info("[traceId={}] [ManagerAgent] LLM 自主提取结果: destination={}, days={}, budget={}, companions={}",
+                traceId, constraints.getDestination(), constraints.getDays(),
                 constraints.getBudget(), constraints.getCompanions());
 
         // 2. 发射 constraints 数据事件
@@ -242,18 +246,19 @@ public class ManagerAgent extends BaseAgent {
 
         // 3. 兜底: LLM 仍未提取完整时补默认值
         if (!constraints.isComplete()) {
-            log.warn("[ManagerAgent] LLM 最终输出仍不完整: {}, 应用默认值", constraints.missingRequiredFields());
+            log.warn("[traceId={}] [ManagerAgent] LLM 最终输出仍不完整: {}, 应用默认值",
+                    traceId, constraints.missingRequiredFields());
             applyDefaults(constraints);
         }
 
         // 4. 生成复述确认问题 + 等待用户确认
-        String confirmJson = callLLM(SYSTEM_PROMPT_CONFIRM,
+        String confirmJson = callLLM(traceId, SYSTEM_PROMPT_CONFIRM,
                 "约束:\n" + extractJson);
         QuestionPayload confirm = parseConfirmQuestion(confirmJson);
 
         String userAnswer;
         try {
-            AskUserTool.setConversationId(conversationId);
+            AskUserTool.setContext(conversationId, traceId);
             userAnswer = askUserTool.askUser(
                     confirm.question(),
                     List.of(
@@ -263,19 +268,19 @@ public class ManagerAgent extends BaseAgent {
                     true
             );
         } finally {
-            AskUserTool.clearConversationId();
+            AskUserTool.clearContext();
         }
 
         boolean confirmed = userAnswer.contains("confirmed") || userAnswer.contains("正确");
         if (confirmed) {
-            log.info("[ManagerAgent] 用户确认约束, 进入 worker_group");
+            log.info("[traceId={}] [ManagerAgent] 用户确认约束, 进入 worker_group", traceId);
             return Map.of(
                     TripPlanningStateKeys.CONSTRAINTS, constraints,
                     TripPlanningStateKeys.CONTROL_NEXT_NODE, NextNode.WORKER_GROUP.key(),
                     TripPlanningStateKeys.OUTPUT_STATUS, "constraints_confirmed"
             );
         } else {
-            log.info("[ManagerAgent] 用户需修改约束, 重新提取");
+            log.info("[traceId={}] [ManagerAgent] 用户需修改约束, 重新提取", traceId);
             return Map.of(
                     TripPlanningStateKeys.CONSTRAINTS, constraints,
                     TripPlanningStateKeys.CONTROL_NEXT_NODE, NextNode.FIRST.key(),
@@ -287,7 +292,7 @@ public class ManagerAgent extends BaseAgent {
     /**
      * 回退模式：接收 ValidationReport, LLM 决策
      */
-    private Map<String, Object> handleFallback(OverAllState state) {
+    private Map<String, Object> handleFallback(OverAllState state, String traceId) {
         Constraints constraints = findConstraints(state).orElse(null);
         ValidationReport report = findValidationReport(state).orElseThrow();
         int iteration = state.value(TripPlanningStateKeys.CONTROL_ITERATION_COUNT)
@@ -295,12 +300,13 @@ public class ManagerAgent extends BaseAgent {
                 .orElse(0);
         int newIteration = iteration + 1;
 
-        log.info("[ManagerAgent] 回退模式: iteration={}→{}, failures={}",
-                iteration, newIteration, report.getFailures().size());
+        log.info("[traceId={}] [ManagerAgent] 回退模式: iteration={}→{}, failures={}",
+                traceId, iteration, newIteration, report.getFailures().size());
 
         // 达上限 → 强制给报告（允许 2 次回退，即 iteration < MAX_ITERATIONS 仍可重试）
         if (newIteration >= WorkflowConstants.MAX_ITERATIONS) {
-            log.warn("[ManagerAgent] 达到最大迭代次数 ({}), 强制给报告", WorkflowConstants.MAX_ITERATIONS);
+            log.warn("[traceId={}] [ManagerAgent] 达到最大迭代次数 ({}), 强制给报告",
+                    traceId, WorkflowConstants.MAX_ITERATIONS);
             return Map.of(
                     TripPlanningStateKeys.CONTROL_ITERATION_COUNT, newIteration,
                     TripPlanningStateKeys.CONTROL_NEXT_NODE, NextNode.REPORT.key(),
@@ -309,11 +315,11 @@ public class ManagerAgent extends BaseAgent {
         }
 
         // LLM 决策
-        String decideJson = callLLM(SYSTEM_PROMPT_DECIDE,
+        String decideJson = callLLM(traceId, SYSTEM_PROMPT_DECIDE,
                 "约束:\n" + constraints + "\n失败原因:\n" + report.getFailures());
         Decision decision = parseDecision(decideJson);
-        log.info("[ManagerAgent] LLM 决策: {} (target={}, reason={})",
-                decision.decision(), decision.targetWorker(), decision.reason());
+        log.info("[traceId={}] [ManagerAgent] LLM 决策: {} (target={}, reason={})",
+                traceId, decision.decision(), decision.targetWorker(), decision.reason());
 
         // 发射决策数据事件
         Map<String, Object> decisionData = new HashMap<>();

@@ -110,14 +110,16 @@ public class ItineraryAgent extends BaseAgent {
 
     @Override
     protected Map<String, Object> doExecute(OverAllState state) {
+        String traceId = state.value(TripPlanningStateKeys.INPUT_TRACE_ID)
+                .map(Object::toString).orElse("");
         Constraints constraints = findConstraints(state).orElse(null);
         if (constraints == null || constraints.getDestination() == null) {
-            log.warn("[ItineraryAgent] 无约束, 使用 mock");
+            log.warn("[traceId={}] [ItineraryAgent] 无约束, 使用 mock", traceId);
             return mockResult();
         }
 
-        log.info("[ItineraryAgent] LLM 自主编排行程: destination={}, days={}",
-                constraints.getDestination(), constraints.getDays());
+        log.info("[traceId={}] [ItineraryAgent] LLM 自主编排行程: destination={}, days={}",
+                traceId, constraints.getDestination(), constraints.getDays());
 
         String conversationId = state.value(TripPlanningStateKeys.INPUT_CONVERSATION_ID)
                 .map(Object::toString)
@@ -129,10 +131,10 @@ public class ItineraryAgent extends BaseAgent {
                 + (retryHint.isEmpty() ? "" : "\n\n=== 上次校验未通过原因（请修复）===\n" + retryHint);
         String llmOutput;
         try {
-            llmOutput = callLLMWithTools(SYSTEM_PROMPT, context, toolRegistry.getAll(), LLM_MAX_WORKER_ROUNDS);
+            llmOutput = callLLMWithTools(traceId, SYSTEM_PROMPT, context, toolRegistry.getAll(), LLM_MAX_WORKER_ROUNDS);
             warnIfNotPureJson(llmOutput);
         } catch (Exception e) {
-            log.error("[ItineraryAgent] LLM 工具循环失败: {}", e.getMessage());
+            log.error("[traceId={}] [ItineraryAgent] LLM 工具循环失败: {}", traceId, e.getMessage());
             // M3 修复: 先 emit NodeError 事件让前端可见，再走 mock 兜底
             emitEvent(StreamChunk.nodeError("itinerary", e.getMessage(), conversationId));
             return mockResult();
@@ -144,8 +146,8 @@ public class ItineraryAgent extends BaseAgent {
         result.put(TripPlanningStateKeys.WORKER_ITINERARY_RAW, llmOutput);
 
         if (itinerary == null || itinerary.isEmpty()) {
-            log.warn("[ItineraryAgent] LLM 输出解析失败, 原始内容:\n---\n{}\n---\n已保留到 state[{}]",
-                    llmOutput, TripPlanningStateKeys.WORKER_ITINERARY_RAW);
+            log.warn("[traceId={}] [ItineraryAgent] LLM 输出解析失败, 原始内容:\n---\n{}\n---\n已保留到 state[{}]",
+                    traceId, llmOutput, TripPlanningStateKeys.WORKER_ITINERARY_RAW);
             // 注意:不要 put null value,Spring AI Alibaba Graph 的 ParallelNode 合并结果时
             // 用 Map.of(...),会因 null value 抛 NPE;findItinerary() 通过 Optional.empty() 兜底
             result.put(TripPlanningStateKeys.CONTROL_NEXT_NODE, NextNode.BUDGET.key());
@@ -153,7 +155,7 @@ public class ItineraryAgent extends BaseAgent {
             return result;
         }
 
-        log.info("[ItineraryAgent] 行程编排完成: {} 天", itinerary.size());
+        log.info("[traceId={}] [ItineraryAgent] 行程编排完成: {} 天", traceId, itinerary.size());
 
         // 发射 dayplans 数据事件
         List<Map<String, Object>> daysList = itinerary.stream()

@@ -103,13 +103,16 @@ public class RouteAgent extends BaseAgent {
 
     @Override
     protected Map<String, Object> doExecute(OverAllState state) {
+        String traceId = state.value(TripPlanningStateKeys.INPUT_TRACE_ID)
+                .map(Object::toString).orElse("");
         Constraints constraints = findConstraints(state).orElse(null);
         if (constraints == null || constraints.getDestination() == null) {
-            log.warn("[RouteAgent] 无约束, 使用 mock");
+            log.warn("[traceId={}] [RouteAgent] 无约束, 使用 mock", traceId);
             return mockResult(constraints != null ? constraints.getDestination() : "未知");
         }
 
-        log.info("[RouteAgent] LLM 自主规划路线: destination={}", constraints.getDestination());
+        log.info("[traceId={}] [RouteAgent] LLM 自主规划路线: destination={}",
+                traceId, constraints.getDestination());
 
         String conversationId = state.value(TripPlanningStateKeys.INPUT_CONVERSATION_ID)
                 .map(Object::toString)
@@ -121,10 +124,10 @@ public class RouteAgent extends BaseAgent {
                 + (retryHint.isEmpty() ? "" : "\n\n=== 上次校验未通过原因（请修复）===\n" + retryHint);
         String llmOutput;
         try {
-            llmOutput = callLLMWithTools(SYSTEM_PROMPT, context, toolRegistry.getAll(), LLM_MAX_WORKER_ROUNDS);
+            llmOutput = callLLMWithTools(traceId, SYSTEM_PROMPT, context, toolRegistry.getAll(), LLM_MAX_WORKER_ROUNDS);
             warnIfNotPureJson(llmOutput);
         } catch (Exception e) {
-            log.error("[RouteAgent] LLM 工具循环失败: {}", e.getMessage());
+            log.error("[traceId={}] [RouteAgent] LLM 工具循环失败: {}", traceId, e.getMessage());
             // M3 修复: 先 emit NodeError 事件让前端可见，再走 mock 兜底
             emitEvent(StreamChunk.nodeError("route", e.getMessage(), conversationId));
             return mockResult(constraints.getDestination());
@@ -136,8 +139,8 @@ public class RouteAgent extends BaseAgent {
         result.put(TripPlanningStateKeys.WORKER_ROUTE_RAW, llmOutput);
 
         if (route == null || route.getSegments() == null || route.getSegments().isEmpty()) {
-            log.warn("[RouteAgent] LLM 输出解析失败, 原始内容:\n---\n{}\n---\n已保留到 state[{}]",
-                    llmOutput, TripPlanningStateKeys.WORKER_ROUTE_RAW);
+            log.warn("[traceId={}] [RouteAgent] LLM 输出解析失败, 原始内容:\n---\n{}\n---\n已保留到 state[{}]",
+                    traceId, llmOutput, TripPlanningStateKeys.WORKER_ROUTE_RAW);
             // 不再直接 mock——让下游 Agent 用原始文本兜底
             // 注意:不要 put null value,Spring AI Alibaba Graph 的 ParallelNode 合并结果时
             // 用 Map.of(...),会因 null value 抛 NPE;findRoute() 通过 Optional.empty() 兜底
@@ -146,8 +149,8 @@ public class RouteAgent extends BaseAgent {
             return result;
         }
 
-        log.info("[RouteAgent] 路线规划完成: {} 段, 总费用={}, 总时长={}分",
-                route.getSegments().size(), route.getTotalCost(), route.getTotalDurationMin());
+        log.info("[traceId={}] [RouteAgent] 路线规划完成: {} 段, 总费用={}, 总时长={}分",
+                traceId, route.getSegments().size(), route.getTotalCost(), route.getTotalDurationMin());
 
         // 发射 route 数据事件
         Map<String, Object> routeData = objectMapper.convertValue(route, new TypeReference<Map<String, Object>>() {});
