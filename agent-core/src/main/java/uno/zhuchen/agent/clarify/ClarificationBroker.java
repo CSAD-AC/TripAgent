@@ -45,19 +45,35 @@ public class ClarificationBroker {
     /**
      * 注册会话级 emitter（由 AgentController.stream() 调用）
      *
+     * <p>并发约束 (P2 修复): 同一 conversationId 同时只允许一个活跃 SSE emitter.
+     * 第二个并发的注册请求会抛 {@link DuplicateSseConnectionException},
+     * 防止同会话多 tab 并存时事件路由混乱.
+     *
+     * <p>触发场景: 前端开多个 tab 同一 conversationId 时, 第二个 tab 的 SSE 连接会被拒绝,
+     * 由 Controller 返回 error 事件给前端, 提示用户先关闭其他 tab.
+     *
      * @param conversationId 会话 ID
      * @param emitter        SSE 推送回调（注意：调用方应保证 thread-safe）
+     * @throws DuplicateSseConnectionException 当 conversationId 已有活跃 emitter 时
      */
     public void registerEmitter(String conversationId, Consumer<StreamChunk> emitter) {
-        emitters.put(conversationId, emitter);
+        Consumer<StreamChunk> existing = emitters.putIfAbsent(conversationId, emitter);
+        if (existing != null) {
+            log.warn("ClarificationEmitter 注册拒绝: conversationId={} 已有活跃 emitter", conversationId);
+            throw new DuplicateSseConnectionException(
+                    "会话 " + conversationId + " 已有活跃 SSE 连接, 请先关闭其他标签页或会话再开新连接");
+        }
         log.debug("ClarificationEmitter 注册: conversationId={}", conversationId);
     }
 
     /**
      * 注销 emitter（SSE 断开时调用，防止内存泄漏）
+     *
+     * <p>使用 {@code remove(key, value)} 语义, 仅当传入的 emitter 是当前注册的同一个时才删除,
+     * 避免误删新注册的 emitter (race condition).
      */
-    public void unregisterEmitter(String conversationId) {
-        emitters.remove(conversationId);
+    public void unregisterEmitter(String conversationId, Consumer<StreamChunk> emitter) {
+        emitters.remove(conversationId, emitter);
         log.debug("ClarificationEmitter 注销: conversationId={}", conversationId);
     }
 
@@ -118,7 +134,7 @@ public class ClarificationBroker {
             throw new TimeoutException("SSE 连接未就绪,无法反问用户");
         }
 
-        // 1.5 记录 questionId → conversationId 映射(供 submit 校验)
+        // 记录 questionId → conversationId 映射(供 submit 校验)
         questionOwners.put(questionId, conversationId);
 
         // 2. 阻塞轮询等用户回答
@@ -148,5 +164,16 @@ public class ClarificationBroker {
         questionOwners.remove(questionId);
         log.warn("反问超时未答: questionId={}, 超时 {}min", questionId, timeoutMinutes);
         throw new TimeoutException("用户未在 " + timeoutMinutes + " 分钟内回答");
+    }
+
+    /**
+     * 同一 conversationId 已有活跃 SSE emitter 时抛出.
+     * 由 Controller 层 catch 后转成 SSE error 事件给前端,
+     * 提示用户先关闭其他标签页.
+     */
+    public static class DuplicateSseConnectionException extends RuntimeException {
+        public DuplicateSseConnectionException(String message) {
+            super(message);
+        }
     }
 }
