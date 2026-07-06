@@ -3,7 +3,6 @@ package uno.zhuchen.agent.controller;
 import jakarta.validation.Valid;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.slf4j.MDC;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -12,9 +11,11 @@ import org.springframework.web.bind.annotation.RestController;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.Sinks;
+import reactor.util.context.Context;
 import uno.zhuchen.agent.agent.ReactAgent;
 import uno.zhuchen.agent.clarify.ClarificationBroker;
 import uno.zhuchen.agent.common.Result;
+import uno.zhuchen.agent.context.TraceContext;
 import uno.zhuchen.agent.domain.dto.ChatDTO;
 import uno.zhuchen.agent.domain.dto.ChatRequest;
 import uno.zhuchen.agent.domain.dto.StreamChunk;
@@ -24,6 +25,7 @@ import uno.zhuchen.workflow.builder.GraphStreamRunner;
 import java.time.Duration;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
 
 /**
  * Agent 聊天控制器
@@ -49,9 +51,6 @@ public class AgentController {
     /** 心跳间隔(秒),小于多数反向代理 60s idle timeout */
     private static final int HEARTBEAT_INTERVAL_SECONDS = 15;
 
-    /** MDC 链路追踪 key,所有日志输出会自动带 [traceId=xxx] 前缀 */
-    private static final String MDC_TRACE_ID = "traceId";
-
     private final ReactAgent reactAgent;
     private final ClarificationBroker clarificationBroker;
     private final GraphStreamRunner graphStreamRunner;
@@ -64,8 +63,11 @@ public class AgentController {
     }
 
     /**
-     * 为每个请求生成 traceId 并放入 MDC,贯穿整个调用链路的日志都会带这个 ID
+     * 为每个请求生成 traceId,贯穿整个调用链路的日志都会带这个 ID
      * (trace_id 优化 #8,ReAct / Graph 双模式共享)
+     *
+     * <p>traceId 在 reactive 路径走 Reactor Context, 在 Graph 路径走 state,
+     * 不依赖 MDC (org.slf4j.MDC), 完全消除 ThreadLocal 跨线程问题.
      */
     private String newTraceId() {
         return UUID.randomUUID().toString().substring(0, 8);
@@ -122,48 +124,69 @@ public class AgentController {
      * - Sinks.Many 收集反问事件;emitter 按 conversationId 注册到 Broker
      * - 心跳流(Flux.interval)在主流未结束时持续推送,防止反向代理 timeout
      * - 所有源(主/旁路/心跳)通过 Flux.merge 并行推送
+     * - traceId 链路追踪:
+     *   - Reactive 路径: contextWrite 注入 Reactor Context, 下游业务层 deferContextual 读取
+     *   - Reactive 路径入口 log: 显式拼 traceId 到消息中
      */
     @PostMapping(value = "/chat/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<StreamChunk> stream(@Valid @RequestBody ChatRequest request) {
         String conversationId = resolveConversationId(request.getConversationId());
         String traceId = newTraceId();
-        MDC.put(MDC_TRACE_ID, traceId);
-        log.info("收到流式聊天请求, conversationId={}, message长度={}",
-                conversationId,
-                request.getMessage() != null ? request.getMessage().length() : 0);
+        long startMs = System.currentTimeMillis();
 
         // 1. 反问事件旁路 sink
         Sinks.Many<StreamChunk> clarificationSink = Sinks.many().unicast().onBackpressureBuffer();
-        clarificationBroker.registerEmitter(conversationId, clarificationSink::tryEmitNext);
+        Consumer<StreamChunk> emitter = clarificationSink::tryEmitNext;
+        try {
+            clarificationBroker.registerEmitter(conversationId, emitter);
+        } catch (ClarificationBroker.DuplicateSseConnectionException e) {
+            // 同一 conversationId 已有活跃 SSE 连接, 拒绝新连接
+            log.warn("[traceId={}] SSE 连接被拒绝: {}", traceId, e.getMessage());
+            return Flux.just(
+                    StreamChunk.sessionInit(conversationId, traceId),
+                    StreamChunk.error(conversationId, e.getMessage(),
+                            System.currentTimeMillis() - startMs)
+            )
+            // 提前返回路径也要 contextWrite, 与主流保持 Context 一致性
+            .contextWrite(Context.of(TraceContext.KEY, traceId));
+        }
 
-        // 2. cleanup guard: doOnTerminate 会在正常结束和 cancel 后都触发,
-        //    doOnCancel + doOnTerminate 会导致重复清理日志,使用 AtomicBoolean 确保只执行一次
+        // 2. cleanup guard: doOnTerminate 与 doOnCancel 都可能触发, 用 CAS 保证只清理一次
         AtomicBoolean cleaned = new AtomicBoolean(false);
         Runnable doCleanup = () -> {
             if (cleaned.compareAndSet(false, true)) {
-                clarificationBroker.unregisterEmitter(conversationId);
+                clarificationBroker.unregisterEmitter(conversationId, emitter);
                 clarificationSink.tryEmitComplete();
-                MDC.remove(MDC_TRACE_ID);
             }
         };
 
         // 3. 主事件流(thinking_token / tool_call / tool_result / final)
+        //    traceId 走 Reactor Context (contextWrite 在尾部), 不再以参数传入
         Flux<StreamChunk> mainStream = reactAgent.stream(request.getMessage(), conversationId)
                 .doOnTerminate(doCleanup)
                 .doOnCancel(() -> {
-                    log.info("SSE 客户端断开, conversationId={}", conversationId);
+                    // doOnCancel 是同步回调, 无法拿 ContextView; 取 traceId 用 deferContextual 阻塞一次
+                    String t = TraceContext.currentTraceIdMono().block();
+                    log.info("[traceId={}] SSE 客户端断开, conversationId={}", t, conversationId);
                     doCleanup.run();
                 });
 
-        // 4. 第一个事件:session_init,携带 traceId
-        Flux<StreamChunk> sessionInitEvent = Flux.just(StreamChunk.sessionInit(conversationId, traceId));
+        // 4. 第一个事件:session_init,携带 traceId; 入口 log 改在 reactive 链上用 deferContextual
+        //    (Controller 同步块拿不到 ContextView, 必须 contextWrite 后才能读到 traceId)
+        int messageLen = request.getMessage() != null ? request.getMessage().length() : 0;
+        Flux<StreamChunk> entryLog = TraceContext.currentTraceIdMono()
+                .doOnNext(t -> log.info("[traceId={}] 收到流式聊天请求, conversationId={}, message长度={}",
+                        t, conversationId, messageLen))
+                .thenMany(Flux.just(StreamChunk.sessionInit(conversationId, traceId)));
 
         // 5. 心跳流(主事件流未结束时持续推送,主事件流结束则停止)
         Flux<StreamChunk> heartbeat = Flux.interval(Duration.ofSeconds(HEARTBEAT_INTERVAL_SECONDS))
                 .map(tick -> StreamChunk.heartbeat(conversationId))
                 .takeUntilOther(mainStream.last().flux());
 
-        return Flux.merge(sessionInitEvent, mainStream, clarificationSink.asFlux(), heartbeat);
+        return Flux.merge(entryLog, mainStream, clarificationSink.asFlux(), heartbeat)
+                // traceId 沿 reactive 链传播: Context 免费跨线程, 业务层 deferContextual 读取
+                .contextWrite(Context.of(TraceContext.KEY, traceId));
     }
 
     /**
@@ -199,26 +222,39 @@ public class AgentController {
      *
      * <p>反问机制：与 /api/chat/stream 端点相同，注册 emitter 到 ClarificationBroker，
      * 让 AskUserTool 在 Graph 跑过程中能阻塞等用户回答。
+     *
+     * <p>traceId 链路追踪: 与 /chat/stream 一致, 通过 contextWrite 注入 Reactor Context
+     * (Graph 路径同时由 GraphStreamRunner 写入 state[INPUT_TRACE_ID] 供 BaseAgent 读取).
      */
     @PostMapping(value = "/chat/graph", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<StreamChunk> graphStream(@Valid @RequestBody ChatRequest request) {
         String conversationId = resolveConversationId(request.getConversationId());
         String traceId = newTraceId();
-        MDC.put(MDC_TRACE_ID, traceId);
-        log.info("收到 Graph 流式请求, conversationId={}, message长度={}",
-                conversationId, request.getMessage() != null ? request.getMessage().length() : 0);
+        long startMs = System.currentTimeMillis();
 
         // 1. 反问事件旁路 sink（与 /chat/stream 完全相同的模式）
         Sinks.Many<StreamChunk> clarificationSink = Sinks.many().unicast().onBackpressureBuffer();
-        clarificationBroker.registerEmitter(conversationId, clarificationSink::tryEmitNext);
+        Consumer<StreamChunk> emitter = clarificationSink::tryEmitNext;
+        try {
+            clarificationBroker.registerEmitter(conversationId, emitter);
+        } catch (ClarificationBroker.DuplicateSseConnectionException e) {
+            // 同一 conversationId 已有活跃 SSE 连接, 拒绝新连接 (P2 修复)
+            log.warn("[traceId={}] Graph SSE 连接被拒绝: {}", traceId, e.getMessage());
+            return Flux.just(
+                    StreamChunk.sessionInit(conversationId, traceId),
+                    StreamChunk.error(conversationId, e.getMessage(),
+                            System.currentTimeMillis() - startMs)
+            )
+            // 提前返回路径也要 contextWrite, 与主流保持 Context 一致性
+            .contextWrite(Context.of(TraceContext.KEY, traceId));
+        }
 
         // 2. cleanup guard（与 /chat/stream 同样模式）
         AtomicBoolean graphCleaned = new AtomicBoolean(false);
         Runnable graphCleanup = () -> {
             if (graphCleaned.compareAndSet(false, true)) {
-                clarificationBroker.unregisterEmitter(conversationId);
+                clarificationBroker.unregisterEmitter(conversationId, emitter);
                 clarificationSink.tryEmitComplete();
-                MDC.remove(MDC_TRACE_ID);
             }
         };
 
@@ -229,17 +265,27 @@ public class AgentController {
                 .doFinally(signalType -> graphCompletionSignal.tryEmitEmpty())
                 .doOnTerminate(graphCleanup)
                 .doOnCancel(() -> {
-                    log.info("SSE 客户端断开, conversationId={}", conversationId);
+                    // doOnCancel 同步回调, deferContextual 阻塞取 traceId
+                    String t = TraceContext.currentTraceIdMono().block();
+                    log.info("[traceId={}] SSE 客户端断开, conversationId={}", t, conversationId);
                     graphCleanup.run();
                 });
 
-        // 4. 心跳流（反问阻塞期间防止反向代理 timeout，用独立的 completionSignal 终止）
+        // 4. 入口 log 改在 reactive 链上用 deferContextual (同步块拿不到 ContextView)
+        int messageLen = request.getMessage() != null ? request.getMessage().length() : 0;
+        Flux<StreamChunk> entryLog = TraceContext.currentTraceIdMono()
+                .doOnNext(t -> log.info("[traceId={}] 收到 Graph 流式请求, conversationId={}, message长度={}",
+                        t, conversationId, messageLen))
+                .thenMany(Flux.<StreamChunk>empty());
+
+        // 5. 心跳流（反问阻塞期间防止反向代理 timeout，用独立的 completionSignal 终止）
         Flux<StreamChunk> heartbeat = Flux.interval(Duration.ofSeconds(HEARTBEAT_INTERVAL_SECONDS))
                 .map(tick -> StreamChunk.heartbeat(conversationId))
                 .takeUntilOther(graphCompletionSignal.asMono());
 
-        // 5. 合并主事件 + 反问旁路 + 心跳（各自是独立的 sink，互不冲突）
-        return Flux.merge(mainStream, clarificationSink.asFlux(), heartbeat);
+        // 6. 合并主事件 + 入口 log + 反问旁路 + 心跳（各自是独立的 sink，互不冲突）
+        return Flux.merge(mainStream, entryLog, clarificationSink.asFlux(), heartbeat)
+                .contextWrite(Context.of(TraceContext.KEY, traceId));
     }
 
     /**

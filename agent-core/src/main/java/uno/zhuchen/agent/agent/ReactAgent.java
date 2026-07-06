@@ -2,7 +2,6 @@ package uno.zhuchen.agent.agent;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.slf4j.MDC;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.ToolResponseMessage;
@@ -10,7 +9,9 @@ import org.springframework.ai.tool.ToolCallback;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
+import reactor.util.context.Context;
 import uno.zhuchen.agent.config.AgentConfig;
+import uno.zhuchen.agent.context.TraceContext;
 import uno.zhuchen.agent.domain.dto.ChatDTO;
 import uno.zhuchen.agent.domain.dto.StreamChunk;
 import uno.zhuchen.agent.llm.ChatModel;
@@ -38,6 +39,18 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *   2. 判断是否有 toolCalls
  *      - 有：执行工具 → 观察结果 → 加入消息历史 → 回到第 1 步
  *      - 无：返回最终答案
+ *
+ * <p>traceId 链路追踪:
+ * <ul>
+ *   <li>traceId 由 Controller 入口 contextWrite 注入 Reactor Context</li>
+ *   <li>{@link #stream} 不再接收 traceId 参数, 业务 log 通过
+ *       {@link uno.zhuchen.agent.context.TraceContext#currentTraceId(reactor.util.context.ContextView)}
+ *       从 {@code sink.currentContext()} 读取</li>
+ *   <li>递归调用 {@link #nextIteration} 时无需透传 traceId, Reactor Context 自动跨订阅边界</li>
+ *   <li>调用 {@link AskUserTool#setContext} 前用
+ *       {@link uno.zhuchen.agent.context.TraceContext#currentTraceIdMono()}
+ *       阻塞取值后再传</li>
+ * </ul>
  */
 public class ReactAgent {
 
@@ -131,8 +144,10 @@ public class ReactAgent {
 
                         // 反问工具需要 conversationId,放在 ThreadLocal 里传
                         // 用 try-finally 保证清理,防止线程复用导致串号
+                        // FIXME 同步 call() 入口暂未接入链路追踪, 后续重构 stream() 时统一处理
                         try {
-                            AskUserTool.setConversationId(state.getConversationId());
+                            // 同步入口无 traceId, 传空字符串(同步接口不参与链路追踪)
+                            AskUserTool.setContext(state.getConversationId(), "");
                             // Observe: 执行工具 → 获取结果
                             String result = tool.call(toolCall.arguments());
                             log.debug("Agent[{}] 工具 {} 执行完成, 结果长度={}",
@@ -146,7 +161,7 @@ public class ReactAgent {
                                     toolCall.id(), toolCall.name(),
                                     "工具执行失败: " + e.getMessage()));
                         } finally {
-                            AskUserTool.clearConversationId();
+                            AskUserTool.clearContext();
                         }
                     }
 
@@ -214,20 +229,28 @@ public class ReactAgent {
      *
      * 采用纯响应式递归实现，避免 blockLast 导致的跨线程 sink.next() 问题，
      * 确保 SSE 事件逐条即时 flush 到前端。
+     *
+     * <p>traceId 由 Controller contextWrite 注入 Reactor Context, 本方法不接 traceId 参数,
+     * 所有业务 log 通过 {@link reactor.core.publisher.Flux#handle(java.util.function.BiConsumer)}
+     * 在 {@code sink.currentContext()} 上读取.
      */
     public Flux<StreamChunk> stream(String userInput, String conversationId) {
         long start = System.currentTimeMillis();
-        // trace_id 优化 #8: 从 Controller 入口继承的 MDC 拿 traceId
-        String traceId = MDC.get("traceId");
 
         // 防止同一 conversationId 被并发请求处理（导致消息历史交叉污染）
         AtomicBoolean inProgress =
                 conversationLocks.computeIfAbsent(conversationId,
                         k -> new AtomicBoolean(false));
         if (!inProgress.compareAndSet(false, true)) {
-            log.warn("会话[{}] 已在处理中，拒绝并发请求", conversationId);
-            return Flux.just(StreamChunk.error(conversationId,
-                    "当前会话正在处理中，请等待完成后再发新消息", System.currentTimeMillis() - start));
+            // 并发拒绝 log 需要 traceId, 在 reactive 链上用 deferContextual 读
+            // 防御性 contextWrite: 即使调用方忘了注入 Context, 也能拿到空串而非 NPE
+            return TraceContext.currentTraceIdMono()
+                    .doOnNext(t -> log.warn("[traceId={}] 会话[{}] 已在处理中，拒绝并发请求",
+                            t, conversationId))
+                    .thenMany(Flux.just(StreamChunk.error(conversationId,
+                            "当前会话正在处理中，请等待完成后再发新消息",
+                            System.currentTimeMillis() - start)))
+                    .contextWrite(Context.of(TraceContext.KEY, ""));
         }
 
         AgentState state = new AgentState(conversationId, config.getSystemPrompt(), userInput);
@@ -241,14 +264,9 @@ public class ReactAgent {
         ToolCallback[] allTools = toolRegistry.getAll();
 
         return nextIteration(state, allTools, 0, start)
-                // Reactor 跨线程时 MDC 不会自动传播,需要在 doFirst 重新 put
-                .doFirst(() -> {
-                    if (traceId != null) MDC.put("traceId", traceId);
-                })
                 .doFinally(signalType -> {
                     inProgress.set(false);
                     conversationLocks.remove(conversationId);
-                    MDC.remove("traceId");
                 });
     }
 
@@ -273,6 +291,7 @@ public class ReactAgent {
         Map<String, AssistantMessage.ToolCall> toolCallMap = new LinkedHashMap<>();
 
         // ========== 阶段 1：LLM 流式输出 ==========
+        // 用 Flux.handle 在 sink 上抓 ContextView 读 traceId, 业务 log 全部拼 traceId
         Flux<StreamChunk> thinkingFlux = chatModel.stream(state.getFullMessages(), tools)
                 .doOnNext(chatResponse -> {
                     // 副作用：累计文本和工具调用（flatMap 执行后才完成累计）
@@ -305,6 +324,9 @@ public class ReactAgent {
             // 创建 toolCalls 快照，避免 doOnNext（reactor 线程）与遍历（boundedElastic 线程）的并发修改
             List<AssistantMessage.ToolCall> toolCallsSnapshot = List.copyOf(toolCallMap.values());
 
+            // 在 boundedElastic 线程上读 traceId (subscribeOn 之后 Context 仍生效, 但 .block() 同步取值更直接)
+            String traceId = TraceContext.currentTraceIdMono().block();
+
             if (toolCallsSnapshot.isEmpty()) {
                 // 无工具调用 → 最终答案
                 AssistantMessage finalResponse = AssistantMessage.builder()
@@ -312,6 +334,7 @@ public class ReactAgent {
                         .build();
                 state.addReasoningResult(finalResponse);
                 chatMemory.save(state.getConversationId(), state.getMessages());
+                log.debug("[traceId={}] 第 {} 轮无工具调用, 得到最终答案", traceId, iterNum);
                 return Flux.just(StreamChunk.final_(
                         state.getConversationId(), thoughtBuffer.toString(),
                         System.currentTimeMillis() - start));
@@ -329,7 +352,8 @@ public class ReactAgent {
                 // 去重 key: name + arguments
                 String toolKey = toolCall.name() + "::" + toolCall.arguments();
                 if (!seenToolCalls.add(toolKey)) {
-                    log.warn("Agent[{}] 跳过重复工具调用: {} (同 args)", state.getConversationId(), toolCall.name());
+                    log.warn("[traceId={}] [{}] 跳过重复工具调用: {} (同 args)",
+                            traceId, state.getConversationId(), toolCall.name());
                     toolResponses.add(new ToolResponseMessage.ToolResponse(
                             toolCall.id(), toolCall.name(),
                             "重复调用已跳过,使用第一次调用的结果"));
@@ -347,29 +371,31 @@ public class ReactAgent {
                     toolResponses.add(new ToolResponseMessage.ToolResponse(
                             toolCall.id(), toolCall.name(), errorMsg));
                     toolEvents.add(StreamChunk.toolError(toolCall.name(), errorMsg, state.getConversationId()));
+                    log.warn("[traceId={}] [{}] 未知工具: {}",
+                            traceId, state.getConversationId(), toolCall.name());
                     continue;
                 }
 
-                // 反问工具需要 conversationId 上下文
+                // 反问工具需要 conversationId + traceId 上下文 (sync 入口, ThreadLocal 透传)
                 try {
-                    AskUserTool.setConversationId(state.getConversationId());
+                    AskUserTool.setContext(state.getConversationId(), traceId == null ? "" : traceId);
                     long toolStart = System.currentTimeMillis();
                     String result = tool.call(toolCall.arguments());
                     long toolDuration = System.currentTimeMillis() - toolStart;
-                    log.debug("Agent[{}] 工具 {} 执行完成, 耗时={}ms, 结果长度={}",
-                            state.getConversationId(), toolCall.name(), toolDuration, result.length());
+                    log.debug("[traceId={}] [{}] 工具 {} 执行完成, 耗时={}ms, 结果长度={}",
+                            traceId, state.getConversationId(), toolCall.name(), toolDuration, result.length());
                     String summary = truncate(result, 300);
                     toolResponses.add(new ToolResponseMessage.ToolResponse(
                             toolCall.id(), toolCall.name(), result));
                     toolEvents.add(StreamChunk.toolResult(toolCall.name(), summary, state.getConversationId()));
                 } catch (Exception e) {
                     String errorMsg = "工具执行失败: " + e.getMessage();
-                    log.warn("Agent[{}] 工具 {} 执行异常: {}",
-                                state.getConversationId(), toolCall.name(), errorMsg);
+                    log.warn("[traceId={}] [{}] 工具 {} 执行异常: {}",
+                            traceId, state.getConversationId(), toolCall.name(), errorMsg);
                     toolResponses.add(new ToolResponseMessage.ToolResponse(
                             toolCall.id(), toolCall.name(), errorMsg));
                 } finally {
-                    AskUserTool.clearConversationId();
+                    AskUserTool.clearContext();
                 }
             }
 
@@ -400,7 +426,10 @@ public class ReactAgent {
 
         return thinkingFlux.concatWith(continuationFlux)
                 .onErrorResume(e -> {
-                    log.error("Agent[{}] ReAct 流式处理异常", state.getConversationId(), e);
+                    // onErrorResume 同步回调, deferContextual 阻塞取 traceId
+                    String t = TraceContext.currentTraceIdMono().block();
+                    log.error("[traceId={}] [{}] ReAct 流式处理异常",
+                            t, state.getConversationId(), e);
                     chatMemory.save(state.getConversationId(), state.getMessages());
                     return Flux.just(StreamChunk.error(state.getConversationId(),
                             "处理异常: " + e.getMessage(), System.currentTimeMillis() - start));

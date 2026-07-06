@@ -89,17 +89,19 @@ public class ValidationAgent extends BaseAgent {
 
     @Override
     protected Map<String, Object> doExecute(OverAllState state) {
+        String traceId = state.value(TripPlanningStateKeys.INPUT_TRACE_ID)
+                .map(Object::toString).orElse("");
         Constraints constraints = findConstraints(state).orElse(null);
         if (constraints == null) {
             // M4 修复: 无约束本身就是异常状态,不能再默认通过
-            throw new IllegalStateException("[ValidationAgent] state 缺少 constraints, 无法校验");
+            throw new IllegalStateException("[traceId=" + traceId + "] [ValidationAgent] state 缺少 constraints, 无法校验");
         }
 
         BudgetPlan budget = findBudget(state).orElse(null);
         List<DayPlan> itinerary = findItinerary(state).orElse(List.of());
 
-        log.info("[ValidationAgent] LLM 校验方案: destination={}, days={}, budget={}",
-                constraints.getDestination(), constraints.getDays(), constraints.getBudget());
+        log.info("[traceId={}] [ValidationAgent] LLM 校验方案: destination={}, days={}, budget={}",
+                traceId, constraints.getDestination(), constraints.getDays(), constraints.getBudget());
 
         String context = buildContext(state, constraints, budget, itinerary);
         String convId = state.value(TripPlanningStateKeys.INPUT_CONVERSATION_ID)
@@ -109,20 +111,20 @@ public class ValidationAgent extends BaseAgent {
         // 让 prompt 中的"可用 calculator 精确计算"真正可行.
         org.springframework.ai.tool.ToolCallback[] tools = toolRegistry != null
                 ? toolRegistry.getAll() : new org.springframework.ai.tool.ToolCallback[0];
-        String llmJson = callLLMWithTools(SYSTEM_PROMPT, context, tools, LLM_MAX_VALIDATION_ROUNDS);
+        String llmJson = callLLMWithTools(traceId, SYSTEM_PROMPT, context, tools, LLM_MAX_VALIDATION_ROUNDS);
         warnIfNotPureJson(llmJson);
 
-        ValidationReport report = parseValidation(llmJson, convId);
+        ValidationReport report = parseValidation(llmJson, convId, traceId);
         if (report == null) {
             // M4 修复: 解析失败不再默认通过,改为抛出以 fail-closed,
             // 让 Graph 框架终止而不是把"未校验"报告送出去.
             emitEvent(StreamChunk.nodeError("validation",
                     "校验 JSON 解析失败, 终止流程", convId));
-            throw new IllegalStateException("[ValidationAgent] LLM 输出解析失败, 终止流程以防假阳性");
+            throw new IllegalStateException("[traceId=" + traceId + "] [ValidationAgent] LLM 输出解析失败, 终止流程以防假阳性");
         }
 
-        log.info("[ValidationAgent] 校验完成: passed={}, failures={}, warnings={}",
-                report.getPassed(), report.getFailures().size(), report.getWarnings().size());
+        log.info("[traceId={}] [ValidationAgent] 校验完成: passed={}, failures={}, warnings={}",
+                traceId, report.getPassed(), report.getFailures().size(), report.getWarnings().size());
 
         // 发射 validation 数据事件
         Map<String, Object> validationData = objectMapper.convertValue(report, new TypeReference<Map<String, Object>>() {});
@@ -187,7 +189,7 @@ public class ValidationAgent extends BaseAgent {
         return sb.toString();
     }
 
-    private ValidationReport parseValidation(String json, String convId) {
+    private ValidationReport parseValidation(String json, String convId, String traceId) {
         try {
             var root = jsonExtractor.extract(json);
             if (root == null) return null;
@@ -195,7 +197,7 @@ public class ValidationAgent extends BaseAgent {
             // M4 修复: passed 缺失按 fail-closed 处理,而不是默认通过.
             // 校验是安全关键路径,LLM 没明确表态时拒绝落地.
             if (!root.hasNonNull("passed")) {
-                log.error("[ValidationAgent] LLM 输出缺少 passed 字段, 按 fail-closed 处理");
+                log.error("[traceId={}] [ValidationAgent] LLM 输出缺少 passed 字段, 按 fail-closed 处理", traceId);
                 emitEvent(StreamChunk.nodeError("validation",
                         "校验输出缺少 passed 字段, 按未通过处理", convId));
                 return ValidationReport.builder()
@@ -235,7 +237,7 @@ public class ValidationAgent extends BaseAgent {
                     .warnings(warnings)
                     .build();
         } catch (Exception e) {
-            log.error("[ValidationAgent] 解析校验 JSON 失败: {}", e.getMessage());
+            log.error("[traceId={}] [ValidationAgent] 解析校验 JSON 失败: {}", traceId, e.getMessage());
             return null;
         }
     }

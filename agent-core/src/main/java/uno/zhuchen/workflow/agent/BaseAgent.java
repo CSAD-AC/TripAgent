@@ -4,7 +4,6 @@ import com.alibaba.cloud.ai.graph.OverAllState;
 import com.alibaba.cloud.ai.graph.action.NodeAction;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.slf4j.MDC;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.SystemMessage;
@@ -126,36 +125,34 @@ public abstract class BaseAgent implements NodeAction {
      *
      * 子类不应重写本方法，应重写 doExecute()。
      *
-     * <p>trace_id 优化 #8：从 state[trace_id] 读取链路追踪 ID 并放入 MDC，
-     * 本节点所有日志自动带 [traceId=xxx] 前缀。finally 清理 MDC 避免线程复用串号。
+     * <p>traceId 链路追踪：从 state[trace_id] 读取 traceId,
+     * 业务 log 显式拼 [traceId={}] 到消息中（不依赖 MDC/ThreadLocal）.
+     *
+     * <p>为何不用 Reactor Context: Graph 框架的 {@code NodeAction.apply}
+     * 是阻塞同步调用, 不在 reactive 链上, ContextView 拿不到, 走 state 路径.
      */
     @Override
     public final Map<String, Object> apply(OverAllState state) throws Exception {
         long start = System.currentTimeMillis();
-        String traceId = state.value(TripPlanningStateKeys.INPUT_TRACE_ID).map(Object::toString).orElse(null);
-        if (traceId != null) {
-            MDC.put("traceId", traceId);
-        }
+        String traceId = state.value(TripPlanningStateKeys.INPUT_TRACE_ID)
+                .map(Object::toString).orElse("");
+        String conversationId = state.value(TripPlanningStateKeys.INPUT_CONVERSATION_ID)
+                .map(Object::toString).orElse("unknown");
         try {
-            log.debug("[{}] apply() 入口, conversationId={}, iterationCount={}",
-                    agentName,
-                    state.value(TripPlanningStateKeys.INPUT_CONVERSATION_ID).orElse("unknown"),
+            log.debug("[traceId={}] [{}] apply() 入口, conversationId={}, iterationCount={}",
+                    traceId, agentName, conversationId,
                     state.value(TripPlanningStateKeys.CONTROL_ITERATION_COUNT).orElse(0));
 
             Map<String, Object> result = doExecute(state);
             long duration = System.currentTimeMillis() - start;
-            log.debug("[{}] doExecute 完成, 耗时 {}ms, 输出 keys={}",
-                    agentName, duration, result.keySet());
+            log.debug("[traceId={}] [{}] doExecute 完成, 耗时 {}ms, 输出 keys={}",
+                    traceId, agentName, duration, result.keySet());
             return result;
         } catch (Exception e) {
             long duration = System.currentTimeMillis() - start;
-            log.error("[{}] doExecute 失败, 耗时 {}ms, error={}",
-                    agentName, duration, e.getMessage(), e);
+            log.error("[traceId={}] [{}] doExecute 失败, 耗时 {}ms, error={}",
+                    traceId, agentName, duration, e.getMessage(), e);
             throw e;
-        } finally {
-            if (traceId != null) {
-                MDC.remove("traceId");
-            }
         }
     }
 
@@ -176,17 +173,18 @@ public abstract class BaseAgent implements NodeAction {
      * <p>M10 修复：包装 {@link #callWithTimeout} 实现超时控制 + 重试，
      * 防止 LLM API 慢响应阻塞 SSE 流。
      *
+     * @param traceId      链路追踪 ID
      * @param systemPrompt 系统提示词
      * @param userPrompt   用户提示词
      * @return LLM 文本回复
      */
-    protected String callLLM(String systemPrompt, String userPrompt) {
+    protected String callLLM(String traceId, String systemPrompt, String userPrompt) {
         List<Message> messages = List.of(
                 new SystemMessage(systemPrompt),
                 new UserMessage(userPrompt)
         );
         // 显式传空 vararg,便于 mockito 严格模式 stub
-        AssistantMessage resp = callWithTimeout(messages, new org.springframework.ai.tool.ToolCallback[0]);
+        AssistantMessage resp = callWithTimeout(traceId, messages, new org.springframework.ai.tool.ToolCallback[0]);
         return resp.getText();
     }
 
@@ -196,9 +194,10 @@ public abstract class BaseAgent implements NodeAction {
      * 这里使用 Future.get(timeout) 模式:超时就放弃本次结果但线程仍会跑完.
      * 实际生产建议在 Spring AI 层改用 ReactiveClient 才能彻底中断.
      *
+     * @param traceId  链路追踪 ID, 用于超时/重试日志
      * @return LLM 响应;超时时抛 TimeoutException 让调用方走兜底
      */
-    private AssistantMessage callWithTimeout(List<Message> messages,
+    private AssistantMessage callWithTimeout(String traceId, List<Message> messages,
                                              org.springframework.ai.tool.ToolCallback[] tools) {
         java.util.concurrent.TimeoutException lastTimeout = null;
         for (int attempt = 0; attempt <= LLM_MAX_RETRIES; attempt++) {
@@ -209,14 +208,14 @@ public abstract class BaseAgent implements NodeAction {
             } catch (java.util.concurrent.TimeoutException te) {
                 lastTimeout = te;
                 future.cancel(true);
-                log.warn("[{}] LLM 调用超时 ({}ms), attempt={}/{}",
-                        agentName, LLM_TIMEOUT_MS, attempt + 1, LLM_MAX_RETRIES + 1);
+                log.warn("[traceId={}] [{}] LLM 调用超时 ({}ms), attempt={}/{}",
+                        traceId, agentName, LLM_TIMEOUT_MS, attempt + 1, LLM_MAX_RETRIES + 1);
             } catch (java.util.concurrent.ExecutionException ee) {
                 // 拆包原始异常,如果是瞬时可重试错误(IOException/ConnectException)继续重试,否则抛出
                 Throwable cause = ee.getCause() != null ? ee.getCause() : ee;
                 if (attempt < LLM_MAX_RETRIES && isTransientError(cause)) {
-                    log.warn("[{}] LLM 调用瞬时异常 ({}), 重试 attempt={}",
-                            agentName, cause.getMessage(), attempt + 1);
+                    log.warn("[traceId={}] [{}] LLM 调用瞬时异常 ({}), 重试 attempt={}",
+                            traceId, agentName, cause.getMessage(), attempt + 1);
                     continue;
                 }
                 if (cause instanceof RuntimeException re) throw re;
@@ -243,13 +242,14 @@ public abstract class BaseAgent implements NodeAction {
      *
      * <p>LLM 自主决定何时提问、何时输出最终答案,使需求澄清过程完全由 LLM 驱动。
      *
+     * @param traceId      链路追踪 ID
      * @param systemPrompt 系统提示词
      * @param userPrompt   用户消息
      * @param tools        可用工具
      * @param maxRounds    最大工具调用轮次
      * @return LLM 最终输出的文本
      */
-    protected String callLLMWithTools(String systemPrompt, String userPrompt,
+    protected String callLLMWithTools(String traceId, String systemPrompt, String userPrompt,
                                        org.springframework.ai.tool.ToolCallback[] tools, int maxRounds) {
         List<Message> messages = new ArrayList<>();
         messages.add(new SystemMessage(systemPrompt));
@@ -261,19 +261,20 @@ public abstract class BaseAgent implements NodeAction {
 
         for (int round = 0; round < maxRounds; round++) {
             // M10 修复: 走 callWithTimeout 包装,避免 LLM 卡死阻塞 SSE
-            AssistantMessage response = callWithTimeout(messages, tools);
+            AssistantMessage response = callWithTimeout(traceId, messages, tools);
             messages.add(response);
 
             if (!response.hasToolCalls()) {
                 String text = response.getText();
-                log.debug("[{}] LLM 输出最终结果, text长度={}", agentName,
-                        text != null ? text.length() : 0);
+                log.debug("[traceId={}] [{}] LLM 输出最终结果, text长度={}",
+                        traceId, agentName, text != null ? text.length() : 0);
                 emitEvent(StreamChunk.nodeProgress(agentName, "thinking",
                         "分析完成", convId));
                 return text != null ? text : "";
             }
 
-            log.debug("[{}] LLM 请求调用 {} 个工具: {}", agentName,
+            log.debug("[traceId={}] [{}] LLM 请求调用 {} 个工具: {}",
+                    traceId, agentName,
                     response.getToolCalls().size(),
                     response.getToolCalls().stream()
                             .map(tc -> tc.name() + "(" + truncate(tc.arguments(), 80) + ")")
@@ -282,7 +283,7 @@ public abstract class BaseAgent implements NodeAction {
             for (AssistantMessage.ToolCall tc : response.getToolCalls()) {
                 org.springframework.ai.tool.ToolCallback tool = findTool(tools, tc.name());
                 if (tool == null) {
-                    log.warn("[{}] 未知工具: {}, 跳过", agentName, tc.name());
+                    log.warn("[traceId={}] [{}] 未知工具: {}, 跳过", traceId, agentName, tc.name());
                     continue;
                 }
 
@@ -292,13 +293,13 @@ public abstract class BaseAgent implements NodeAction {
 
                 try {
                     if ("askUser".equals(tc.name())) {
-                        AskUserTool.setConversationId(convId);
+                        AskUserTool.setContext(convId, traceId);
                     }
                     long t0 = System.currentTimeMillis();
                     String result = tool.call(tc.arguments());
                     long elapsed = System.currentTimeMillis() - t0;
-                    log.debug("[{}] 工具 {} 返回 ({}ms): {}",
-                            agentName, tc.name(), elapsed, truncate(result, 120));
+                    log.debug("[traceId={}] [{}] 工具 {} 返回 ({}ms): {}",
+                            traceId, agentName, tc.name(), elapsed, truncate(result, 120));
 
                     emitEvent(StreamChunk.nodeProgress(agentName, "tool_result",
                             tc.name() + " 返回 (" + elapsed + "ms)", convId));
@@ -308,7 +309,8 @@ public abstract class BaseAgent implements NodeAction {
                                     tc.id(), tc.name(), result)))
                             .build());
                 } catch (Exception e) {
-                    log.warn("[{}] 工具 {} 异常 ({}): {}", agentName, tc.name(),
+                    log.warn("[traceId={}] [{}] 工具 {} 异常 ({}): {}",
+                            traceId, agentName, tc.name(),
                             e.getClass().getSimpleName(), e.getMessage());
                     emitEvent(StreamChunk.nodeProgress(agentName, "tool_result",
                             tc.name() + " 异常: " + e.getMessage(), convId));
@@ -317,14 +319,15 @@ public abstract class BaseAgent implements NodeAction {
                                     tc.id(), tc.name(), "失败: " + e.getMessage())))
                             .build());
                 } finally {
-                    AskUserTool.clearConversationId();
+                    AskUserTool.clearContext();
                 }
             }
 
             emitEvent(StreamChunk.nodeProgress(agentName, "thinking",
                     "分析工具返回结果...", convId));
         }
-        log.warn("[{}] 达到最大工具调用轮次 {}, 返回空", agentName, maxRounds);
+        log.warn("[traceId={}] [{}] 达到最大工具调用轮次 {}, 返回空",
+                traceId, agentName, maxRounds);
         emitEvent(StreamChunk.nodeProgress(agentName, "thinking",
                 "达到最大轮次，强制结束", convId));
         return "";

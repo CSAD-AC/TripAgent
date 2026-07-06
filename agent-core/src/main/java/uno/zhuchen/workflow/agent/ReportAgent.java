@@ -67,21 +67,23 @@ public class ReportAgent extends BaseAgent {
 
     @Override
     protected Map<String, Object> doExecute(OverAllState state) {
+        String traceId = state.value(TripPlanningStateKeys.INPUT_TRACE_ID)
+                .map(Object::toString).orElse("");
         Constraints constraints = findConstraints(state).orElse(null);
         RouteResult route = findRoute(state).orElse(null);
         List<DayPlan> itinerary = findItinerary(state).orElse(List.of());
         BudgetPlan budget = findBudget(state).orElse(null);
         ValidationReport validation = findValidationReport(state).orElse(null);
 
-        log.info("[ReportAgent] LLM 生成报告: destination={}",
-                constraints != null ? constraints.getDestination() : "unknown");
+        log.info("[traceId={}] [ReportAgent] LLM 生成报告: destination={}",
+                traceId, constraints != null ? constraints.getDestination() : "unknown");
 
         String context = buildContext(state, constraints, route, itinerary, budget, validation);
         String report;
         try {
-            report = callLLM(SYSTEM_PROMPT, context);
+            report = callLLM(traceId, SYSTEM_PROMPT, context);
         } catch (Exception e) {
-            log.error("[ReportAgent] LLM 调用失败: {}", e.getMessage());
+            log.error("[traceId={}] [ReportAgent] LLM 调用失败: {}", traceId, e.getMessage());
             report = buildFallbackReport(constraints, route, itinerary, budget, validation);
         }
 
@@ -89,7 +91,7 @@ public class ReportAgent extends BaseAgent {
             report = buildFallbackReport(constraints, route, itinerary, budget, validation);
         }
 
-        log.info("[ReportAgent] 报告生成完成,长度 {} 字符", report.length());
+        log.info("[traceId={}] [ReportAgent] 报告生成完成,长度 {} 字符", traceId, report.length());
 
         // 发射 report 数据事件（摘要信息）
         Map<String, Object> reportData = new HashMap<>();

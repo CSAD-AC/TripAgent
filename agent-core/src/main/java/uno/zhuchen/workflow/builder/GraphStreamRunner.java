@@ -26,7 +26,6 @@ import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
-import org.slf4j.MDC;
 
 /**
  * Graph 流式执行器 — 实时事件推送版
@@ -74,6 +73,10 @@ public class GraphStreamRunner {
      * 执行 Graph 并返回实时 SSE 流（带 traceId）
      *
      * @param traceId 链路追踪 ID（trace_id 优化 #8），用于贯穿 Graph 执行的所有日志
+     *
+     * <p>traceId 链路追踪: 本方法签名接收 traceId 后透传, 并通过
+     * {@link uno.zhuchen.workflow.state.TripPlanningStateKeys#INPUT_TRACE_ID}
+     * 写入 Graph state 供 BaseAgent.apply 读取. 不依赖 MDC/ThreadLocal.
      */
     public Flux<StreamChunk> runStream(String rawRequest, String conversationId, String traceId) {
         if (conversationId == null || conversationId.isBlank()) {
@@ -98,11 +101,9 @@ public class GraphStreamRunner {
         // 3. 后台线程执行 Graph（boundedElastic 上不阻塞 Netty）
         Mono.fromRunnable(() -> runGraphAndEmit(rawRequest, convId, trace, sink))
                 .subscribeOn(Schedulers.boundedElastic())
-                .doFirst(() -> MDC.put("traceId", trace))
-                .doFinally(sig -> MDC.remove("traceId"))
                 .subscribe(null,
                         err -> {
-                            log.error("[GraphStreamRunner] 异步异常: {}", err.getMessage(), err);
+                            log.error("[traceId={}] [GraphStreamRunner] 异步异常: {}", trace, err.getMessage(), err);
                             long asyncDuration = System.currentTimeMillis() - startMs;
                             safelyEmit(sink, StreamChunk.error(convId, "Graph 执行异常: " + err.getMessage(), asyncDuration));
                             sink.tryEmitComplete();
@@ -129,7 +130,7 @@ public class GraphStreamRunner {
             Map<String, Object> input = new HashMap<>();
             input.put(TripPlanningStateKeys.INPUT_RAW_REQUEST, rawRequest);
             input.put(TripPlanningStateKeys.INPUT_CONVERSATION_ID, conversationId);
-            // trace_id 优化 #8: 写入 state 供 BaseAgent.apply 兜底 MDC
+            // 写入 state 供 BaseAgent.apply (同步 NodeAction 入口) 读取并拼到 log 中
             input.put(TripPlanningStateKeys.INPUT_TRACE_ID, traceId);
 
             RunnableConfig config = RunnableConfig.builder()
@@ -148,16 +149,17 @@ public class GraphStreamRunner {
                     .doOnNext(output -> processOutput(output, conversationId, lastIteration, parallelCompletionCount, sink))
                     .doOnError(err -> {
                         // 不在这里发射 error 事件，统一交给下方 catch 块 (C5 修复)
-                        log.debug("[GraphStreamRunner] Graph stream 异常已上抛: {}", err.getMessage());
+                        log.debug("[traceId={}] [GraphStreamRunner] Graph stream 异常已上抛: {}",
+                                traceId, err.getMessage());
                     })
                     .blockLast();
 
             // Graph 正常结束
-            safelyEmit(sink, StreamChunk.final_(conversationId, extractReport(graph, config),
+            safelyEmit(sink, StreamChunk.final_(conversationId, extractReport(graph, config, traceId),
                     System.currentTimeMillis() - startMs));
 
         } catch (Exception e) {
-            log.error("[GraphStreamRunner] Graph 执行异常: {}", e.getMessage(), e);
+            log.error("[traceId={}] [GraphStreamRunner] Graph 执行异常: {}", traceId, e.getMessage(), e);
             if (errorEmitted.compareAndSet(false, true)) {
                 safelyEmit(sink, StreamChunk.error(conversationId,
                         "Graph 执行失败: " + e.getMessage(),
@@ -331,13 +333,13 @@ public class GraphStreamRunner {
     /**
      * 从 Graph state 提取最终报告
      */
-    private String extractReport(CompiledGraph graph, RunnableConfig config) {
+    private String extractReport(CompiledGraph graph, RunnableConfig config, String traceId) {
         try {
             OverAllState state = graph.getState(config).state();
             Object report = state.value(TripPlanningStateKeys.OUTPUT_FINAL_REPORT).orElse(null);
             return report != null ? report.toString() : "(无报告)";
         } catch (Exception e) {
-            log.warn("[GraphStreamRunner] 提取报告失败: {}", e.getMessage());
+            log.warn("[traceId={}] [GraphStreamRunner] 提取报告失败: {}", traceId, e.getMessage());
             return "(报告提取失败)";
         }
     }
