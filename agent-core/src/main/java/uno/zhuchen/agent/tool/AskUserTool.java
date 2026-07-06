@@ -190,7 +190,6 @@ public class AskUserTool {
 
     /**
      * 同一 conversationId 已有 askUser 在阻塞时抛出.
-     * 由 {@link BaseAgent#callLLMWithTools} 的 catch 块捕获,
      * 转成 ToolResponse 错误字符串告诉 LLM "不要重复反问".
      */
     public static class AskUserBusyException extends RuntimeException {
