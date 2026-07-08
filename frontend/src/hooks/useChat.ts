@@ -123,10 +123,12 @@ export function useChat() {
       }
 
       // ── tool_call: 向当前迭代追加一个工具 ──
+      // 并行模式: 多个 tool_call 可能在 T=0 同时到达, 都先记为 running 等待 tool_result 归属
       case 'tool_call': {
         const idx = iterationRef.current - 1
         const calls = iterationToolCallsRef.current[idx] || []
         calls.push({
+          toolCallId: event.toolCallId,
           toolName: event.toolName || '未知工具',
           toolArguments: event.toolArguments,
           status: 'running',
@@ -135,28 +137,38 @@ export function useChat() {
         break
       }
 
-      // ── tool_result: 更新当前迭代中最后一个 running 工具 ──
+      // ── tool_result: 通过 toolCallId 匹配具体调用 (兼容并行模式乱序到达) ──
+      // 旧实现采用"找最后一个 running"的匹配策略, 在串行模式下有效, 但并行模式下
+      // 后端会按完成顺序发射 tool_result, 必须按 ID 精确归属
       case 'tool_result': {
         const idx = iterationRef.current - 1
         const calls = [...(iterationToolCallsRef.current[idx] || [])]
-        for (let i = calls.length - 1; i >= 0; i--) {
-          if (calls[i].status === 'running') {
-            calls[i] = { ...calls[i], status: 'success', result: event.toolResult || event.content }
-            break
+        const targetIdx = event.toolCallId
+          ? calls.findIndex(c => c.toolCallId === event.toolCallId)
+          : calls.findIndex(c => c.status === 'running')
+        if (targetIdx >= 0) {
+          calls[targetIdx] = {
+            ...calls[targetIdx],
+            status: 'success',
+            result: event.toolResult || event.content,
           }
         }
         iterationToolCallsRef.current[idx] = calls
         break
       }
 
-      // ── tool_error: 更新当前迭代中最后一个 running 工具 ──
+      // ── tool_error: 通过 toolCallId 匹配具体调用 (兼容并行模式乱序到达) ──
       case 'tool_error': {
         const idx = iterationRef.current - 1
         const calls = [...(iterationToolCallsRef.current[idx] || [])]
-        for (let i = calls.length - 1; i >= 0; i--) {
-          if (calls[i].status === 'running') {
-            calls[i] = { ...calls[i], status: 'error', error: event.toolResult || event.content }
-            break
+        const targetIdx = event.toolCallId
+          ? calls.findIndex(c => c.toolCallId === event.toolCallId)
+          : calls.findIndex(c => c.status === 'running')
+        if (targetIdx >= 0) {
+          calls[targetIdx] = {
+            ...calls[targetIdx],
+            status: 'error',
+            error: event.toolResult || event.content,
           }
         }
         iterationToolCallsRef.current[idx] = calls

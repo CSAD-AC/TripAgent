@@ -1,5 +1,7 @@
 /** 工具调用记录（一次工具调用全生命周期） */
 export interface ToolCallInfo {
+  /** 后端 Spring AI 生成的 toolCall.id,用于并行模式下 tool_call ↔ tool_result 精确匹配 */
+  toolCallId?: string
   toolName: string
   toolArguments?: string
   status: 'running' | 'success' | 'error'
@@ -159,6 +161,8 @@ export interface SSEEvent {
   toolName?: string
   toolArguments?: string
   toolResult?: string
+  /** 工具调用 ID (tool_call/tool_result/tool_error) — 用于并行模式下匹配具体调用 */
+  toolCallId?: string
   conversationId?: string
   durationMs?: number
   iterationInfo?: string
