@@ -160,29 +160,30 @@ public class AgentController {
             }
         };
 
-        // 3. 主事件流(thinking_token / tool_call / tool_result / final)
-        //    traceId 走 Reactor Context (contextWrite 在尾部), 不再以参数传入
+        // 3. 主流完成信号（避免心跳用 mainStream.last() 二次订阅冷 Flux，导致双 ReAct 循环并行）
+        Sinks.One<Void> completionSignal = Sinks.one();
+
+        // 4. 主事件流(thinking_token / tool_call / tool_result / final)
         Flux<StreamChunk> mainStream = reactAgent.stream(request.getMessage(), conversationId)
+                .doFinally(signalType -> completionSignal.tryEmitEmpty())
                 .doOnTerminate(doCleanup)
                 .doOnCancel(() -> {
-                    // doOnCancel 是同步回调, 无法拿 ContextView; 取 traceId 用 deferContextual 阻塞一次
-                    String t = TraceContext.currentTraceIdMono().block();
-                    log.info("[traceId={}] SSE 客户端断开, conversationId={}", t, conversationId);
+                    log.info("[traceId={}] SSE 客户端断开, conversationId={}", traceId, conversationId);
                     doCleanup.run();
                 });
 
-        // 4. 第一个事件:session_init,携带 traceId; 入口 log 改在 reactive 链上用 deferContextual
-        //    (Controller 同步块拿不到 ContextView, 必须 contextWrite 后才能读到 traceId)
+        // 5. 第一个事件:session_init,携带 traceId; 入口 log 改在 reactive 链上用 deferContextual
         int messageLen = request.getMessage() != null ? request.getMessage().length() : 0;
         Flux<StreamChunk> entryLog = TraceContext.currentTraceIdMono()
                 .doOnNext(t -> log.info("[traceId={}] 收到流式聊天请求, conversationId={}, message长度={}",
                         t, conversationId, messageLen))
                 .thenMany(Flux.just(StreamChunk.sessionInit(conversationId, traceId)));
 
-        // 5. 心跳流(主事件流未结束时持续推送,主事件流结束则停止)
+        // 6. 心跳流(主事件流未结束时持续推送,主事件流结束则停止)
+        //    使用 Sinks.One 而非 mainStream.last()，避免冷 Flux 二次订阅
         Flux<StreamChunk> heartbeat = Flux.interval(Duration.ofSeconds(HEARTBEAT_INTERVAL_SECONDS))
                 .map(tick -> StreamChunk.heartbeat(conversationId))
-                .takeUntilOther(mainStream.last().flux());
+                .takeUntilOther(completionSignal.asMono());
 
         return Flux.merge(entryLog, mainStream, clarificationSink.asFlux(), heartbeat)
                 // traceId 沿 reactive 链传播: Context 免费跨线程, 业务层 deferContextual 读取
@@ -265,9 +266,7 @@ public class AgentController {
                 .doFinally(signalType -> graphCompletionSignal.tryEmitEmpty())
                 .doOnTerminate(graphCleanup)
                 .doOnCancel(() -> {
-                    // doOnCancel 同步回调, deferContextual 阻塞取 traceId
-                    String t = TraceContext.currentTraceIdMono().block();
-                    log.info("[traceId={}] SSE 客户端断开, conversationId={}", t, conversationId);
+                    log.info("[traceId={}] SSE 客户端断开, conversationId={}", traceId, conversationId);
                     graphCleanup.run();
                 });
 
