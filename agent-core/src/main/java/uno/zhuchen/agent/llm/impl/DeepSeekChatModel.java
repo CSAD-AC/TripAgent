@@ -8,12 +8,15 @@ import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.ai.tool.ToolCallback;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
 import reactor.core.publisher.Flux;
 import uno.zhuchen.agent.llm.ChatModel;
 
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * LLM 调用实现 — 基于 Spring AI OpenAI 客户端指向 DeepSeek API
@@ -29,8 +32,17 @@ public class DeepSeekChatModel implements ChatModel {
 
     private final org.springframework.ai.chat.model.ChatModel chatModel;
 
-    /** LLM 生成的最大 token 数（deepseek-chat 上下文 64K） */
-    private static final int MAX_TOKENS = 16384;
+    /** LLM 生成的最大 token 数 */
+    @Value("${spring.ai.openai.chat.options.max-tokens:16384}")
+    private Integer maxTokens;
+
+    /** 思考模式开关 (enabled/disabled)，从 application.yml deepseek.thinking 注入 */
+    @Value("${spring.ai.openai.deepseek.thinking:disabled}")
+    private String thinking;
+
+    /** 思考强度 (high/max)，从 application.yml deepseek.reasoning-effort 注入 */
+    @Value("${spring.ai.openai.deepseek.reasoning-effort:high}")
+    private String reasoningEffort;
 
     public DeepSeekChatModel(org.springframework.ai.chat.model.ChatModel chatModel) {
         this.chatModel = chatModel;
@@ -41,11 +53,34 @@ public class DeepSeekChatModel implements ChatModel {
      *
      * 设置 internalToolExecutionEnabled=false 以代理工具调用到客户端，
      * 并注入 ToolCallback。
+     *
+     * <p>思考模式配置:
+     * <ul>
+     *   <li>thinking=enabled → extra_body.thinking.type=enabled + reasoning_effort</li>
+     *   <li>thinking=disabled → extra_body.thinking.type=disabled (DeepSeek 默认 thinking=enabled, 需显式关闭)</li>
+     * </ul>
+     * 思考模式不支持 temperature/top_p/presence_penalty/frequency_penalty, 这些参数已在 application.yml 移除.
      */
     private OpenAiChatOptions buildChatOptions(ToolCallback... tools) {
         OpenAiChatOptions chatOptions = new OpenAiChatOptions();
         chatOptions.setInternalToolExecutionEnabled(false);
-        chatOptions.setMaxTokens(MAX_TOKENS);
+        chatOptions.setMaxTokens(maxTokens);
+
+        // 手动 new 的 OpenAiChatOptions 不会自动加载 YAML 配置, 需显式读取 @Value
+        Map<String, Object> extraBody = new HashMap<>();
+        Map<String, String> thinkingParam = new HashMap<>();
+        if ("enabled".equalsIgnoreCase(this.thinking)) {
+            // 思考模式开启: 显式发送 thinking + reasoning_effort
+            thinkingParam.put("type", "enabled");
+            extraBody.put("thinking", thinkingParam);
+            chatOptions.setExtraBody(extraBody);
+            chatOptions.setReasoningEffort(reasoningEffort);
+        } else {
+            // 思考模式关闭: DeepSeek 默认 thinking=enabled, 需显式禁用
+            thinkingParam.put("type", "disabled");
+            extraBody.put("thinking", thinkingParam);
+            chatOptions.setExtraBody(extraBody);
+        }
 
         if (tools != null && tools.length > 0) {
             chatOptions.setToolCallbacks(Arrays.asList(tools));

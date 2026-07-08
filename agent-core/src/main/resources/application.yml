@@ -86,9 +86,15 @@ spring:
       base-url: https://api.deepseek.com
       connect-timeout: 30s
       read-timeout: 120s
+      # DeepSeek 思考模式参数（非标准 OpenAI 属性，通过 @Value 手动注入）
+      deepseek:
+        thinking: disabled      # 思考模式开关 enabled/disabled
+        reasoning-effort: high  # 思考强度 (high/max)
       chat:
         options:
-          model: deepseek-chat
-          temperature: 0.8
+          model: deepseek-v4-flash
           max-tokens: 16384
+
+
+
 
