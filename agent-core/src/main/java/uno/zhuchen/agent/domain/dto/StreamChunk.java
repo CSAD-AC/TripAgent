@@ -74,6 +74,9 @@ public class StreamChunk {
     /** 工具名称（tool_call / tool_result 事件有效） */
     private String toolName;
 
+    /** 工具调用 ID（tool_call / tool_result / tool_error 事件有效）— 用于并行模式下匹配具体调用 */
+    private String toolCallId;
+
     /** 工具参数 JSON（tool_call 事件有效） */
     private String toolArguments;
 
@@ -135,18 +138,20 @@ public class StreamChunk {
                 .build();
     }
 
-    public static StreamChunk toolCall(String toolName, String arguments, String conversationId) {
+    public static StreamChunk toolCall(String toolCallId, String toolName, String arguments, String conversationId) {
         return StreamChunk.builder()
                 .type(TYPE_TOOL_CALL)
+                .toolCallId(toolCallId)
                 .toolName(toolName)
                 .toolArguments(arguments)
                 .conversationId(conversationId)
                 .build();
     }
 
-    public static StreamChunk toolResult(String toolName, String resultSummary, String conversationId) {
+    public static StreamChunk toolResult(String toolCallId, String toolName, String resultSummary, String conversationId) {
         return StreamChunk.builder()
                 .type(TYPE_TOOL_RESULT)
+                .toolCallId(toolCallId)
                 .toolName(toolName)
                 .toolResult(resultSummary)
                 .conversationId(conversationId)
@@ -190,9 +195,10 @@ public class StreamChunk {
     /**
      * 工具执行出错
      */
-    public static StreamChunk toolError(String toolName, String error, String conversationId) {
+    public static StreamChunk toolError(String toolCallId, String toolName, String error, String conversationId) {
         return StreamChunk.builder()
                 .type(TYPE_TOOL_ERROR)
+                .toolCallId(toolCallId)
                 .toolName(toolName)
                 .toolResult(error)
                 .conversationId(conversationId)
