@@ -107,23 +107,6 @@ public class AskUserTool {
         TRACE_ID.remove();
     }
 
-    /** 供内部使用: 取当前 conversationId */
-    public static String currentConversationId() {
-        return CONVERSATION_ID.get();
-    }
-
-    /** 供内部使用: 取当前 traceId */
-    public static String currentTraceId() {
-        return TRACE_ID.get();
-    }
-
-    /**
-     * 取当前活跃的 askUser 数量 (供测试 / 监控用)
-     */
-    public static int activeCount() {
-        return ACTIVE_CONVERSATIONS.size();
-    }
-
     @Tool(description = "向用户反问以补充关键信息。仅当缺少必要信息无法继续时才调用，"
             + "问题要简短清晰,2-4 个预设选项,allowCustom 必须传 true 以便用户自由补充。"
             + "不要为可有可无的信息打断用户,只在关键字段缺失导致无法继续时使用。")
