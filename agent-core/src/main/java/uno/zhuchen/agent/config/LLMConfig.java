@@ -5,13 +5,13 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Profile;
-import uno.zhuchen.agent.agent.ReactAgent;
-import uno.zhuchen.agent.llm.ChatModel;
-import uno.zhuchen.agent.llm.impl.DashScopeChatModel;
-import uno.zhuchen.agent.llm.impl.DeepSeekChatModel;
-import uno.zhuchen.agent.memory.ChatMemory;
-import uno.zhuchen.agent.memory.InMemoryChatMemory;
-import uno.zhuchen.agent.tool.ToolRegistry;
+import uno.zhuchen.agent.core.agent.ReactAgent;
+import uno.zhuchen.agent.core.llm.ChatModel;
+import uno.zhuchen.agent.core.llm.impl.DashScopeChatModel;
+import uno.zhuchen.agent.core.llm.impl.DeepSeekChatModel;
+import uno.zhuchen.agent.core.memory.ChatMemory;
+import uno.zhuchen.agent.core.memory.InMemoryChatMemory;
+import uno.zhuchen.agent.core.tool.ToolRegistry;
 
 /**
  * Agent 核心配置 — 组装所有 Bean 依赖
@@ -59,17 +59,23 @@ public class LLMConfig {
     }
 
     /**
-     * 对话记忆层 — 内存实现（开发/演示阶段用）
-     *
-     * 后续可替换为 RedisChatMemory / MysqlChatMemory 等持久化实现。
+     * 对话记忆层 — 内存实现（dev / test 开发/测试阶段用，无需 MySQL）
      *
      * ⚠️ 方法名不能叫 chatMemory，因为 Spring AI 的
      * ChatMemoryAutoConfiguration 已注册了一个同名 bean。
      */
     @Bean
+    @Profile("dev || test")
     public ChatMemory inMemoryChatMemory() {
         return new InMemoryChatMemory();
     }
+
+    /**
+     * 对话记忆层 — MyBatis-Plus + Redis 实现（生产环境）
+     *
+     * !dev && !test 时启用，确保 dev/test 下无需启动 MySQL/Redis。
+     * 由 DbChatMemory 的 @Component + @Profile 自动注册。
+     */
 
     /**
      * ReAct 循环核心

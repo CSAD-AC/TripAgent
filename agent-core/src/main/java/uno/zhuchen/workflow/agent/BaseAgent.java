@@ -10,9 +10,9 @@ import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.ToolResponseMessage;
 import org.springframework.ai.chat.messages.UserMessage;
 import uno.zhuchen.agent.domain.dto.StreamChunk;
-import uno.zhuchen.agent.llm.ChatModel;
-import uno.zhuchen.agent.tool.AskUserTool;
-import uno.zhuchen.agent.tool.ToolRegistry;
+import uno.zhuchen.agent.core.llm.ChatModel;
+import uno.zhuchen.agent.core.tool.AskUserTool;
+import uno.zhuchen.agent.core.tool.ToolRegistry;
 import uno.zhuchen.workflow.state.BudgetPlan;
 import uno.zhuchen.workflow.state.Constraints;
 import uno.zhuchen.workflow.state.DayPlan;
@@ -24,7 +24,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.function.Consumer;
 
 /**
  * Agent 抽象基类

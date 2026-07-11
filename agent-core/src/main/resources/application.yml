@@ -88,12 +88,77 @@ spring:
       read-timeout: 120s
       # DeepSeek 思考模式参数（非标准 OpenAI 属性，通过 @Value 手动注入）
       deepseek:
-        thinking: disabled      # 思考模式开关 enabled/disabled
+        thinking: enabled      # 思考模式开关 enabled/disabled
         reasoning-effort: high  # 思考强度 (high/max)
       chat:
         options:
           model: deepseek-v4-flash
           max-tokens: 16384
+
+---
+# ============================================================
+# 持久化配置（datasource / mybatis-plus / redis / flyway）
+# 注意：仅在非 dev/test profile 下生效
+# ============================================================
+spring:
+  config:
+    activate:
+      on-profile: deepseek & !dev & !test
+
+  datasource:
+    url: jdbc:mysql://${MYSQL_HOST:localhost}:${MYSQL_PORT:3306}/${MYSQL_DB:agent}?useUnicode=true&characterEncoding=utf8mb4&serverTimezone=Asia/Shanghai
+    username: ${MYSQL_USER:root}
+    password: ${MYSQL_PASSWORD:root}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 2
+      idle-timeout: 30000
+      max-lifetime: 600000
+      connection-timeout: 5000
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      timeout: 3000ms
+      lettuce:
+        pool:
+          max-active: 8
+          max-idle: 4
+          min-idle: 0
+
+# MyBatis-Plus 配置
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.slf4j.Slf4jImpl
+    slow-sql-ms: 500
+  global-config:
+    db-config:
+      id-type: ASSIGN_UUID
+      logic-delete-field: status
+      logic-delete-value: deleted
+      logic-not-delete-value: active
+
+# Actuator / Micrometer 指标暴露
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus
+  metrics:
+    export:
+      prometheus:
+        enabled: true
+    tags:
+      application: travelpal-agent
 
 
 

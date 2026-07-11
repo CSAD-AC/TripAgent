@@ -2,12 +2,14 @@ package uno.zhuchen.agent.common;
 
 
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import uno.zhuchen.agent.common.exception.NotFoundException;
 
 import java.io.PrintWriter;
 import java.io.StringWriter;
-import java.util.stream.Collectors;
 
 @Slf4j
 @RestControllerAdvice
@@ -30,6 +32,16 @@ public class GlobalExceptionHandler {
     public Result<Void> handleIllegalArgument(IllegalArgumentException e) {
         log.warn("参数非法: {}", e.getMessage());
         return Result.error(400, e.getMessage());
+    }
+
+    /**
+     * 资源不存在（对话、消息等）。
+     */
+    @ExceptionHandler(NotFoundException.class)
+    @ResponseStatus(HttpStatus.NOT_FOUND)
+    public Result<Void> handleNotFound(NotFoundException e) {
+        log.warn("资源不存在: {}", e.getMessage());
+        return Result.error(404, e.getMessage());
     }
 
     /**
