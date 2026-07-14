@@ -100,6 +100,7 @@ public class ReactAgent {
                 // 将历史消息插入到 system prompt 之后、当前用户消息之前
                 history.forEach(msg -> state.getMessages().add(state.getMessages().size() - 1, msg));
             }
+            state.setLoadedMessageCount(history.size());
 
             // 3. ReAct 循环
             AssistantMessage finalResponse = null;
@@ -192,7 +193,7 @@ public class ReactAgent {
 
             if (finalResponse != null) {
                 // 保存对话历史
-                chatMemory.save(state.getConversationId(), state.getMessages());
+                chatMemory.save(state.getConversationId(), state.getNewMessages());
                 return ChatDTO.success(
                         state.getConversationId(), userInput,
                         finalResponse.getText(),
@@ -203,7 +204,7 @@ public class ReactAgent {
             }
 
             // 达到最大迭代次数仍未得出最终答案
-            chatMemory.save(state.getConversationId(), state.getMessages());
+            chatMemory.save(state.getConversationId(), state.getNewMessages());
             String lastContent = !state.getMessages().isEmpty()
                     ? state.getMessages().get(state.getMessages().size() - 1).getText()
                     : "";
@@ -265,6 +266,7 @@ public class ReactAgent {
         if (!history.isEmpty()) {
             history.forEach(msg -> state.getMessages().add(state.getMessages().size() - 1, msg));
         }
+        state.setLoadedMessageCount(history.size());
 
         ToolCallback[] allTools = toolRegistry.getAll();
 
@@ -406,7 +408,7 @@ public class ReactAgent {
                     .content(thought)
                     .build();
             state.addReasoningResult(response);
-            chatMemory.save(state.getConversationId(), state.getMessages());
+            chatMemory.save(state.getConversationId(), state.getNewMessages());
             log.debug("[traceId={}] 第 {} 轮无工具调用, 得到最终答案", traceId, iterNum);
             return Flux.just(StreamChunk.final_(state.getConversationId(), thought,
                     System.currentTimeMillis() - start));
@@ -588,7 +590,7 @@ public class ReactAgent {
                                                   Throwable e, long start) {
         log.error("[traceId={}] [{}] ReAct 流式处理异常",
                 traceId, state.getConversationId(), e);
-        chatMemory.save(state.getConversationId(), state.getMessages());
+        chatMemory.save(state.getConversationId(), state.getNewMessages());
         return Flux.just(StreamChunk.error(state.getConversationId(),
                 "处理异常: " + e.getMessage(), System.currentTimeMillis() - start));
     }

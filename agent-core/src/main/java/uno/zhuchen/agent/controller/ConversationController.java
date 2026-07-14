@@ -3,9 +3,12 @@ package uno.zhuchen.agent.controller;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import java.util.Map;
 import uno.zhuchen.agent.common.Result;
 import uno.zhuchen.agent.domain.vo.ConversationDetailVO;
 import uno.zhuchen.agent.persistence.service.ConversationService;
@@ -50,6 +53,20 @@ public class ConversationController {
         } catch (NotFoundException e) {
             return Result.error(404, e.getMessage());
         }
+    }
+
+    /**
+     * 更新对话标题。
+     */
+    @PutMapping("/{id}")
+    public Result<Void> updateConversation(@PathVariable String id,
+                                            @RequestBody Map<String, String> body) {
+        String title = body.get("title");
+        if (title == null || title.isBlank()) {
+            return Result.error(400, "title 不能为空");
+        }
+        conversationService.updateConversation(id, title.trim());
+        return Result.success(null);
     }
 
     /**
