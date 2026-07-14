@@ -7,6 +7,8 @@ import type {
   PendingClarification,
   ApiMode,
   GraphTrace,
+  ConversationDetail,
+  ApiResult,
 } from '../types'
 
 export function useChat() {
@@ -586,6 +588,125 @@ export function useChat() {
     setGraphTrace(null)
   }, [])
 
+  /**
+   * 加载已有对话的历史消息。
+   * 当用户从侧边栏选择对话时调用,替代 sendMessage 的初始化流程。
+   */
+  const loadConversation = useCallback(async (id: string) => {
+    try {
+      const res = await fetch(`/api/conversations/${id}`)
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const body: ApiResult<ConversationDetail> = await res.json()
+      if (body.code !== 200 || !body.data) {
+        throw new Error(body.message || '加载失败')
+      }
+      const detail = body.data
+
+      // 对后端消息流进行分组：user / assistant → (tool)*, 把 tool 消息合并到前一条 assistant 的 toolCalls 中
+      const grouped: Message[] = []
+      let pendingAssistant: Message | null = null
+
+      /** flush pendingAssistant 到 grouped, 如有 toolCalls 则构建 iterationData */
+      function flushAssistant(msg: Message | null) {
+        if (!msg) return
+        if (msg.toolCalls && msg.toolCalls.length > 0) {
+          msg.iterationData = [{
+            iteration: 1,
+            text: msg.content,
+            toolCalls: msg.toolCalls,
+          }]
+        }
+        grouped.push(msg)
+      }
+
+      for (const m of (detail.messages || [])) {
+        if (m.role === 'user') {
+          // 先 flush 上一个 pending 的 assistant
+          flushAssistant(pendingAssistant)
+          pendingAssistant = null
+          grouped.push({
+            id: `hist-${detail.id}-${m.sequenceNum ?? Date.now()}`,
+            role: 'user',
+            content: m.content || '',
+            type: 'final' as const,
+            timestamp: m.createdAt ? new Date(m.createdAt).getTime() : Date.now(),
+            apiMode: (detail.mode as ApiMode) || 'react',
+          })
+        } else if (m.role === 'assistant') {
+          // flush previous assistant
+          flushAssistant(pendingAssistant)
+          // 解析 metadata 中的 tool_calls
+          let toolCalls: ToolCallInfo[] | undefined
+          if (m.metadata) {
+            try {
+              const parsed = JSON.parse(m.metadata)
+              if (Array.isArray(parsed)) {
+                toolCalls = parsed.map((tc: any) => ({
+                  toolCallId: tc.id,
+                  toolName: tc.name || tc.toolName,
+                  toolArguments: tc.arguments,
+                  status: 'success' as const,
+                  result: '',
+                }))
+              }
+            } catch { /* ignore parse errors */ }
+          }
+          pendingAssistant = {
+            id: `hist-${detail.id}-${m.sequenceNum ?? Date.now()}`,
+            role: 'assistant',
+            content: m.content || '',
+            type: 'final' as const,
+            timestamp: m.createdAt ? new Date(m.createdAt).getTime() : Date.now(),
+            apiMode: (detail.mode as ApiMode) || 'react',
+            toolCalls,
+          }
+        } else if (m.role === 'tool' && pendingAssistant) {
+          // 把 tool 响应合并到上一个 assistant 的 toolCalls 中
+          const summary = m.content || ''
+          let toolName = ''
+          let responseData = ''
+          // 从 metadata 解析
+          if (m.metadata) {
+            try {
+              const parsed = JSON.parse(m.metadata)
+              if (Array.isArray(parsed) && parsed.length > 0) {
+                toolName = parsed[0].name || ''
+                responseData = parsed[0].responseData || ''
+              }
+            } catch { /* ignore parse errors */ }
+          }
+          if (!toolName) {
+            // 降级：从 content 摘要解析, 如 "amapWeather(北京 晴 25°C)"
+            const parenIdx = summary.indexOf('(')
+            toolName = parenIdx > 0 ? summary.slice(0, parenIdx) : 'history'
+          }
+          const existing: ToolCallInfo[] = pendingAssistant.toolCalls || []
+          // 找同名的 toolCall 注入 result
+          const matchIdx = existing.findIndex((tc: ToolCallInfo) => tc.toolName === toolName)
+          if (matchIdx >= 0) {
+            existing[matchIdx] = { ...existing[matchIdx], result: responseData || summary }
+          } else {
+            existing.push({
+              toolCallId: '',
+              toolName,
+              status: 'success' as const,
+              result: responseData || summary,
+            })
+          }
+          pendingAssistant = { ...(pendingAssistant as Message), toolCalls: [...existing] }
+        }
+      }
+      // flush last assistant
+      flushAssistant(pendingAssistant)
+
+      setMessages(grouped)
+      setPendingClarification(null)
+      setGraphTrace(null)
+    } catch (err) {
+      console.error('[useChat] loadConversation error:', err)
+    }
+  }, [])
+
   return {
     messages,
     isLoading,
@@ -598,5 +719,6 @@ export function useChat() {
     submitClarificationAnswer,
     stopStreaming,
     clearMessages,
+    loadConversation,
   }
 }

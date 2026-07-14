@@ -97,12 +97,57 @@ export interface Recommendation {
   description: string
 }
 
-/** 对话会话 */
+/** 对话会话（匹配后端 ConversationVO） */
 export interface Conversation {
-  id: number
+  id: string
   title: string
-  createdAt: string
+  mode: string
   messageCount: number
+  firstMessage: string
+  createdAt: string
+  updatedAt: string
+}
+
+/** 对话详情（匹配后端 ConversationDetailVO） */
+export interface ConversationDetail {
+  id: string
+  title: string
+  mode: string
+  status: string
+  messageCount: number
+  model: string
+  firstMessage: string
+  messages: HistoryMessage[]
+  createdAt: string
+  updatedAt: string
+}
+
+/** 后端消息 VO（匹配 MessageVO） */
+export interface HistoryMessage {
+  id: number
+  role: string
+  content: string
+  model: string | null
+  tokenCount: number | null
+  traceId: string | null
+  sequenceNum: number
+  metadata: string | null  // JSON: tool_calls / tool_responses
+  createdAt: string
+}
+
+/** 分页结果（匹配后端 PageResult） */
+export interface PageResult<T> {
+  data: T[]
+  total: number
+  page: number
+  size: number
+}
+
+/** 通用 API 响应（匹配后端 Result） */
+export interface ApiResult<T> {
+  code: number
+  message: string
+  data: T
 }
 
 /** API 请求 */
