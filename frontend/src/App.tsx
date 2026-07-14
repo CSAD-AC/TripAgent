@@ -16,7 +16,18 @@ export default function App() {
   const [apiMode, setApiMode] = useState<ApiMode>('react')
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
-  const { conversationId, setConversationId, newConversation } = useConversations()
+  const {
+    conversationId,
+    setConversationId,
+    conversations,
+    loading: conversationsLoading,
+    total: conversationsTotal,
+    deleteConversation,
+    renameConversation,
+    selectConversation,
+    newConversation,
+    fetchConversations,
+  } = useConversations()
 
   const {
     messages,
@@ -28,23 +39,77 @@ export default function App() {
     sendMessage,
     submitClarificationAnswer,
     stopStreaming,
+    clearMessages,
+    loadConversation,
   } = useChat()
 
   // 把后端下发的 session_init.conversationId 写回 URL hash
+  // 新对话创建后刷新列表，使其出现在侧边栏
   const handleSessionInit = useCallback(
     (id: string) => {
       if (id !== conversationId) {
         setConversationId(id)
+        // 新 conversationId 说明是新创建的对话，刷新列表使其出现在侧边栏
+        fetchConversations()
       }
     },
-    [conversationId, setConversationId]
+    [conversationId, setConversationId, fetchConversations]
   )
+
+  // 首次挂载时，如果 URL hash 中有 conversationId，自动恢复历史消息
+  const initialLoadDoneRef = useRef(false)
+  useEffect(() => {
+    if (initialLoadDoneRef.current) return
+    initialLoadDoneRef.current = true
+    if (conversationId) {
+      loadConversation(conversationId)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const handleSend = useCallback(
     (content: string) => {
       sendMessage(content, apiMode, conversationId, handleSessionInit)
     },
     [apiMode, conversationId, handleSessionInit, sendMessage]
+  )
+
+  // ── 从侧边栏选择对话 ──
+  const handleSelectConversation = useCallback(
+    (id: string) => {
+      if (id === conversationId) return
+      selectConversation(id)
+      clearMessages()
+      loadConversation(id)
+      setSidebarOpen(false)
+    },
+    [conversationId, selectConversation, clearMessages, loadConversation]
+  )
+
+  // ── 新建对话 ──
+  const handleNewConversation = useCallback(() => {
+    newConversation()
+    clearMessages()
+    setSidebarOpen(false)
+  }, [newConversation, clearMessages])
+
+  // ── 删除对话 ──
+  const handleDeleteConversation = useCallback(
+    async (id: string) => {
+      await deleteConversation(id)
+      if (id === conversationId) {
+        clearMessages()
+      }
+    },
+    [deleteConversation, conversationId, clearMessages]
+  )
+
+  // ── 重命名对话 ──
+  const handleRenameConversation = useCallback(
+    async (id: string, title: string) => {
+      await renameConversation(id, title)
+    },
+    [renameConversation]
   )
 
   // 自动滚动到底部(尊重 prefers-reduced-motion)
@@ -60,9 +125,13 @@ export default function App() {
       {/* 侧栏 */}
       <Sidebar
         conversationId={conversationId}
-        onNew={() => {
-          newConversation()
-        }}
+        conversations={conversations}
+        loading={conversationsLoading}
+        total={conversationsTotal}
+        onSelect={handleSelectConversation}
+        onNew={handleNewConversation}
+        onDelete={handleDeleteConversation}
+        onRename={handleRenameConversation}
         open={sidebarOpen}
         onToggle={() => setSidebarOpen(!sidebarOpen)}
       />
