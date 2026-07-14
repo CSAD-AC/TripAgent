@@ -24,6 +24,7 @@ public class MessageVO {
     private Integer tokenCount;
     private String traceId;
     private Integer sequenceNum;
+    private String metadata;     // 结构化元数据(JSON)
     private LocalDateTime createdAt;
 
     public static MessageVO fromEntity(MessageEntity entity) {
@@ -35,6 +36,7 @@ public class MessageVO {
                 .tokenCount(entity.getTokenCount())
                 .traceId(entity.getTraceId())
                 .sequenceNum(entity.getSequenceNum())
+                .metadata(entity.getMetadata())
                 .createdAt(entity.getCreatedAt())
                 .build();
     }

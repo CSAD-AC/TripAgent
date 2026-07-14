@@ -29,4 +29,10 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
      */
     @Update("UPDATE conversation SET message_count = message_count + #{delta} WHERE id=#{conversationId}")
     int incrementMessageCount(@Param("conversationId") String conversationId, @Param("delta") int delta);
+
+    /**
+     * 更新对话标题。
+     */
+    @Update("UPDATE conversation SET title=#{title} WHERE id=#{id}")
+    int updateTitle(@Param("id") String id, @Param("title") String title);
 }

@@ -27,6 +27,8 @@ public class MessageEntity {
 
     private String content;     // 纯文本
 
+    private String metadata;    // 结构化元数据(JSON): assistant 存 tool_calls, tool 存 toolCallId+toolName+responseData
+
     private String model;
 
     @TableField("token_count")

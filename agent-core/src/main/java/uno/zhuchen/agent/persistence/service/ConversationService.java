@@ -65,6 +65,18 @@ public class ConversationService {
     }
 
     /**
+     * 更新对话标题。
+     */
+    public void updateConversation(String conversationId, String title) {
+        ConversationEntity entity = conversationMapper.selectById(conversationId);
+        if (entity == null || "deleted".equals(entity.getStatus())) {
+            throw new NotFoundException("对话不存在");
+        }
+        conversationMapper.updateTitle(conversationId, title);
+        log.info("Updated conversation title: {} -> {}", conversationId, title);
+    }
+
+    /**
      * 软删除对话及关联消息。
      */
     @Transactional

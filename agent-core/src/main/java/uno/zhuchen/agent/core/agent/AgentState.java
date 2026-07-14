@@ -20,6 +20,8 @@ public class AgentState {
     private final SystemMessage systemPrompt;
     private final List<Message> messages;
     private int iterationCount;
+    /** 从持久层加载的历史消息数量，save() 时只保存此偏移量之后的新消息，防止续聊重复插入 */
+    private int loadedMessageCount;
 
     public AgentState(String conversationId, String systemPromptText, String userInput) {
         this.conversationId = conversationId != null ? conversationId : UUID.randomUUID().toString().substring(0, 8);
@@ -27,6 +29,21 @@ public class AgentState {
         this.messages = new ArrayList<>();
         this.messages.add(new UserMessage(userInput));
         this.iterationCount = 0;
+        this.loadedMessageCount = 0;
+    }
+
+    /**
+     * 设置历史消息数量，在 chatMemory.load() 之后调用。
+     */
+    public void setLoadedMessageCount(int count) {
+        this.loadedMessageCount = count;
+    }
+
+    /**
+     * 本轮新增的消息（不含历史），用于 save() 时只持久化新消息。
+     */
+    public List<Message> getNewMessages() {
+        return messages.subList(loadedMessageCount, messages.size());
     }
 
     /**
