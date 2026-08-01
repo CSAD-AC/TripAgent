@@ -68,9 +68,13 @@ public class AgentController {
      *
      * <p>traceId 在 reactive 路径走 Reactor Context, 在 Graph 路径走 state,
      * 不依赖 MDC (org.slf4j.MDC), 完全消除 ThreadLocal 跨线程问题.
+     *
+     * <p>截取 16 位 hex(2^64 空间): 8 位(2^32)在约 7.7 万个请求后即有 50%
+     * 碰撞概率(生日悖论), 16 位实际无碰撞可能, 保证日志链路与
+     * message.trace_id 列不串线.
      */
     private String newTraceId() {
-        return UUID.randomUUID().toString().substring(0, 8);
+        return UUID.randomUUID().toString().substring(0, 16);
     }
 
     /**
@@ -79,12 +83,13 @@ public class AgentController {
     @PostMapping("/chat")
     public Mono<Result<ChatVO>> chat(@Valid @RequestBody ChatRequest request) {
         String conversationId = resolveConversationId(request.getConversationId());
+        String traceId = newTraceId();
         log.info("收到聊天请求, conversationId={}, message长度={}",
                 conversationId,
                 request.getMessage() != null ? request.getMessage().length() : 0);
 
         return Mono.fromCallable(() -> {
-            ChatDTO chatDTO = reactAgent.call(request.getMessage(), conversationId);
+            ChatDTO chatDTO = reactAgent.call(request.getMessage(), conversationId, traceId);
             ChatVO vo = ChatVO.from(chatDTO);
 
             log.info("聊天完成, status={}, durationMs={}",
@@ -233,13 +238,13 @@ public class AgentController {
         String traceId = newTraceId();
         long startMs = System.currentTimeMillis();
 
-        // 1. 反问事件旁路 sink（与 /chat/stream 完全相同的模式）
+        // 1. 反问事件旁路 sink
         Sinks.Many<StreamChunk> clarificationSink = Sinks.many().unicast().onBackpressureBuffer();
         Consumer<StreamChunk> emitter = clarificationSink::tryEmitNext;
         try {
             clarificationBroker.registerEmitter(conversationId, emitter);
         } catch (ClarificationBroker.DuplicateSseConnectionException e) {
-            // 同一 conversationId 已有活跃 SSE 连接, 拒绝新连接 (P2 修复)
+            // 同一 conversationId 已有活跃 SSE 连接, 拒绝新连接
             log.warn("[traceId={}] Graph SSE 连接被拒绝: {}", traceId, e.getMessage());
             return Flux.just(
                     StreamChunk.sessionInit(conversationId, traceId),

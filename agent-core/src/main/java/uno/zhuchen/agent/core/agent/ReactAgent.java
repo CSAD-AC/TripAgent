@@ -73,16 +73,19 @@ public class ReactAgent {
 
     /**
      * 同步调用：执行 ReAct 循环，返回完整结果
+     *
+     * @param traceId 链路追踪 ID,用于给落库消息补 trace_id metadata
+     *                (message.trace_id 列溯源),以及同步路径日志串联
      */
-    public ChatDTO call(String userInput, String conversationId) {
+    public ChatDTO call(String userInput, String conversationId, String traceId) {
         long start = System.currentTimeMillis();
         List<String> reasoningSteps = new ArrayList<>();
 
         try {
             // 1. 初始化状态
             AgentState state = new AgentState(conversationId, config.getSystemPrompt(), userInput);
-            log.debug("Agent[{}] 开始 ReAct 循环, maxIterations={}",
-                    state.getConversationId(), config.getMaxIterations());
+            log.debug("[traceId={}] Agent[{}] 开始 ReAct 循环, maxIterations={}",
+                    traceId, state.getConversationId(), config.getMaxIterations());
 
             // 载入Tool
             ToolCallback[] tools = toolRegistry.getAll();
@@ -145,13 +148,12 @@ public class ReactAgent {
 
                         // 反问工具需要 conversationId,放在 ThreadLocal 里传
                         // 用 try-finally 保证清理,防止线程复用导致串号
-                        // FIXME 同步 call() 入口暂未接入链路追踪, 后续重构 stream() 时统一处理
                         // setContext 仅对 askUser 调用, 与 stream() 路径 executeOneTool 保持一致
                         boolean needsAskUserContext = "askUser".equals(toolCall.name());
                         try {
                             if (needsAskUserContext) {
-                                // 同步入口无 traceId, 传空字符串(同步接口不参与链路追踪)
-                                AskUserTool.setContext(state.getConversationId(), "");
+                                // 同步入口已有 traceId, 与流式路径保持一致
+                                AskUserTool.setContext(state.getConversationId(), traceId);
                             }
                             // Observe: 执行工具 → 获取结果
                             String result = tool.call(toolCall.arguments());
@@ -192,8 +194,8 @@ public class ReactAgent {
             long duration = System.currentTimeMillis() - start;
 
             if (finalResponse != null) {
-                // 保存对话历史
-                chatMemory.save(state.getConversationId(), state.getNewMessages());
+                // 保存对话历史(traceId 落 message.trace_id 列支撑溯源)
+                chatMemory.save(state.getConversationId(), state.getNewMessages(), traceId);
                 return ChatDTO.success(
                         state.getConversationId(), userInput,
                         finalResponse.getText(),
@@ -204,7 +206,7 @@ public class ReactAgent {
             }
 
             // 达到最大迭代次数仍未得出最终答案
-            chatMemory.save(state.getConversationId(), state.getNewMessages());
+            chatMemory.save(state.getConversationId(), state.getNewMessages(), traceId);
             String lastContent = !state.getMessages().isEmpty()
                     ? state.getMessages().get(state.getMessages().size() - 1).getText()
                     : "";
@@ -408,7 +410,7 @@ public class ReactAgent {
                     .content(thought)
                     .build();
             state.addReasoningResult(response);
-            chatMemory.save(state.getConversationId(), state.getNewMessages());
+            chatMemory.save(state.getConversationId(), state.getNewMessages(), traceId);
             log.debug("[traceId={}] 第 {} 轮无工具调用, 得到最终答案", traceId, iterNum);
             return Flux.just(StreamChunk.final_(state.getConversationId(), thought,
                     System.currentTimeMillis() - start));
@@ -590,7 +592,7 @@ public class ReactAgent {
                                                   Throwable e, long start) {
         log.error("[traceId={}] [{}] ReAct 流式处理异常",
                 traceId, state.getConversationId(), e);
-        chatMemory.save(state.getConversationId(), state.getNewMessages());
+        chatMemory.save(state.getConversationId(), state.getNewMessages(), traceId);
         return Flux.just(StreamChunk.error(state.getConversationId(),
                 "处理异常: " + e.getMessage(), System.currentTimeMillis() - start));
     }
