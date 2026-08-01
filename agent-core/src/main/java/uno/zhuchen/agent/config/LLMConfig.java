@@ -74,7 +74,7 @@ public class LLMConfig {
      * 对话记忆层 — MyBatis-Plus + Redis 实现（生产环境）
      *
      * !dev && !test 时启用，确保 dev/test 下无需启动 MySQL/Redis。
-     * 由 DbChatMemory 的 @Component + @Profile 自动注册。
+     * 由 PersistentChatMemory 的 @Component + @Profile 自动注册。
      */
 
     /**
