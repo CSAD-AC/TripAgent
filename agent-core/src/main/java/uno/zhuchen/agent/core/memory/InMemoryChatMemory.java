@@ -21,7 +21,7 @@ public class InMemoryChatMemory implements ChatMemory {
     private final Map<String, List<Message>> store = new ConcurrentHashMap<>();
 
     @Override
-    public void save(String conversationId, List<Message> messages) {
+    public void save(String conversationId, List<Message> messages, String traceId) {
         // 仅保留最新的 N 条（不含 system prompt）
         List<Message> trimmed = messages.stream()
                 .skip(Math.max(0, messages.size() - MAX_MESSAGES_PER_SESSION))
