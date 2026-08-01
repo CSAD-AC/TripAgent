@@ -26,6 +26,12 @@ agent:
     max-iterations: 20
     timeout-seconds: 30
 
+# 对话消息缓存 TTL(秒),作用在 RedisMessageCache@persistentChatMemory
+# 仅在生产 profile(非 dev/test)下生效,因为 InMemoryChatMemory 不依赖 Redis
+app:
+  cache:
+    session-ttl: 1800
+
 clarify:
   timeout-minutes: 10
 
