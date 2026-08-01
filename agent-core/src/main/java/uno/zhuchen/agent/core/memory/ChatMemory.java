@@ -13,8 +13,20 @@ public interface ChatMemory {
 
     /**
      * 保存指定会话的消息列表
+     *
+     * @param conversationId 会话 ID
+     * @param messages       消息列表
+     * @param traceId        链路追踪 ID, 落库到 message.trace_id 列支撑溯源;
+     *                       无链路追踪上下文时可传空字符串
      */
-    void save(String conversationId, List<Message> messages);
+    void save(String conversationId, List<Message> messages, String traceId);
+
+    /**
+     * 保存指定会话的消息列表(无链路追踪上下文的便捷入口)
+     */
+    default void save(String conversationId, List<Message> messages) {
+        save(conversationId, messages, "");
+    }
 
     /**
      * 加载指定会话的消息历史
