@@ -4,6 +4,7 @@ import jakarta.validation.Valid;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -12,14 +13,17 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.Sinks;
 import reactor.util.context.Context;
+import uno.zhuchen.agent.config.ModelRouter;
 import uno.zhuchen.agent.core.agent.ReactAgent;
 import uno.zhuchen.agent.core.clarify.ClarificationBroker;
+import uno.zhuchen.agent.common.ModelContext;
 import uno.zhuchen.agent.common.Result;
 import uno.zhuchen.agent.common.TraceContext;
 import uno.zhuchen.agent.domain.dto.ChatDTO;
 import uno.zhuchen.agent.domain.dto.ChatRequest;
 import uno.zhuchen.agent.domain.dto.StreamChunk;
 import uno.zhuchen.agent.domain.vo.ChatVO;
+import uno.zhuchen.agent.domain.vo.ModelVO;
 import uno.zhuchen.workflow.builder.GraphStreamRunner;
 
 import java.time.Duration;
@@ -54,12 +58,26 @@ public class AgentController {
     private final ReactAgent reactAgent;
     private final ClarificationBroker clarificationBroker;
     private final GraphStreamRunner graphStreamRunner;
+    private final ModelRouter modelRouter;
 
     public AgentController(ReactAgent reactAgent, ClarificationBroker clarificationBroker,
-                           GraphStreamRunner graphStreamRunner) {
+                           GraphStreamRunner graphStreamRunner, ModelRouter modelRouter) {
         this.reactAgent = reactAgent;
         this.clarificationBroker = clarificationBroker;
         this.graphStreamRunner = graphStreamRunner;
+        this.modelRouter = modelRouter;
+    }
+
+    /**
+     * 模型列表 — 供前端渲染模型选择器.
+     *
+     * <p>返回顺序即 application.yml app.models 配置顺序, deepseek 置顶,
+     * 前端默认选中第一项; 未传 modelId 的请求后端也回退到该默认项.
+     */
+    @GetMapping("/models")
+    public Mono<Result<java.util.List<ModelVO>>> listModels() {
+        return Mono.fromCallable(() -> Result.success(
+                modelRouter.listAll().stream().map(ModelVO::from).toList()));
     }
 
     /**
@@ -83,13 +101,15 @@ public class AgentController {
     @PostMapping("/chat")
     public Mono<Result<ChatVO>> chat(@Valid @RequestBody ChatRequest request) {
         String conversationId = resolveConversationId(request.getConversationId());
+        String modelId = resolveModelId(request.getModelId());
         String traceId = newTraceId();
-        log.info("收到聊天请求, conversationId={}, message长度={}",
+        log.info("收到聊天请求, conversationId={}, model={}, message长度={}",
                 conversationId,
+                modelId != null ? modelId : "default",
                 request.getMessage() != null ? request.getMessage().length() : 0);
 
         return Mono.fromCallable(() -> {
-            ChatDTO chatDTO = reactAgent.call(request.getMessage(), conversationId, traceId);
+            ChatDTO chatDTO = reactAgent.call(request.getMessage(), conversationId, traceId, modelId);
             ChatVO vo = ChatVO.from(chatDTO);
 
             log.info("聊天完成, status={}, durationMs={}",
@@ -136,6 +156,7 @@ public class AgentController {
     @PostMapping(value = "/chat/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<StreamChunk> stream(@Valid @RequestBody ChatRequest request) {
         String conversationId = resolveConversationId(request.getConversationId());
+        String modelId = resolveModelId(request.getModelId());
         String traceId = newTraceId();
         long startMs = System.currentTimeMillis();
 
@@ -153,7 +174,7 @@ public class AgentController {
                             System.currentTimeMillis() - startMs)
             )
             // 提前返回路径也要 contextWrite, 与主流保持 Context 一致性
-            .contextWrite(Context.of(TraceContext.KEY, traceId));
+            .contextWrite(Context.of(TraceContext.KEY, traceId).put(ModelContext.KEY, modelId));
         }
 
         // 2. cleanup guard: doOnTerminate 与 doOnCancel 都可能触发, 用 CAS 保证只清理一次
@@ -191,8 +212,8 @@ public class AgentController {
                 .takeUntilOther(completionSignal.asMono());
 
         return Flux.merge(entryLog, mainStream, clarificationSink.asFlux(), heartbeat)
-                // traceId 沿 reactive 链传播: Context 免费跨线程, 业务层 deferContextual 读取
-                .contextWrite(Context.of(TraceContext.KEY, traceId));
+                // traceId / modelId 沿 reactive 链传播: Context 免费跨线程, 业务层 deferContextual 读取
+                .contextWrite(Context.of(TraceContext.KEY, traceId).put(ModelContext.KEY, modelId));
     }
 
     /**
@@ -290,6 +311,22 @@ public class AgentController {
         // 6. 合并主事件 + 入口 log + 反问旁路 + 心跳（各自是独立的 sink，互不冲突）
         return Flux.merge(mainStream, entryLog, clarificationSink.asFlux(), heartbeat)
                 .contextWrite(Context.of(TraceContext.KEY, traceId));
+    }
+
+    /**
+     * 解析并校验 modelId:
+     * 规则：
+     * - null / 空 → 返回 null(使用注册表默认模型)
+     * - 非空但注册表不存在 → 抛 IllegalArgumentException(由全局异常处理转 400)
+     * - 存在 → 原样返回
+     */
+    private String resolveModelId(String modelId) {
+        if (modelId == null || modelId.isBlank()) {
+            return null;
+        }
+        // 仅校验存在性, 具体解析(model 名/实现路由)在 ReactAgent 内部完成
+        modelRouter.resolveConfig(modelId);
+        return modelId;
     }
 
     /**
