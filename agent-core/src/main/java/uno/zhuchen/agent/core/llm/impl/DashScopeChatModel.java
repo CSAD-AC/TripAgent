@@ -43,11 +43,16 @@ public class DashScopeChatModel implements ChatModel {
 
     /**
      * 构建统一的 ChatOptions
+     *
+     * @param modelName API 模型名; null/空串表示用底层配置的默认模型
      */
-    private DashScopeChatOptions buildChatOptions(ToolCallback... tools) {
+    private DashScopeChatOptions buildChatOptions(String modelName, ToolCallback... tools) {
         DashScopeChatOptions chatOptions = new DashScopeChatOptions();
         chatOptions.setInternalToolExecutionEnabled(false);
         chatOptions.setMaxTokens(MAX_TOKENS);
+        if (modelName != null && !modelName.isBlank()) {
+            chatOptions.setModel(modelName);
+        }
 
         if (tools != null && tools.length > 0) {
             chatOptions.setToolCallbacks(Arrays.asList(tools));
@@ -62,11 +67,12 @@ public class DashScopeChatModel implements ChatModel {
 
 
     @Override
-    public AssistantMessage call(List<Message> messages, ToolCallback... tools) {
-        log.debug("LLM 同步调用, messages 数量: {}", messages.size());
+    public AssistantMessage call(List<Message> messages, String modelName, ToolCallback... tools) {
+        log.debug("DashScope 同步调用, model={}, messages 数量: {}",
+                modelName != null ? modelName : "default", messages.size());
 
         try {
-            DashScopeChatOptions chatOptions = buildChatOptions(tools);
+            DashScopeChatOptions chatOptions = buildChatOptions(modelName, tools);
 
             Prompt prompt = Prompt.builder()
                     .messages(messages)
@@ -95,10 +101,11 @@ public class DashScopeChatModel implements ChatModel {
 
 
     @Override
-    public Flux<ChatResponse> stream(List<Message> messages, ToolCallback... tools) {
-        log.debug("LLM流式调用, messages 数量: {}", messages.size());
+    public Flux<ChatResponse> stream(List<Message> messages, String modelName, ToolCallback... tools) {
+        log.debug("DashScope 流式调用, model={}, messages 数量: {}",
+                modelName != null ? modelName : "default", messages.size());
 
-        DashScopeChatOptions chatOptions = buildChatOptions(tools);
+        DashScopeChatOptions chatOptions = buildChatOptions(modelName, tools);
 
         Prompt prompt = Prompt.builder()
                 .messages(messages)

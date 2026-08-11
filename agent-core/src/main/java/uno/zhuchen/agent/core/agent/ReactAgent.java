@@ -10,6 +10,8 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 import uno.zhuchen.agent.config.AgentConfig;
+import uno.zhuchen.agent.config.ModelRouter;
+import uno.zhuchen.agent.common.ModelContext;
 import uno.zhuchen.agent.common.TraceContext;
 import uno.zhuchen.agent.domain.dto.ChatDTO;
 import uno.zhuchen.agent.domain.dto.StreamChunk;
@@ -56,7 +58,10 @@ public class ReactAgent {
 
     private static final Logger log = LoggerFactory.getLogger(ReactAgent.class);
 
-    private final ChatModel chatModel;
+    /** 当前请求的 LLM 实现与 API 模型名(由 ModelRouter 按 modelId 解析) */
+    private record ModelInvocation(ChatModel impl, String modelName) {}
+
+    private final ModelRouter modelRouter;
     private final ChatMemory chatMemory;
     private final AgentConfig config;
     private final ToolRegistry toolRegistry;
@@ -64,11 +69,16 @@ public class ReactAgent {
     /** 每会话并发控制，拒绝同一 conversationId 的并行请求 */
     private final ConcurrentHashMap<String, AtomicBoolean> conversationLocks = new ConcurrentHashMap<>();
 
-    public ReactAgent(ChatModel chatModel, ChatMemory chatMemory, AgentConfig config, ToolRegistry toolRegistry) {
-        this.chatModel = chatModel;
+    public ReactAgent(ModelRouter modelRouter, ChatMemory chatMemory, AgentConfig config, ToolRegistry toolRegistry) {
+        this.modelRouter = modelRouter;
         this.chatMemory = chatMemory;
         this.config = config;
         this.toolRegistry = toolRegistry;
+    }
+
+    /** modelId(可为 null) → LLM 实现 + API 模型名; null 解析为注册表默认项 */
+    private ModelInvocation resolveInvocation(String modelId) {
+        return new ModelInvocation(modelRouter.route(modelId), modelRouter.resolveModelName(modelId));
     }
 
     /**
@@ -76,16 +86,18 @@ public class ReactAgent {
      *
      * @param traceId 链路追踪 ID,用于给落库消息补 trace_id metadata
      *                (message.trace_id 列溯源),以及同步路径日志串联
+     * @param modelId 模型业务 ID(前端选择); null/空串 → 注册表默认模型
      */
-    public ChatDTO call(String userInput, String conversationId, String traceId) {
+    public ChatDTO call(String userInput, String conversationId, String traceId, String modelId) {
         long start = System.currentTimeMillis();
         List<String> reasoningSteps = new ArrayList<>();
 
         try {
             // 1. 初始化状态
             AgentState state = new AgentState(conversationId, config.getSystemPrompt(), userInput);
-            log.debug("[traceId={}] Agent[{}] 开始 ReAct 循环, maxIterations={}",
-                    traceId, state.getConversationId(), config.getMaxIterations());
+            log.debug("[traceId={}] Agent[{}] 开始 ReAct 循环, model={}, maxIterations={}",
+                    traceId, state.getConversationId(), modelId != null ? modelId : "default",
+                    config.getMaxIterations());
 
             // 载入Tool
             ToolCallback[] tools = toolRegistry.getAll();
@@ -106,6 +118,7 @@ public class ReactAgent {
             state.setLoadedMessageCount(history.size());
 
             // 3. ReAct 循环
+            ModelInvocation inv = resolveInvocation(modelId);
             AssistantMessage finalResponse = null;
 
             for (int i = 0; i < config.getMaxIterations(); i++) {
@@ -113,7 +126,7 @@ public class ReactAgent {
                         i + 1, config.getMaxIterations());
 
                 // --- Reason: 调用 LLM ---
-                AssistantMessage response = chatModel.call(state.getFullMessages(), tools);
+                AssistantMessage response = inv.impl().call(state.getFullMessages(), inv.modelName(), tools);
                 String content = response.getText();
 
                 // 记录推理步骤
@@ -365,15 +378,17 @@ public class ReactAgent {
                     "未能在最大迭代次数内得出最终答案", System.currentTimeMillis() - start));
         }
 
-        // 用 Flux.deferContextual 非阻塞读取 traceId, 避免在 reactor event loop 线程上 .block()
+        // 用 Flux.deferContextual 非阻塞读取 traceId / modelId, 避免在 reactor event loop 线程上 .block()
         // ContextView 由上游订阅时传入 (reactor Context 自动跨订阅边界传播)
+        // 递归(nextIteration)无需显式透传 modelId, 订阅链自动携带; 递归时从 Context 重新解析
         return Flux.deferContextual(ctx -> {
             String traceId = TraceContext.currentTraceId(ctx);
+            ModelInvocation inv = resolveInvocation(ModelContext.currentModelId(ctx));
             int iterNum = iteration + 1;
             // ===== 阶段 1 累积: RoundAccumulator 封装 StringBuilder + LinkedHashMap, per-chunk O(1) =====
             RoundAccumulator acc = new RoundAccumulator();
 
-            Flux<StreamChunk> thinkingStream = chatModel.stream(state.getFullMessages(), tools)
+            Flux<StreamChunk> thinkingStream = inv.impl().stream(state.getFullMessages(), inv.modelName(), tools)
                     .handle((resp, sink) -> {
                         AssistantMessage msg = resp.getResult().getOutput();
                         acc.append(msg);

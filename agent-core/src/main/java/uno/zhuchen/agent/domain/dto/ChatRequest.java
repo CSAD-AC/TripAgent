@@ -30,4 +30,15 @@ public class ChatRequest {
      * 前端不需要持久化此字段:同一 tab 可放 URL hash (#conversationId),新 tab 不带则视为新会话。
      */
     private String conversationId;
+
+    /**
+     * 模型业务 ID（可选, 见 GET /api/models）
+     *
+     * 规则：
+     * - null / 空字符串：使用注册表默认模型(第一项, 即 deepseek)
+     * - 非空：必须是注册表(app.models)中存在的 id, 否则后端返回 400
+     *
+     * 注: 仅 ReAct 路径(/chat, /chat/stream)生效, Graph 路径(/chat/graph)暂用默认模型。
+     */
+    private String modelId;
 }

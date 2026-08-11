@@ -60,11 +60,16 @@ public class DeepSeekChatModel implements ChatModel {
      *   <li>thinking=disabled → extra_body.thinking.type=disabled (DeepSeek 默认 thinking=enabled, 需显式关闭)</li>
      * </ul>
      * 思考模式不支持 temperature/top_p/presence_penalty/frequency_penalty, 这些参数已在 application.yml 移除.
+     *
+     * @param modelName API 模型名; null/空串表示用底层配置的默认模型
      */
-    private OpenAiChatOptions buildChatOptions(ToolCallback... tools) {
+    private OpenAiChatOptions buildChatOptions(String modelName, ToolCallback... tools) {
         OpenAiChatOptions chatOptions = new OpenAiChatOptions();
         chatOptions.setInternalToolExecutionEnabled(false);
         chatOptions.setMaxTokens(maxTokens);
+        if (modelName != null && !modelName.isBlank()) {
+            chatOptions.setModel(modelName);
+        }
 
         // 手动 new 的 OpenAiChatOptions 不会自动加载 YAML 配置, 需显式读取 @Value
         Map<String, Object> extraBody = new HashMap<>();
@@ -90,11 +95,12 @@ public class DeepSeekChatModel implements ChatModel {
     }
 
     @Override
-    public AssistantMessage call(List<Message> messages, ToolCallback... tools) {
-        log.debug("DeepSeek 同步调用, messages 数量: {}", messages.size());
+    public AssistantMessage call(List<Message> messages, String modelName, ToolCallback... tools) {
+        log.debug("DeepSeek 同步调用, model={}, messages 数量: {}",
+                modelName != null ? modelName : "default", messages.size());
 
         try {
-            OpenAiChatOptions chatOptions = buildChatOptions(tools);
+            OpenAiChatOptions chatOptions = buildChatOptions(modelName, tools);
 
             Prompt prompt = Prompt.builder()
                     .messages(messages)
@@ -122,10 +128,11 @@ public class DeepSeekChatModel implements ChatModel {
     }
 
     @Override
-    public Flux<ChatResponse> stream(List<Message> messages, ToolCallback... tools) {
-        log.debug("DeepSeek 流式调用, messages 数量: {}", messages.size());
+    public Flux<ChatResponse> stream(List<Message> messages, String modelName, ToolCallback... tools) {
+        log.debug("DeepSeek 流式调用, model={}, messages 数量: {}",
+                modelName != null ? modelName : "default", messages.size());
 
-        OpenAiChatOptions chatOptions = buildChatOptions(tools);
+        OpenAiChatOptions chatOptions = buildChatOptions(modelName, tools);
 
         Prompt prompt = Prompt.builder()
                 .messages(messages)
