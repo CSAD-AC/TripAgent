@@ -31,6 +31,17 @@ agent:
 app:
   cache:
     session-ttl: 1800
+  # 模型注册表: 列表顺序即前端展示顺序, 第一项为默认模型(未指定 modelId 时回退)
+  # provider 与 ChatModel 实现的 bean 路由键对应(见 ModelRouter)
+  models:
+    - id: deepseek
+      provider: deepseek
+      model: deepseek-v4-flash
+      display-name: DeepSeek V4 Flash
+    - id: qwen
+      provider: dashscope
+      model: qwen3.6-flash
+      display-name: 通义千问 3.6 Flash
 
 clarify:
   timeout-minutes: 10
