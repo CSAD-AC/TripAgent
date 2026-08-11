@@ -43,6 +43,17 @@ export interface Message {
 /** API 模式: react=ReAct 工具调用路径, graph=Graph 工作流路径 */
 export type ApiMode = 'react' | 'graph'
 
+/**
+ * 模型信息(来自 GET /api/models)
+ * 列表顺序即后端 app.models 配置顺序, 第一项为默认模型(deepseek 置顶)
+ */
+export interface ModelInfo {
+  id: string
+  provider: string
+  model: string
+  displayName: string
+}
+
 /** SWV 工作流 6 节点（Graph 模式专用） */
 export type WorkflowNode =
   | 'manager'

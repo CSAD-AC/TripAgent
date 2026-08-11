@@ -6,15 +6,35 @@ import { ClarificationCard } from './components/ClarificationCard'
 import { GraphFlow } from './components/GraphFlow'
 import { useChat } from './hooks/useChat'
 import { useConversations } from './hooks/useConversations'
-import { Menu, MapPin, GitBranch, Zap } from 'lucide-react'
+import { Menu, MapPin, GitBranch, Zap, Cpu } from 'lucide-react'
 import { cn } from './lib/utils'
-import type { ApiMode } from './types'
+import type { ApiMode, ModelInfo } from './types'
 
 export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   /** API 模式: 'react' = ReAct 工具调用, 'graph' = Graph 工作流 */
   const [apiMode, setApiMode] = useState<ApiMode>('react')
+  /** 模型列表(来自 GET /api/models, 顺序即后端配置, 第一项 deepseek 为默认) */
+  const [models, setModels] = useState<ModelInfo[]>([])
+  /** 当前选中模型 ID(默认选中列表第一项 = deepseek) */
+  const [selectedModelId, setSelectedModelId] = useState<string>('')
   const messagesEndRef = useRef<HTMLDivElement>(null)
+
+  // 首次挂载拉取模型列表; 失败时静默(不阻塞聊天, 后端会回退默认模型)
+  useEffect(() => {
+    fetch('/api/models')
+      .then((r) => r.json())
+      .then((body: { code: number; data?: ModelInfo[] }) => {
+        if (body.code === 200 && body.data && body.data.length > 0) {
+          setModels(body.data)
+          // 默认选中第一项: 后端配置 deepseek 置顶, 即默认模型
+          setSelectedModelId(body.data[0].id)
+        }
+      })
+      .catch(() => {
+        /* ignore */
+      })
+  }, [])
 
   const {
     conversationId,
@@ -69,9 +89,9 @@ export default function App() {
 
   const handleSend = useCallback(
     (content: string) => {
-      sendMessage(content, apiMode, conversationId, handleSessionInit)
+      sendMessage(content, apiMode, conversationId, selectedModelId || undefined, handleSessionInit)
     },
-    [apiMode, conversationId, handleSessionInit, sendMessage]
+    [apiMode, conversationId, selectedModelId, handleSessionInit, sendMessage]
   )
 
   // ── 从侧边栏选择对话 ──
@@ -200,6 +220,29 @@ export default function App() {
               <span className="hidden sm:inline">Graph</span>
             </button>
           </div>
+
+          {/* 模型选择器(列表来自 GET /api/models, 默认选中第一项 = deepseek) */}
+          {models.length > 0 && (
+            <div
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-warm-white dark:bg-charcoal-800 border border-warm-white-200 dark:border-charcoal-700"
+              title="选择 LLM 模型"
+            >
+              <Cpu className="w-3.5 h-3.5 text-terracotta-500 flex-shrink-0" />
+              <select
+                value={selectedModelId}
+                onChange={(e) => setSelectedModelId(e.target.value)}
+                disabled={isLoading}
+                aria-label="选择模型"
+                className="bg-transparent text-xs font-medium text-charcoal-600 dark:text-charcoal-300 focus:outline-none focus-visible:ring-0 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {models.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.displayName}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
 
           {/* 当前会话 ID 标识(8 位缩写) */}
           {conversationId && (
