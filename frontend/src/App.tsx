@@ -6,7 +6,7 @@ import { ClarificationCard } from './components/ClarificationCard'
 import { GraphFlow } from './components/GraphFlow'
 import { useChat } from './hooks/useChat'
 import { useConversations } from './hooks/useConversations'
-import { Menu, MapPin, GitBranch, Zap, Cpu } from 'lucide-react'
+import { Menu, MapPin, GitBranch, Zap, Cpu, Rocket } from 'lucide-react'
 import { cn } from './lib/utils'
 import type { ApiMode, ModelInfo } from './types'
 
@@ -18,6 +18,8 @@ export default function App() {
   const [models, setModels] = useState<ModelInfo[]>([])
   /** 当前选中模型 ID(默认选中列表第一项 = deepseek) */
   const [selectedModelId, setSelectedModelId] = useState<string>('')
+  /** 超能模式: 工具调用与迭代轮次无限制(仅 ReAct 模式生效, 默认关闭) */
+  const [superMode, setSuperMode] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
   // 首次挂载拉取模型列表; 失败时静默(不阻塞聊天, 后端会回退默认模型)
@@ -89,9 +91,16 @@ export default function App() {
 
   const handleSend = useCallback(
     (content: string) => {
-      sendMessage(content, apiMode, conversationId, selectedModelId || undefined, handleSessionInit)
+      sendMessage(
+        content,
+        apiMode,
+        conversationId,
+        selectedModelId || undefined,
+        apiMode === 'react' ? superMode : false,
+        handleSessionInit
+      )
     },
-    [apiMode, conversationId, selectedModelId, handleSessionInit, sendMessage]
+    [apiMode, conversationId, selectedModelId, superMode, handleSessionInit, sendMessage]
   )
 
   // ── 从侧边栏选择对话 ──
@@ -221,6 +230,40 @@ export default function App() {
             </button>
           </div>
 
+          {/* 超能模式开关(仅 ReAct 模式显示, 默认关闭): 工具调用与迭代轮次无限制 */}
+          {apiMode === 'react' && (
+            <div
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-warm-white dark:bg-charcoal-800 border border-warm-white-200 dark:border-charcoal-700"
+              title="超能模式: 工具调用与迭代轮次无限制(默认关闭)"
+            >
+              <Rocket className="w-3.5 h-3.5 text-terracotta-500 flex-shrink-0" />
+              <button
+                role="switch"
+                aria-checked={superMode}
+                aria-label="超能模式"
+                onClick={() => setSuperMode(!superMode)}
+                disabled={isLoading}
+                className={cn(
+                  'relative w-8 h-[18px] rounded-full transition-colors flex-shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-terracotta-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-charcoal-900',
+                  superMode
+                    ? 'bg-terracotta-500'
+                    : 'bg-charcoal-300 dark:bg-charcoal-600',
+                  isLoading && 'opacity-50 cursor-not-allowed'
+                )}
+              >
+                <span
+                  className={cn(
+                    'absolute top-[2px] left-[2px] w-[14px] h-[14px] rounded-full bg-white shadow-sm transition-transform',
+                    superMode && 'translate-x-[14px]'
+                  )}
+                />
+              </button>
+              <span className="text-xs font-medium text-charcoal-500 dark:text-charcoal-400">
+                超能
+              </span>
+            </div>
+          )}
+
           {/* 模型选择器(列表来自 GET /api/models, 默认选中第一项 = deepseek) */}
           {models.length > 0 && (
             <div
@@ -284,6 +327,12 @@ export default function App() {
                 <p className="text-xs text-charcoal-300 dark:text-charcoal-600 mt-4">
                   当前模式: {apiMode === 'graph' ? 'Graph 工作流(SWV 三件套)' : 'ReAct 工具调用'}
                 </p>
+                {/* 超能模式提示(仅 ReAct 且开启时) */}
+                {apiMode === 'react' && superMode && (
+                  <p className="text-xs text-terracotta-500 dark:text-terracotta-400 mt-1">
+                    超能模式已开启: 工具调用与迭代轮次无限制
+                  </p>
+                )}
               </div>
             )}
 

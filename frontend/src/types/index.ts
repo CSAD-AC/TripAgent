@@ -166,6 +166,8 @@ export interface ChatRequest {
   /** 后端权威生成;前端不带表示新会话,带表示续聊(UUID 格式) */
   conversationId?: string
   message: string
+  /** 超能模式: true 时 ReAct 迭代轮次无限制(仅 ReAct 路径生效, 默认关闭) */
+  superMode?: boolean
 }
 
 /** API 响应（同步） */
