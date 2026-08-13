@@ -102,14 +102,17 @@ public class AgentController {
     public Mono<Result<ChatVO>> chat(@Valid @RequestBody ChatRequest request) {
         String conversationId = resolveConversationId(request.getConversationId());
         String modelId = resolveModelId(request.getModelId());
+        boolean superMode = Boolean.TRUE.equals(request.getSuperMode());
         String traceId = newTraceId();
-        log.info("收到聊天请求, conversationId={}, model={}, message长度={}",
+        log.info("收到聊天请求, conversationId={}, model={}, superMode={}, message长度={}",
                 conversationId,
                 modelId != null ? modelId : "default",
+                superMode,
                 request.getMessage() != null ? request.getMessage().length() : 0);
 
         return Mono.fromCallable(() -> {
-            ChatDTO chatDTO = reactAgent.call(request.getMessage(), conversationId, traceId, modelId);
+            ChatDTO chatDTO = reactAgent.call(request.getMessage(), conversationId, traceId, modelId,
+                    superMode);
             ChatVO vo = ChatVO.from(chatDTO);
 
             log.info("聊天完成, status={}, durationMs={}",
@@ -157,6 +160,7 @@ public class AgentController {
     public Flux<StreamChunk> stream(@Valid @RequestBody ChatRequest request) {
         String conversationId = resolveConversationId(request.getConversationId());
         String modelId = resolveModelId(request.getModelId());
+        boolean superMode = Boolean.TRUE.equals(request.getSuperMode());
         String traceId = newTraceId();
         long startMs = System.currentTimeMillis();
 
@@ -174,7 +178,7 @@ public class AgentController {
                             System.currentTimeMillis() - startMs)
             )
             // 提前返回路径也要 contextWrite, 与主流保持 Context 一致性
-            .contextWrite(Context.of(TraceContext.KEY, traceId).put(ModelContext.KEY, modelId));
+            .contextWrite(newRequestContext(traceId, modelId));
         }
 
         // 2. cleanup guard: doOnTerminate 与 doOnCancel 都可能触发, 用 CAS 保证只清理一次
@@ -190,7 +194,7 @@ public class AgentController {
         Sinks.One<Void> completionSignal = Sinks.one();
 
         // 4. 主事件流(thinking_token / tool_call / tool_result / final)
-        Flux<StreamChunk> mainStream = reactAgent.stream(request.getMessage(), conversationId)
+        Flux<StreamChunk> mainStream = reactAgent.stream(request.getMessage(), conversationId, superMode)
                 .doFinally(signalType -> completionSignal.tryEmitEmpty())
                 .doOnTerminate(doCleanup)
                 .doOnCancel(() -> {
@@ -201,8 +205,8 @@ public class AgentController {
         // 5. 第一个事件:session_init,携带 traceId; 入口 log 改在 reactive 链上用 deferContextual
         int messageLen = request.getMessage() != null ? request.getMessage().length() : 0;
         Flux<StreamChunk> entryLog = TraceContext.currentTraceIdMono()
-                .doOnNext(t -> log.info("[traceId={}] 收到流式聊天请求, conversationId={}, message长度={}",
-                        t, conversationId, messageLen))
+                .doOnNext(t -> log.info("[traceId={}] 收到流式聊天请求, conversationId={}, superMode={}, message长度={}",
+                        t, conversationId, superMode, messageLen))
                 .thenMany(Flux.just(StreamChunk.sessionInit(conversationId, traceId)));
 
         // 6. 心跳流(主事件流未结束时持续推送,主事件流结束则停止)
@@ -213,7 +217,7 @@ public class AgentController {
 
         return Flux.merge(entryLog, mainStream, clarificationSink.asFlux(), heartbeat)
                 // traceId / modelId 沿 reactive 链传播: Context 免费跨线程, 业务层 deferContextual 读取
-                .contextWrite(Context.of(TraceContext.KEY, traceId).put(ModelContext.KEY, modelId));
+                .contextWrite(newRequestContext(traceId, modelId));
     }
 
     /**
@@ -327,6 +331,21 @@ public class AgentController {
         // 仅校验存在性, 具体解析(model 名/实现路由)在 ReactAgent 内部完成
         modelRouter.resolveConfig(modelId);
         return modelId;
+    }
+
+    /**
+     * 组装请求级 Reactor Context: traceId 必填 + modelId 可空.
+     *
+     * <p>Reactor Context 不允许 null value(Context.put 内部 Objects.requireNonNull),
+     * 而 modelId 为空表示使用注册表默认模型, 故 null/blank 时不 put 该键,
+     * 下游 {@link uno.zhuchen.agent.common.ModelContext#currentModelId(ContextView)}
+     * 无值时返回 null(语义 = 默认模型).
+     */
+    private static Context newRequestContext(String traceId, String modelId) {
+        if (modelId == null || modelId.isBlank()) {
+            return Context.of(TraceContext.KEY, traceId);
+        }
+        return Context.of(TraceContext.KEY, traceId).put(ModelContext.KEY, modelId);
     }
 
     /**

@@ -53,6 +53,11 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *       {@link TraceContext#currentTraceIdMono()}
  *       阻塞取值后再传</li>
  * </ul>
+ *
+ * <p>超能模式(superMode, 2026/08/12): 前端开关, 默认关闭.
+ * 开启后 ReAct 迭代轮次无上限(绕过 agent.react.max-iterations),
+ * 由前端「停止」按钮(SSE abort)中断; 仅 ReAct 路径生效, Graph 模式不受影响.
+ * 工具调用本身无数量限制(仅重复 name+args 去重), 无需额外处理.
  */
 public class ReactAgent {
 
@@ -87,17 +92,19 @@ public class ReactAgent {
      * @param traceId 链路追踪 ID,用于给落库消息补 trace_id metadata
      *                (message.trace_id 列溯源),以及同步路径日志串联
      * @param modelId 模型业务 ID(前端选择); null/空串 → 注册表默认模型
+     * @param superMode 超能模式: true 时迭代轮次无上限(仅 ReAct 路径生效)
      */
-    public ChatDTO call(String userInput, String conversationId, String traceId, String modelId) {
+    public ChatDTO call(String userInput, String conversationId, String traceId, String modelId,
+                        boolean superMode) {
         long start = System.currentTimeMillis();
         List<String> reasoningSteps = new ArrayList<>();
 
         try {
             // 1. 初始化状态
             AgentState state = new AgentState(conversationId, config.getSystemPrompt(), userInput);
-            log.debug("[traceId={}] Agent[{}] 开始 ReAct 循环, model={}, maxIterations={}",
+            log.debug("[traceId={}] Agent[{}] 开始 ReAct 循环, model={}, maxIterations={}, superMode={}",
                     traceId, state.getConversationId(), modelId != null ? modelId : "default",
-                    config.getMaxIterations());
+                    superMode ? "unlimited" : config.getMaxIterations(), superMode);
 
             // 载入Tool
             ToolCallback[] tools = toolRegistry.getAll();
@@ -118,12 +125,14 @@ public class ReactAgent {
             state.setLoadedMessageCount(history.size());
 
             // 3. ReAct 循环
+            //    超能模式: 迭代轮次无上限(由前端停止按钮/超时中断), 否则用 agent.react.max-iterations
             ModelInvocation inv = resolveInvocation(modelId);
             AssistantMessage finalResponse = null;
+            int maxIterations = superMode ? Integer.MAX_VALUE : config.getMaxIterations();
 
-            for (int i = 0; i < config.getMaxIterations(); i++) {
+            for (int i = 0; i < maxIterations; i++) {
                 log.debug("Agent[{}] 第 {}/{} 轮迭代", state.getConversationId(),
-                        i + 1, config.getMaxIterations());
+                        i + 1, superMode ? "unlimited" : config.getMaxIterations());
 
                 // --- Reason: 调用 LLM ---
                 AssistantMessage response = inv.impl().call(state.getFullMessages(), inv.modelName(), tools);
@@ -256,7 +265,12 @@ public class ReactAgent {
      * 所有业务 log 通过 {@link reactor.core.publisher.Flux#handle(java.util.function.BiConsumer)}
      * 在 {@code sink.currentContext()} 上读取.
      */
-    public Flux<StreamChunk> stream(String userInput, String conversationId) {
+    /**
+     * 全流程流式调用(SSE)
+     *
+     * @param superMode 超能模式: true 时迭代轮次无上限(仅 ReAct 路径生效)
+     */
+    public Flux<StreamChunk> stream(String userInput, String conversationId, boolean superMode) {
         long start = System.currentTimeMillis();
 
         // 防止同一 conversationId 被并发请求处理（导致消息历史交叉污染）
@@ -285,7 +299,7 @@ public class ReactAgent {
 
         ToolCallback[] allTools = toolRegistry.getAll();
 
-        return nextIteration(state, allTools, 0, start)
+        return nextIteration(state, allTools, 0, start, superMode)
                 .doFinally(signalType -> {
                     inProgress.set(false);
                     conversationLocks.remove(conversationId);
@@ -370,10 +384,15 @@ public class ReactAgent {
      *   <li>blocking I/O (tool.call) 隔离在 boundedElastic (Mono.fromSupplier + subscribeOn)</li>
      *   <li>递归订阅安全 (Mono.fromSupplier 一次性执行, 避免 Flux.defer 多订阅陷阱)</li>
      * </ul>
+     *
+     * <p>超能模式(superMode): 跳过迭代上限判断, 递归无上限.
+     * 上限检查只在本方法, {@link #proceedAfterReasoning} / {@link #executeToolsAndContinue}
+     * 不检查上限, 但递归发生在 {@code executeToolsAndContinue → nextIteration},
+     * 故 superMode 需沿整条递归链显式透传.
      */
     private Flux<StreamChunk> nextIteration(AgentState state, ToolCallback[] tools,
-                                             int iteration, long start) {
-        if (iteration >= config.getMaxIterations()) {
+                                             int iteration, long start, boolean superMode) {
+        if (!superMode && iteration >= config.getMaxIterations()) {
             return Flux.just(StreamChunk.error(state.getConversationId(),
                     "未能在最大迭代次数内得出最终答案", System.currentTimeMillis() - start));
         }
@@ -403,7 +422,7 @@ public class ReactAgent {
             // Mono.fromSupplier 保证 supplier 仅执行一次, 避免 Flux.defer + 递归订阅的副作用重放
             Flux<StreamChunk> continuationStream = Mono.fromSupplier(() ->
                             proceedAfterReasoning(state, tools, acc.thought(), acc.toolCalls(),
-                                    traceId, iterNum, iteration, start))
+                                    traceId, iterNum, iteration, start, superMode))
                     .subscribeOn(Schedulers.boundedElastic())
                     .flatMapMany(flux -> flux);
 
@@ -418,7 +437,7 @@ public class ReactAgent {
     private Flux<StreamChunk> proceedAfterReasoning(AgentState state, ToolCallback[] tools,
                                                        String thought, List<AssistantMessage.ToolCall> toolCalls,
                                                        String traceId, int iterNum,
-                                                       int iteration, long start) {
+                                                       int iteration, long start, boolean superMode) {
         if (toolCalls.isEmpty()) {
             // 无工具调用 → 最终答案
             AssistantMessage response = AssistantMessage.builder()
@@ -438,7 +457,7 @@ public class ReactAgent {
                 .build());
 
         return executeToolsAndContinue(state, tools, toolCalls,
-                traceId, iterNum, iteration, start);
+                traceId, iterNum, iteration, start, superMode);
     }
 
     /**
@@ -467,7 +486,7 @@ public class ReactAgent {
     private Flux<StreamChunk> executeToolsAndContinue(AgentState state, ToolCallback[] tools,
                                                       List<AssistantMessage.ToolCall> toolCalls,
                                                         String traceId, int iterNum,
-                                                        int iteration, long start) {
+                                                        int iteration, long start, boolean superMode) {
         // ===== Phase A: 立即发射 toolCallStart + 全部 tool_call (按 LLM 原序) =====
         Flux<StreamChunk> toolCallEvents = Flux.concat(
                 Flux.just(StreamChunk.toolCallStart(state.getConversationId(), "开始执行工具调用")),
@@ -512,7 +531,7 @@ public class ReactAgent {
         return toolCallEvents
                 .concatWith(toolResultEvents)
                 .concatWith(historyAndSeparator)
-                .concatWith(nextIteration(state, tools, iteration + 1, start));
+                .concatWith(nextIteration(state, tools, iteration + 1, start, superMode));
     }
 
     /**

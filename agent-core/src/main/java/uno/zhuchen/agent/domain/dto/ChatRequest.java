@@ -41,4 +41,15 @@ public class ChatRequest {
      * 注: 仅 ReAct 路径(/chat, /chat/stream)生效, Graph 路径(/chat/graph)暂用默认模型。
      */
     private String modelId;
+
+    /**
+     * 超能模式（可选, 默认关闭）
+     *
+     * 规则：
+     * - null / false：使用 agent.react.max-iterations 限制 ReAct 迭代轮次
+     * - true：ReAct 迭代轮次无上限, 由前端「停止」按钮(SSE abort)中断
+     *
+     * 注: 仅 ReAct 路径(/chat, /chat/stream)生效, Graph 路径(/chat/graph)不受影响。
+     */
+    private Boolean superMode;
 }

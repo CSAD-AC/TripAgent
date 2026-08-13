@@ -407,6 +407,7 @@ export function useChat() {
    *               'graph' = /api/chat/graph   (Graph 工作流)
    * @param conversationId 会话 ID(续聊时携带)
    * @param modelId 模型业务 ID(GET /api/models 的 id 字段; null = 后端默认)
+   * @param superMode 超能模式(仅 react 模式生效; true = 轮次无限制, 默认关闭)
    * @param onSessionInit 收到 session_init 时的回调
    */
   const sendMessage = useCallback(
@@ -415,6 +416,7 @@ export function useChat() {
       apiMode: ApiMode,
       conversationId?: string,
       modelId?: string,
+      superMode?: boolean,
       onSessionInit?: (id: string) => void
     ) => {
       const userMsg: Message = {
@@ -462,7 +464,7 @@ export function useChat() {
         const response = await fetch(endpoint, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ conversationId, message: content, modelId }),
+          body: JSON.stringify({ conversationId, message: content, modelId, superMode: superMode || undefined }),
           signal: abortRef.current.signal,
         })
 
