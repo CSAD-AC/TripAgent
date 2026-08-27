@@ -293,18 +293,22 @@ export function useChat() {
       }
 
       // ── node_progress: 累积节点实时进度(LLM 思考 / 工具调用中间结果) ──
-      //    并行场景下 route 和 itinerary 会同时累积各自的进度,
-      //    NodeDetailPanel 选中节点时按时间序列展示
+      //    方案 C: progressType 扩展为 thinking_start / thinking_token / tool_call /
+      //    tool_result / final / error; 仅连续 thinking_token 累积成一条(避免抖动),
+      //    tool_call 等类型各成独立条目(每个工具调用单独展示)
       case 'node_progress': {
         const nodeName = event.node || ''
         if (!nodeName) break
         setGraphTrace((prev) => {
           const existingMap = prev?.nodeProgressMap || {}
           const prevList = existingMap[nodeName] || []
-          // 同 progressType 连续多条累积成一条,避免抖动
           const lastEntry = prevList[prevList.length - 1]
           let nextList: typeof prevList
-          if (lastEntry && lastEntry.progressType === event.progressType) {
+          if (
+            lastEntry &&
+            lastEntry.progressType === event.progressType &&
+            event.progressType === 'thinking_token'
+          ) {
             nextList = prevList.map((e, i) =>
               i === prevList.length - 1
                 ? { ...e, content: e.content + (event.content || ''), timestamp: Date.now() }
@@ -317,6 +321,7 @@ export function useChat() {
                 progressType: event.progressType || 'thinking',
                 content: event.content || '',
                 timestamp: Date.now(),
+                subIteration: event.subIteration,
               },
             ]
           }
@@ -405,6 +410,7 @@ export function useChat() {
    * @param content 消息内容
    * @param apiMode 'react' = /api/chat/stream  (ReAct 工具调用)
    *               'graph' = /api/chat/graph   (Graph 工作流)
+   *               'multi' = /api/chat/multi   (Multi-Agent 主管调度)
    * @param conversationId 会话 ID(续聊时携带)
    * @param modelId 模型业务 ID(GET /api/models 的 id 字段; null = 后端默认)
    * @param superMode 超能模式(仅 react 模式生效; true = 轮次无限制, 默认关闭)
@@ -458,7 +464,10 @@ export function useChat() {
       abortRef.current = new AbortController()
 
       // 根据 mode 选择 endpoint
-      const endpoint = apiMode === 'graph' ? '/api/chat/graph' : '/api/chat/stream'
+      const endpoint =
+        apiMode === 'graph' ? '/api/chat/graph'
+        : apiMode === 'multi' ? '/api/chat/multi'
+        : '/api/chat/stream'
 
       try {
         const response = await fetch(endpoint, {

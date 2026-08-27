@@ -40,8 +40,8 @@ export interface Message {
   traceId?: string
 }
 
-/** API 模式: react=ReAct 工具调用路径, graph=Graph 工作流路径 */
-export type ApiMode = 'react' | 'graph'
+/** API 模式: react=ReAct 工具调用路径, graph=Graph 工作流路径, multi=Multi-Agent 主管调度路径 */
+export type ApiMode = 'react' | 'graph' | 'multi'
 
 /**
  * 模型信息(来自 GET /api/models)
@@ -238,8 +238,10 @@ export interface SSEEvent {
   dataType?: string
   /** 复杂数据负载（node_data / graph_topology） */
   data?: Record<string, unknown>
-  /** 进度子类型（node_progress: thinking / tool_call / tool_result） */
+  /** 进度子类型（node_progress: thinking_start / thinking_token / tool_call / tool_result / final / error / node_status / branch） */
   progressType?: string
+  /** 子代理内部迭代序号（node_progress, 方案 C 透明化扩展） */
+  subIteration?: number
   /** 当前迭代次数（graph_iteration） */
   iterationCount?: number
   /** 最大迭代次数（graph_iteration） */
@@ -277,9 +279,12 @@ export interface NodeDataPayload {
 
 /** 节点实时进度条目(LLM 思考片段 / 工具调用中间结果) */
 export interface NodeProgressEntry {
-  progressType: 'thinking' | 'tool_call' | 'tool_result' | string
+  /** 方案 C 语义: thinking_start / thinking_token / tool_call / tool_result / final / error / node_status / branch */
+  progressType: 'thinking' | 'tool_call' | 'tool_result' | 'thinking_start' | 'thinking_token' | 'final' | 'error' | 'node_status' | 'branch' | string
   content: string
   timestamp: number
+  /** 子代理内部迭代序号(方案 C) */
+  subIteration?: number
 }
 
 /** Graph 流式执行追踪(用于 GraphFlow 组件) */

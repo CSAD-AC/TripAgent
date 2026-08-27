@@ -4,9 +4,10 @@ import { ChatMessage } from './components/ChatMessage'
 import { ChatInput } from './components/ChatInput'
 import { ClarificationCard } from './components/ClarificationCard'
 import { GraphFlow } from './components/GraphFlow'
+import { MultiAgentProgress } from './components/MultiAgentProgress'
 import { useChat } from './hooks/useChat'
 import { useConversations } from './hooks/useConversations'
-import { Menu, MapPin, GitBranch, Zap, Cpu, Rocket } from 'lucide-react'
+import { Menu, MapPin, GitBranch, Zap, Cpu, Rocket, Users } from 'lucide-react'
 import { cn } from './lib/utils'
 import type { ApiMode, ModelInfo } from './types'
 
@@ -228,6 +229,23 @@ export default function App() {
               <GitBranch className="w-3.5 h-3.5" />
               <span className="hidden sm:inline">Graph</span>
             </button>
+            <button
+              role="tab"
+              aria-selected={apiMode === 'multi'}
+              onClick={() => setApiMode('multi')}
+              disabled={isLoading}
+              title="Multi-Agent 主管调度路径(Manager 调度子代理)"
+              className={cn(
+                'flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-terracotta-500',
+                apiMode === 'multi'
+                  ? 'bg-white dark:bg-charcoal-700 text-terracotta-600 dark:text-terracotta-400 shadow-sm'
+                  : 'text-charcoal-500 dark:text-charcoal-400 hover:text-charcoal-700 dark:hover:text-charcoal-200',
+                isLoading && 'opacity-50 cursor-not-allowed'
+              )}
+            >
+              <Users className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">多Agent</span>
+            </button>
           </div>
 
           {/* 超能模式开关(仅 ReAct 模式显示, 默认关闭): 工具调用与迭代轮次无限制 */}
@@ -308,6 +326,12 @@ export default function App() {
           />
         )}
 
+        {/* Multi-Agent 子代理调度进度面板(修复 2: node_progress 可视化) */}
+        {apiMode === 'multi' && graphTrace &&
+          Object.keys(graphTrace.nodeProgressMap || {}).length > 0 && (
+            <MultiAgentProgress progressMap={graphTrace.nodeProgressMap || {}} />
+          )}
+
         {/* 消息列表 */}
         <div className="flex-1 overflow-y-auto">
           <div className="max-w-3xl mx-auto px-4 py-6 space-y-4">
@@ -325,7 +349,7 @@ export default function App() {
                 </p>
                 {/* 模式提示 */}
                 <p className="text-xs text-charcoal-300 dark:text-charcoal-600 mt-4">
-                  当前模式: {apiMode === 'graph' ? 'Graph 工作流(SWV 三件套)' : 'ReAct 工具调用'}
+                  当前模式: {apiMode === 'graph' ? 'Graph 工作流(SWV 三件套)' : apiMode === 'multi' ? 'Multi-Agent(主管调度子代理)' : 'ReAct 工具调用'}
                 </p>
                 {/* 超能模式提示(仅 ReAct 且开启时) */}
                 {apiMode === 'react' && superMode && (
