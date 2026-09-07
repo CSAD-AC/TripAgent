@@ -109,8 +109,11 @@ public class StreamChunk {
     /** 复杂数据负载（node_data / graph_topology 事件有效，JSON 对象） */
     private Map<String, Object> data;
 
-    /** 进度子类型（node_progress 事件有效: thinking / tool_call / tool_result） */
+    /** 进度子类型（node_progress 事件有效: thinking_start / thinking_token / tool_call / tool_result / final / error / node_status / branch） */
     private String progressType;
+
+    /** 子代理内部迭代序号（node_progress 事件有效, 方案 C 透明化扩展, 可空） */
+    private Integer subIteration;
 
     /** 当前迭代次数（graph_iteration 事件有效） */
     private int iterationCount;
@@ -353,6 +356,33 @@ public class StreamChunk {
                 .node(node)
                 .progressType(progressType)
                 .content(content)
+                .conversationId(conversationId)
+                .build();
+    }
+
+    /**
+     * 节点内部进展事件（带子代理内部迭代序号 — 方案 C 透明化扩展）
+     *
+     * <p>progressType 语义（方案 C 扩展）:
+     * <ul>
+     *   <li>thinking_start — 子代理开始一轮推理(内容=本轮意图摘要)</li>
+     *   <li>thinking_token  — 子代理思考的流式文本(逐 token 追加)</li>
+     *   <li>tool_call       — 子代理调用内部工具(内容=工具名+参数摘要)</li>
+     *   <li>tool_result     — 子代理内部工具结果摘要</li>
+     *   <li>final           — 子代理产出最终结论摘要</li>
+     *   <li>error           — 子代理内部异常</li>
+     *   <li>node_status     — (TripPlanningTool 转发) Graph 节点状态变化</li>
+     *   <li>branch          — (TripPlanningTool 转发) Graph 边路由</li>
+     * </ul>
+     */
+    public static StreamChunk nodeProgress(String node, String progressType, String content,
+                                           Integer subIteration, String conversationId) {
+        return StreamChunk.builder()
+                .type(TYPE_NODE_PROGRESS)
+                .node(node)
+                .progressType(progressType)
+                .content(content)
+                .subIteration(subIteration)
                 .conversationId(conversationId)
                 .build();
     }

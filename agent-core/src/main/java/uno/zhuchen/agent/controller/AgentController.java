@@ -15,6 +15,7 @@ import reactor.core.publisher.Sinks;
 import reactor.util.context.Context;
 import uno.zhuchen.agent.config.ModelRouter;
 import uno.zhuchen.agent.core.agent.ReactAgent;
+import uno.zhuchen.agent.core.multi.MultiAgentManager;
 import uno.zhuchen.agent.core.clarify.ClarificationBroker;
 import uno.zhuchen.agent.common.ModelContext;
 import uno.zhuchen.agent.common.Result;
@@ -58,13 +59,16 @@ public class AgentController {
     private final ReactAgent reactAgent;
     private final ClarificationBroker clarificationBroker;
     private final GraphStreamRunner graphStreamRunner;
+    private final MultiAgentManager multiAgentManager;
     private final ModelRouter modelRouter;
 
     public AgentController(ReactAgent reactAgent, ClarificationBroker clarificationBroker,
-                           GraphStreamRunner graphStreamRunner, ModelRouter modelRouter) {
+                           GraphStreamRunner graphStreamRunner, MultiAgentManager multiAgentManager,
+                           ModelRouter modelRouter) {
         this.reactAgent = reactAgent;
         this.clarificationBroker = clarificationBroker;
         this.graphStreamRunner = graphStreamRunner;
+        this.multiAgentManager = multiAgentManager;
         this.modelRouter = modelRouter;
     }
 
@@ -315,6 +319,77 @@ public class AgentController {
         // 6. 合并主事件 + 入口 log + 反问旁路 + 心跳（各自是独立的 sink，互不冲突）
         return Flux.merge(mainStream, entryLog, clarificationSink.asFlux(), heartbeat)
                 .contextWrite(Context.of(TraceContext.KEY, traceId));
+    }
+
+    /**
+     * Multi-Agent 工作流入口(Phase 6) — 主管调度子代理
+     *
+     * <p>ManagerAgent 按 ReAct 范式拆解任务 → 调度子代理(weatherExpert /
+     * knowledgeExpert / tripPlanner)→ 汇聚结果输出最终回答。
+     *
+     * <p>事件序列与 /chat/stream 同构(session_init → thinking_token →
+     * tool_call_start → tool_call → tool_result → iteration_separator → final),
+     * 子代理内部进展经 node_progress 上抛; 反问/心跳/并发控制与 graphStream 一致。
+     *
+     * <p>modelId 生效: 主管 LLM 按所选模型路由; 子代理内部暂用注册表默认模型。
+     */
+    @PostMapping(value = "/chat/multi", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public Flux<StreamChunk> multiStream(@Valid @RequestBody ChatRequest request) {
+        String conversationId = resolveConversationId(request.getConversationId());
+        String modelId = resolveModelId(request.getModelId());
+        String traceId = newTraceId();
+        long startMs = System.currentTimeMillis();
+
+        // 1. 反问事件旁路 sink(与 /chat/stream 相同模式)
+        Sinks.Many<StreamChunk> clarificationSink = Sinks.many().unicast().onBackpressureBuffer();
+        Consumer<StreamChunk> emitter = clarificationSink::tryEmitNext;
+        try {
+            clarificationBroker.registerEmitter(conversationId, emitter);
+        } catch (ClarificationBroker.DuplicateSseConnectionException e) {
+            log.warn("[traceId={}] Multi-Agent SSE 连接被拒绝: {}", traceId, e.getMessage());
+            return Flux.just(
+                    StreamChunk.sessionInit(conversationId, traceId),
+                    StreamChunk.error(conversationId, e.getMessage(),
+                            System.currentTimeMillis() - startMs)
+            )
+            .contextWrite(newRequestContext(traceId, modelId));
+        }
+
+        // 2. cleanup guard(CAS 保证只清理一次)
+        AtomicBoolean multiCleaned = new AtomicBoolean(false);
+        Runnable multiCleanup = () -> {
+            if (multiCleaned.compareAndSet(false, true)) {
+                clarificationBroker.unregisterEmitter(conversationId, emitter);
+                clarificationSink.tryEmitComplete();
+            }
+        };
+
+        // 3. 主事件流完成信号(Sinks.One 避免冷 Flux 二次订阅)
+        Sinks.One<Void> multiCompletionSignal = Sinks.one();
+        Flux<StreamChunk> mainStream = multiAgentManager
+                .stream(request.getMessage(), conversationId, traceId, modelId)
+                .doFinally(signalType -> multiCompletionSignal.tryEmitEmpty())
+                .doOnTerminate(multiCleanup)
+                .doOnCancel(() -> {
+                    log.info("[traceId={}] SSE 客户端断开, conversationId={}", traceId, conversationId);
+                    multiCleanup.run();
+                });
+
+        // 4. 入口 log(Reactive 链上 deferContextual 读取 traceId)
+        int messageLen = request.getMessage() != null ? request.getMessage().length() : 0;
+        Flux<StreamChunk> entryLog = TraceContext.currentTraceIdMono()
+                .doOnNext(t -> log.info("[traceId={}] 收到 Multi-Agent 流式请求, conversationId={}, message长度={}",
+                        t, conversationId, messageLen))
+                .thenMany(Flux.just(StreamChunk.sessionInit(conversationId, traceId)));
+
+        // 5. 心跳流(反问阻塞期间防反向代理 timeout)
+        Flux<StreamChunk> heartbeat = Flux.interval(Duration.ofSeconds(HEARTBEAT_INTERVAL_SECONDS))
+                .map(tick -> StreamChunk.heartbeat(conversationId))
+                .takeUntilOther(multiCompletionSignal.asMono());
+
+        // 6. 合并主事件 + 入口 log + 反问旁路 + 心跳
+        return Flux.merge(mainStream, entryLog, clarificationSink.asFlux(), heartbeat)
+                .contextWrite(newRequestContext(traceId, modelId));
     }
 
     /**
