@@ -16,12 +16,14 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 混合检索服务 — 向量路 + 关键词路双路召回, RRF 融合, 可选 Rerank 重排.
  *
  * <p>检索链路(对应 {@code dev-docs/RAG_PLAN.md} 4.1):
  * <ol>
+ *   <li>L1 缓存命中: 相同检索缓存(destination+query+topK)直接返回, P50 < 10ms</li>
  *   <li>双路并行召回(CompletableFuture): 向量路(Spring AI Milvus) + 关键词路(MySQL FULLTEXT ngram)</li>
  *   <li>RRF 融合: 名次融合取前 20 候选</li>
  *   <li>Rerank: DashScope 重排(query + 候选, 2 秒超时, 失败跳过)</li>
@@ -45,10 +47,16 @@ public class HybridRetrievalService {
     /** RRF 融合后候选条数(供 Rerank) */
     private static final int FUSE_CANDIDATES = 20;
 
+    /** L1 检索缓存 TTL(ms): 知识库内容相对静态, 短缓存即可复合同一 query 复用 */
+    private static final long CACHE_TTL_MS = 60_000L;
+
     private final VectorStore vectorStore;
     private final KnowledgeChunkMapper chunkMapper;
     private final RerankService rerankService;
     private final ObjectMapper objectMapper;
+
+    /** L1 检索缓存: key = destination|query|limit, value = {json, expireAt} */
+    private final ConcurrentHashMap<String, Object[]> cache = new ConcurrentHashMap<>();
 
     /**
      * 构造注入向量库、分块表 Mapper、重排服务与 JSON 序列化器.
@@ -79,6 +87,15 @@ public class HybridRetrievalService {
     public String retrieve(String query, String destination, Integer topK) {
         long start = System.currentTimeMillis();
         int limit = (topK == null || topK <= 0) ? DEFAULT_TOP_K : Math.min(topK, RECALL_TOP_K);
+
+        // L1 缓存: 相同检索直接返回(命中率目标 >= 80%, P50 < 10ms)
+        String cacheKey = cacheKey(query, destination, limit);
+        Object[] cached = cache.get(cacheKey);
+        if (cached != null && System.currentTimeMillis() < (long) cached[1]) {
+            log.info("L1 缓存命中: query={}, destination={}, limit={}, tookMs={}",
+                    query, destination, limit, System.currentTimeMillis() - start);
+            return (String) cached[0];
+        }
         List<String> degraded = new ArrayList<>();
 
         // 1. 双路召回 + 融合 + 重排, 得到最终结果条目
@@ -100,7 +117,17 @@ public class HybridRetrievalService {
         }
         log.info("混合检索成功: query={}, destination={}, final={}, degraded={}, tookMs={}",
                 query, destination, results.size(), degraded, System.currentTimeMillis() - start);
+
+        // L1 写缓存(含空结果, 防止空结果反复穿透)
+        cache.put(cacheKey, new Object[]{toJson(payload), System.currentTimeMillis() + CACHE_TTL_MS});
         return toJson(payload);
+    }
+
+    /**
+     * 构造 L1 缓存 key(destination|query|limit).
+     */
+    private static String cacheKey(String query, String destination, int limit) {
+        return (destination == null ? "" : destination) + "|" + (query == null ? "" : query) + "|" + limit;
     }
 
     /**

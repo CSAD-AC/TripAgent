@@ -37,16 +37,19 @@ public class KnowledgeDocController {
     private final KnowledgeDocMapper docMapper;
     private final IngestionService ingestionService;
     private final RagRetrievalService statsService;
+    private final ReindexService reindexService;
 
     /**
-     * 构造注入文档 mapper、入库服务与统计服务.
+     * 构造注入文档 mapper、入库服务、统计服务与重建服务.
      */
     public KnowledgeDocController(KnowledgeDocMapper docMapper,
                                   IngestionService ingestionService,
-                                  RagRetrievalService statsService) {
+                                  RagRetrievalService statsService,
+                                  ReindexService reindexService) {
         this.docMapper = docMapper;
         this.ingestionService = ingestionService;
         this.statsService = statsService;
+        this.reindexService = reindexService;
     }
 
     /**
@@ -154,6 +157,18 @@ public class KnowledgeDocController {
     @GetMapping("/stats")
     public Mono<String> stats() {
         return Mono.fromCallable(statsService::stats).subscribeOn(Schedulers.boundedElastic());
+    }
+
+    /**
+     * 全量重建索引(MySQL 分块重新向量化写回 Milvus).
+     *
+     * <p>用于换 Embedding 模型 / 调分块参数 / 灾后恢复. 重建进行中返回 {status:busy}.
+     *
+     * @return {status, total, success, failed}
+     */
+    @PostMapping("/reindex")
+    public Mono<Map<String, Object>> reindex() {
+        return Mono.fromCallable(reindexService::reindex).subscribeOn(Schedulers.boundedElastic());
     }
 
     /**
