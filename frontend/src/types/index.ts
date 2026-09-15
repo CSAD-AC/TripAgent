@@ -146,6 +146,42 @@ export interface HistoryMessage {
   createdAt: string
 }
 
+/** 知识库文档（匹配后端 KnowledgeDocVO） */
+export interface KnowledgeDoc {
+  id: string
+  title: string
+  /** 来源类型: manual=手工 / self_precip=自沉淀 / graph_report=规划报告 / seed=内置 / url=网页 */
+  sourceType?: string
+  sourceRef?: string
+  /** 处理状态: pending=待处理 / indexed=已索引 / failed=失败 */
+  status?: string
+  /** 拆分后的 chunk 数量 */
+  chunkCount?: number
+  /** 失败原因 */
+  errorMsg?: string
+  createdAt?: string
+}
+
+/** 知识库文档分页结果 */
+export interface KnowledgeDocPage {
+  total?: number
+  items: KnowledgeDoc[]
+}
+
+/** 上传文档结果 */
+export interface UploadDocResult {
+  docId: string
+  status: string
+}
+
+/** 全量重建索引结果 */
+export interface ReindexResult {
+  status: string
+  total?: number
+  success: number
+  failed: number
+}
+
 /** 分页结果（匹配后端 PageResult） */
 export interface PageResult<T> {
   data: T[]
