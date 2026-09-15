@@ -9,6 +9,8 @@ import org.springframework.context.annotation.Configuration;
 import uno.zhuchen.agent.tools.amap.tool.*;
 import uno.zhuchen.agent.tools.cloud.tool.PageFetchTool;
 import uno.zhuchen.agent.tools.cloud.tool.WebSearchTool;
+import uno.zhuchen.agent.tools.rag.tool.KnowledgeSearchTool;
+import uno.zhuchen.agent.tools.rag.tool.KnowledgeStatsTool;
 import uno.zhuchen.agent.tools.ticket12306.tool.*;
 
 import java.util.AbstractMap;
@@ -67,6 +69,16 @@ public class ToolRegister {
                 register("ticket-query", ticketQueryTool),
                 register("interline-ticket", interlineTicketQueryTool),
                 register("train-route", trainRouteQueryTool));
+    }
+
+    /** RAG 知识库工具组（自有知识语义检索 / 知识库统计） */
+    @Bean
+    public ToolCallbackProvider ragTools(KnowledgeSearchTool knowledgeSearchTool,
+                                         KnowledgeStatsTool knowledgeStatsTool,
+                                         McpToolProperties props) {
+        return buildProvider("rag", props,
+                register("knowledge-search", knowledgeSearchTool),
+                register("knowledge-stats", knowledgeStatsTool));
     }
 
     // ========== 辅助方法 ==========

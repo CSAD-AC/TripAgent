@@ -14,6 +14,38 @@ spring:
         version: 1.0.0
         type: SYNC
 
+    # RAG: DashScope Embedding (text-embedding-v3, 1024 维)
+    dashscope:
+      api-key: ${DASHSCOPE_API_KEY}
+      embedding:
+        options:
+          model: text-embedding-v3
+
+    # RAG: Milvus 向量库 (启动前需先 docker compose up, 见 docker/milvus/)
+    vectorstore:
+      milvus:
+        client:
+          host: ${MILVUS_HOST:localhost}
+          port: ${MILVUS_PORT:19530}
+        collection-name: knowledge_chunk
+        database-name: default
+        embedding-dimension: 1024
+        index-type: IVF_FLAT
+        metric-type: COSINE
+        initialize-schema: true
+
+  # RAG: 知识库源数据 (MySQL 为源, Milvus 为可重建索引)
+  datasource:
+    url: jdbc:mysql://${MYSQL_HOST:localhost}:${MYSQL_PORT:3306}/${MYSQL_DB:TripAgent}?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai
+    username: ${MYSQL_USER:root}
+    password: ${MYSQL_PASSWORD:123456}
+
+  flyway:
+    enabled: true
+    locations: classpath:db/rag-migration
+    table: rag_schema_history   # 与 agent-core 的 flyway_schema_history 区分, 互不干扰
+    baseline-on-migrate: true
+
 server:
   port: 8081
 
@@ -67,3 +99,15 @@ mcp:
       tools:
         web-search: true
         page-fetch: true
+
+    # RAG 知识库工具组（向量检索 / 知识库统计）
+    rag:
+      enabled: true
+      tools:
+        knowledge-search: true
+        knowledge-stats: true
+
+# RAG 种子数据开关 (首次启动幂等注入示例旅游知识, 便于演示与验收)
+rag:
+  seed:
+    enabled: true
