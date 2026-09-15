@@ -9,10 +9,10 @@ import uno.zhuchen.agent.tools.rag.mapper.KnowledgeChunkMapper;
 import uno.zhuchen.agent.tools.rag.mapper.KnowledgeDocMapper;
 import uno.zhuchen.agent.tools.rag.model.KnowledgeChunk;
 import uno.zhuchen.agent.tools.rag.model.KnowledgeDoc;
+import uno.zhuchen.agent.tools.rag.model.ReindexResult;
 
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -59,17 +59,13 @@ public class ReindexService {
     /**
      * 全量重建: 重新向量化所有非删除文档的分块并写回 Milvus.
      *
-     * @return {status, total, success}; 正在重建时返回 {status: busy}
+     * @return {@link ReindexResult}; 正在重建时 status=busy
      */
-    public Map<String, Object> reindex() {
+    public ReindexResult reindex() {
         if (!rebuilding.compareAndSet(false, true)) {
             log.warn("重建已在进行中, 拒绝并发请求");
-            Map<String, Object> busy = new LinkedHashMap<>();
-            busy.put("status", "busy");
-            busy.put("message", "reindex 已在执行, 请勿重复触发");
-            return busy;
+            return ReindexResult.busy();
         }
-        Map<String, Object> result = new LinkedHashMap<>();
         int total = 0;
         int success = 0;
         try {
@@ -88,15 +84,11 @@ public class ReindexService {
                     log.warn("重建文档失败(跳过, 其余继续): docId={}, error={}", doc.getId(), e.getMessage());
                 }
             }
-            result.put("status", "done");
-            result.put("total", total);
-            result.put("success", success);
-            result.put("failed", total - success);
             log.info("知识库全量重建完成: docs={}, chunksTotal={}, success={}", docs.size(), total, success);
+            return ReindexResult.done(total, success, total - success);
         } finally {
             rebuilding.set(false);
         }
-        return result;
     }
 
     /**

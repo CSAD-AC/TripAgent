@@ -14,6 +14,9 @@ import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 import uno.zhuchen.agent.tools.rag.mapper.KnowledgeDocMapper;
 import uno.zhuchen.agent.tools.rag.model.KnowledgeDoc;
+import uno.zhuchen.agent.tools.rag.model.KnowledgeDocVO;
+import uno.zhuchen.agent.tools.rag.model.ReindexResult;
+import uno.zhuchen.agent.tools.rag.model.UploadDocResult;
 import uno.zhuchen.agent.tools.rag.service.RagRetrievalService;
 
 import java.util.LinkedHashMap;
@@ -59,7 +62,7 @@ public class KnowledgeDocController {
      * @return {docId}
      */
     @PostMapping
-    public Mono<Map<String, Object>> upload(@RequestBody Map<String, Object> body) {
+    public Mono<Object> upload(@RequestBody Map<String, Object> body) {
         return Mono.fromCallable(() -> {
             String title = str(body.get("title"));
             String content = str(body.get("content"));
@@ -71,10 +74,7 @@ public class KnowledgeDocController {
                 return err(400, "title 与 content 必填");
             }
             String docId = ingestionService.submit(title, content, sourceType, sourceRef, destination, theme);
-            Map<String, Object> resp = new LinkedHashMap<>();
-            resp.put("docId", docId);
-            resp.put("status", "pending");
-            return resp;
+            return new UploadDocResult(docId, "pending");
         }).subscribeOn(Schedulers.boundedElastic());
     }
 
@@ -97,7 +97,7 @@ public class KnowledgeDocController {
             int to = Math.min(from + Math.max(1, size), all.size());
             Map<String, Object> resp = new LinkedHashMap<>();
             resp.put("total", all.size());
-            resp.put("items", all.subList(from, to).stream().map(KnowledgeDocController::docToMap).toList());
+            resp.put("items", all.subList(from, to).stream().map(KnowledgeDocController::docToVO).toList());
             return resp;
         }).subscribeOn(Schedulers.boundedElastic());
     }
@@ -109,10 +109,10 @@ public class KnowledgeDocController {
      * @return 文档实体或 {code:404}
      */
     @GetMapping("/{id}")
-    public Mono<Map<String, Object>> detail(@PathVariable String id) {
+    public Mono<Object> detail(@PathVariable String id) {
         return Mono.fromCallable(() -> {
             KnowledgeDoc doc = docMapper.selectById(id);
-            return doc != null ? docToMap(doc) : err(404, "文档不存在");
+            return doc != null ? docToVO(doc) : err(404, "文档不存在");
         }).subscribeOn(Schedulers.boundedElastic());
     }
 
@@ -167,30 +167,29 @@ public class KnowledgeDocController {
      * @return {status, total, success, failed}
      */
     @PostMapping("/reindex")
-    public Mono<Map<String, Object>> reindex() {
+    public Mono<ReindexResult> reindex() {
         return Mono.fromCallable(reindexService::reindex).subscribeOn(Schedulers.boundedElastic());
     }
 
     /**
-     * 文档实体转可序列化 Map.
+     * 文档实体转视图对象.
      *
-     * <p>手动拼字段而非直接返回实体, 规避 webflux Jackson 未注册 jsr310
-     * 时对 LocalDateTime 序列化抛错的问题.
+     * <p>以强类型 {@link KnowledgeDocVO} 替代原先的 {@code docToMap} 手拼,
+     * createdAt 转字符串规避 webflux Jackson 未注册 jsr310 的序列化问题.
      *
      * @param doc 文档实体
-     * @return 字段 Map(createdAt 转字符串)
+     * @return 视图对象
      */
-    private static Map<String, Object> docToMap(KnowledgeDoc doc) {
-        Map<String, Object> m = new LinkedHashMap<>();
-        m.put("id", doc.getId());
-        m.put("title", doc.getTitle());
-        m.put("sourceType", doc.getSourceType());
-        m.put("sourceRef", doc.getSourceRef());
-        m.put("status", doc.getStatus());
-        m.put("chunkCount", doc.getChunkCount());
-        m.put("errorMsg", doc.getErrorMsg());
-        m.put("createdAt", doc.getCreatedAt() == null ? null : doc.getCreatedAt().toString());
-        return m;
+    private static KnowledgeDocVO docToVO(KnowledgeDoc doc) {
+        return new KnowledgeDocVO(
+                doc.getId(),
+                doc.getTitle(),
+                doc.getSourceType(),
+                doc.getSourceRef(),
+                doc.getStatus(),
+                doc.getChunkCount(),
+                doc.getErrorMsg(),
+                doc.getCreatedAt() == null ? null : doc.getCreatedAt().toString());
     }
 
     /** Map 取值容错转字符串 */
