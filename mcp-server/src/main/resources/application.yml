@@ -27,6 +27,9 @@ spring:
         client:
           host: ${MILVUS_HOST:localhost}
           port: ${MILVUS_PORT:19530}
+          # 短超时: Milvus 停机时 TCP 层 hang, 必须快速失败以回落检索层降级
+          connect-timeout-ms: 3000
+          rpc-deadline-ms: 5000
         collection-name: knowledge_chunk
         database-name: default
         embedding-dimension: 1024
