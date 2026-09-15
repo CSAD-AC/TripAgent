@@ -5,6 +5,8 @@ import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.Data;
 
+import java.time.LocalDateTime;
+
 /**
  * RAG 知识文档实体 — 对应表 knowledge_doc.
  *
@@ -37,4 +39,7 @@ public class KnowledgeDoc {
 
     /** 入库失败原因 (status=failed 时记录) */
     private String errorMsg;
+
+    /** 创建时间 (库列默认 CURRENT_TIMESTAMP, 此处用于列表排序与展示) */
+    private LocalDateTime createdAt;
 }

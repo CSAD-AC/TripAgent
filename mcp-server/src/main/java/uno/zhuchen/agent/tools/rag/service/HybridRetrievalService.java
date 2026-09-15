@@ -79,10 +79,41 @@ public class HybridRetrievalService {
     public String retrieve(String query, String destination, Integer topK) {
         long start = System.currentTimeMillis();
         int limit = (topK == null || topK <= 0) ? DEFAULT_TOP_K : Math.min(topK, RECALL_TOP_K);
-        Map<String, Object> payload = new LinkedHashMap<>();
         List<String> degraded = new ArrayList<>();
 
-        // 1. 双路并行召回(各自降级, 不互相阻断)
+        // 1. 双路召回 + 融合 + 重排, 得到最终结果条目
+        List<Map<String, Object>> results = doRetrieve(query, destination, limit, degraded);
+
+        // 2. 目的地过滤过严(库中写法不同, 如 "凤凰" vs "凤凰古城")导致漏召回时,
+        //    放宽为全库召回一次, 标记 filter_relaxed 便于观测与调参
+        if (results.isEmpty() && destination != null && !destination.isBlank()) {
+            degraded.add("filter_relaxed");
+            results = doRetrieve(query, null, limit, degraded);
+        }
+
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("results", results);
+        payload.put("degraded", summaryDegraded(degraded));
+        payload.put("tookMs", System.currentTimeMillis() - start);
+        if (results.isEmpty()) {
+            payload.put("hint", "知识库无匹配结果, 建议转用 webSearch 检索");
+        }
+        log.info("混合检索成功: query={}, destination={}, final={}, degraded={}, tookMs={}",
+                query, destination, results.size(), degraded, System.currentTimeMillis() - start);
+        return toJson(payload);
+    }
+
+    /**
+     * 核心检索: 双路并行召回 + RRF 融合 + 可选 Rerank, 返回结果条目.
+     *
+     * @param query       检索问题
+     * @param destination 目的地过滤(可为 null, 表示全库)
+     * @param limit       返回条数
+     * @param degraded    降级标记收集器
+     * @return 结果条目列表(可能为空)
+     */
+    private List<Map<String, Object>> doRetrieve(String query, String destination, int limit, List<String> degraded) {
+        // 双路并行召回(各自降级, 不互相阻断)
         CompletableFuture<List<Document>> vectorFuture =
                 CompletableFuture.supplyAsync(() -> fetchVector(query, destination, degraded));
         CompletableFuture<List<KnowledgeChunk>> keywordFuture =
@@ -90,13 +121,13 @@ public class HybridRetrievalService {
         List<Document> vectorDocs = vectorFuture.join();
         List<KnowledgeChunk> keywordChunks = keywordFuture.join();
 
-        // 2. RRF 融合(依赖各路名次, 空路安全)
-        List<String> vectorIds = vectorDocs.stream().map(d -> docIdOf(d)).toList();
+        // RRF 融合
+        List<String> vectorIds = vectorDocs.stream().map(this::docIdOf).toList();
         List<String> keywordIds = keywordChunks.stream().map(KnowledgeChunk::getId).toList();
         List<Map.Entry<String, Double>> fused = RrfFuser.fuse(List.of(vectorIds, keywordIds));
         List<String> candidateIds = fused.stream().map(Map.Entry::getKey).limit(FUSE_CANDIDATES).toList();
 
-        // 3. 重建候选 Document(向量路优先, 否则关键词路)
+        // 重建候选 Document(向量路优先, 否则关键词路)
         Map<String, Document> vectorIndex = new HashMap<>();
         vectorDocs.forEach(d -> vectorIndex.put(docIdOf(d), d));
         Map<String, KnowledgeChunk> keywordIndex = new HashMap<>();
@@ -115,16 +146,11 @@ public class HybridRetrievalService {
                 candidates.add(doc);
             }
         }
-
         if (candidates.isEmpty()) {
-            payload.put("results", List.of());
-            payload.put("degraded", summaryDegraded(degraded));
-            payload.put("tookMs", System.currentTimeMillis() - start);
-            payload.put("hint", "知识库无匹配结果, 建议转用 webSearch 检索");
-            return toJson(payload);
+            return List.of();
         }
 
-        // 4. Rerank(可降级): 成功则按重排分排序, 失败跳过用 RRF 序
+        // Rerank(可降级): 成功则按重排分排序, 失败跳过用 RRF 序
         List<Document> reranked = rerankService.rerank(query, candidates, limit);
         List<Document> finals;
         if (reranked == null) {
@@ -134,8 +160,8 @@ public class HybridRetrievalService {
             finals = reranked.isEmpty() ? candidates : reranked;
         }
 
-        // 5. 组装结果 JSON
-        List<Map<String, Object>> results = finals.stream().limit(limit).map(doc -> {
+        // 组装结果条目
+        return finals.stream().limit(limit).map(doc -> {
             Map<String, Object> item = new LinkedHashMap<>();
             item.put("content", doc.getText());
             item.put("docTitle", doc.getMetadata().getOrDefault("docTitle", ""));
@@ -146,17 +172,6 @@ public class HybridRetrievalService {
             item.put("score", doc.getScore());
             return item;
         }).toList();
-
-        payload.put("results", results);
-        payload.put("degraded", summaryDegraded(degraded));
-        payload.put("tookMs", System.currentTimeMillis() - start);
-        if (results.isEmpty()) {
-            payload.put("hint", "知识库无匹配结果, 建议转用 webSearch 检索");
-        }
-        log.info("混合检索成功: query={}, destination={}, vec={}, kw={}, cand={}, final={}, degraded={}, tookMs={}",
-                query, destination, vectorDocs.size(), keywordChunks.size(), candidates.size(), results.size(),
-                degraded, System.currentTimeMillis() - start);
-        return toJson(payload);
     }
 
     /**

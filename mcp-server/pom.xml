@@ -42,6 +42,12 @@
             <artifactId>spring-ai-starter-vector-store-milvus</artifactId>
         </dependency>
 
+        <!-- 文档解析 (7B ingestion: pdf/docx 等非纯文本) -->
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-tika-document-reader</artifactId>
+        </dependency>
+
         <!-- knowledge_* 表持久化 -->
         <dependency>
             <groupId>com.baomidou</groupId>
