@@ -413,7 +413,7 @@ public class AgentController {
      *
      * <p>Reactor Context 不允许 null value(Context.put 内部 Objects.requireNonNull),
      * 而 modelId 为空表示使用注册表默认模型, 故 null/blank 时不 put 该键,
-     * 下游 {@link uno.zhuchen.agent.common.ModelContext#currentModelId(ContextView)}
+     * 下游 {@link uno.zhuchen.agent.common.ModelContext}
      * 无值时返回 null(语义 = 默认模型).
      */
     private static Context newRequestContext(String traceId, String modelId) {
