@@ -35,6 +35,9 @@ public class KnowledgeSeeder implements ApplicationRunner {
     /** 种子文档溯源标识, 幂等判断依据 */
     private static final String SEED_REF = "seed";
 
+    /** DashScope embedding 单次请求批量上限(超过返回 400 InvalidParameter) */
+    private static final int EMBED_BATCH_SIZE = 10;
+
     private final VectorStore vectorStore;
     private final KnowledgeDocMapper docMapper;
     private final KnowledgeChunkMapper chunkMapper;
@@ -154,8 +157,11 @@ public class KnowledgeSeeder implements ApplicationRunner {
                 seq++;
             }
 
-            // 3. 向量化写入 Milvus
-            vectorStore.add(documents);
+            // 3. 分批向量化写入 Milvus (embedding 单次批量上限 10 条)
+            for (int i = 0; i < documents.size(); i += EMBED_BATCH_SIZE) {
+                List<Document> batch = documents.subList(i, Math.min(i + EMBED_BATCH_SIZE, documents.size()));
+                vectorStore.add(batch);
+            }
 
             // 4. 回写状态
             for (KnowledgeChunk chunk : chunks) {

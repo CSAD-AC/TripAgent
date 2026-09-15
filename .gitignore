@@ -74,6 +74,9 @@ log/
 .env.local
 *.env
 
+### Milvus 容器数据卷 (docker/milvus/docker-compose.yml 挂载, 可重建) ###
+docker/milvus/volumes/
+
 ### PID files ###
 *.pid
 *.seed
