@@ -4,6 +4,7 @@ import com.alibaba.cloud.ai.dashscope.rerank.DashScopeRerankOptions;
 import com.alibaba.cloud.ai.model.RerankModel;
 import com.alibaba.cloud.ai.model.RerankRequest;
 import com.alibaba.cloud.ai.model.RerankResponse;
+import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.document.Document;
 import org.springframework.beans.factory.annotation.Value;
@@ -64,13 +65,14 @@ public class RerankService {
      * 对候选文档按 query 重排, 返回重排后(带重排分数)的前 topN 条.
      *
      * <p>候选为空或仅一条时无需调用模型, 直接短路返回(保留原分).
-     * 超时/异常返回 null, 由调用方决定降级为 RRF 分数排序.
+     * 超时/异常/熔断返回 null, 由调用方决定降级为 RRF 分数排序(degraded=rerank).
      *
      * @param query      检索问题
      * @param candidates 融合后的候选文档(RRF 已排序)
      * @param topN       返回条数
      * @return 重排后的文档列表(已设重排 score); 重排不可用时返回 null
      */
+    @CircuitBreaker(name = "dashscopeRerank", fallbackMethod = "rerankFallback")
     public List<Document> rerank(String query, List<Document> candidates, int topN) {
         if (candidates == null || candidates.isEmpty()) {
             return Collections.emptyList();
@@ -114,5 +116,19 @@ public class RerankService {
                 future.cancel(true);
             }
         }
+    }
+
+    /**
+     * 熔断降级兜底: 熔断器 OPEN 时不再调用模型, 直接返回 null 交由调用方以 RRF 序降级.
+     *
+     * @param query      检索问题
+     * @param candidates 候选文档
+     * @param topN       返回条数
+     * @param e          触发熔断的异常(日志记录)
+     * @return null, 表示跳呼重排
+     */
+    public List<Document> rerankFallback(String query, List<Document> candidates, int topN, Throwable e) {
+        log.warn("知识重排熔断降级: query={}, reason={}", query, e.getMessage());
+        return null;
     }
 }

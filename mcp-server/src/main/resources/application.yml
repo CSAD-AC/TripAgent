@@ -124,3 +124,14 @@ rag:
     chunk-size: 500       # 目标块大小(字符数, 中文约一顿口语 0.75 token/字)
     chunk-overlap: 60     # 相邻块重叠(字符数, 约 12%)
     min-chunk: 50         # 小于该长度的块与相邻块合并
+
+# Resilience4j 熔断 (7C): 连续失败开路, 半开探针自动恢复; OPEN 期间走降级
+resilience4j.circuitbreaker:
+  instances:
+    dashscopeRerank:
+      registerHealthIndicator: true
+      slidingWindowSize: 10
+      minimumNumberOfCalls: 5
+      failureRateThreshold: 50
+      waitDurationInOpenState: 60s
+      permittedNumberOfCallsInHalfOpenState: 2

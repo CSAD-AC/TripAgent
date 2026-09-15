@@ -95,6 +95,18 @@ public class KnowledgeForwardController {
     }
 
     /**
+     * 全量重建索引(MySQL 分块重新向量化写回 Milvus).
+     *
+     * @return mcp-server 响应{status, total, success, failed}
+     */
+    @PostMapping(value = "/reindex", produces = MediaType.APPLICATION_JSON_VALUE)
+    public Mono<String> reindex() {
+        log.info("知识库转发: 全量重建索引");
+        return mcpClient.post().uri("/api/knowledge/documents/reindex")
+                .retrieve().bodyToMono(String.class);
+    }
+
+    /**
      * 知识库统计.
      *
      * @return 统计 JSON(文档数/分块数/索引状态)
