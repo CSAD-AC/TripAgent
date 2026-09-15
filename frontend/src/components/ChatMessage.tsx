@@ -3,7 +3,7 @@ import type { Message, ToolCallInfo, StreamIteration } from '../types'
 import { ItineraryCard } from './ItineraryCard'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { Loader2, CheckCircle2, XCircle, ChevronDown, ChevronRight, AlertCircle } from 'lucide-react'
+import { Loader2, CheckCircle2, XCircle, ChevronDown, ChevronRight, AlertCircle, ThumbsUp, Check } from 'lucide-react'
 import { useState } from 'react'
 
 interface ChatMessageProps {
@@ -16,6 +16,8 @@ interface ChatMessageProps {
   currentToolCalls?: ToolCallInfo[]
   /** 当前流式迭代编号 */
   currentIteration?: number
+  /** 当前会话 ID(消息点赞沉淀时随 body 提交) */
+  conversationId?: string
 }
 
 /** 工具名称转中文 */
@@ -269,6 +271,66 @@ function IterationText({
   )
 }
 
+/** 消息点赞沉淀按钮: 把一条高质量助手答复沉淀进知识库 */
+function SettleButton({
+  message,
+  conversationId,
+}: {
+  message: Message
+  conversationId?: string
+}) {
+  const [liked, setLiked] = useState(false)
+  const [loading, setLoading] = useState(false)
+
+  /** 点击点赞: 调 POST /api/messages/{id}/like 沉淀该消息内容 */
+  const handleLike = async () => {
+    if (loading || liked) return
+    setLoading(true)
+    try {
+      const res = await fetch(`/api/messages/${message.id}/like`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          conversationId,
+          content: message.content,
+        }),
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      setLiked(true)
+      // 轻提示: 3 秒后淡化高亮, 保持已沉淀状态
+      setTimeout(() => setLiked(false), 3000)
+    } catch (err) {
+      console.error('[SettleButton] like error:', err)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <button
+      onClick={handleLike}
+      disabled={loading}
+      title={liked ? '已沉淀到知识库' : '点赞并沉淀到知识库'}
+      className={cn(
+        'inline-flex items-center gap-1 text-[11px] px-1.5 py-1 rounded-md transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-terracotta-500',
+        liked
+          ? 'text-terracotta-500 bg-terracotta-50 dark:bg-terracotta-900/30'
+          : 'text-charcoal-300 dark:text-charcoal-600 hover:text-terracotta-500 dark:hover:text-terracotta-400'
+      )}
+      aria-label="点赞并沉淀到知识库"
+    >
+      {loading ? (
+        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+      ) : liked ? (
+        <Check className="w-3.5 h-3.5" />
+      ) : (
+        <ThumbsUp className="w-3.5 h-3.5" />
+      )}
+      <span className="hidden sm:inline">{liked ? '已沉淀' : '沉淀'}</span>
+    </button>
+  )
+}
+
 export function ChatMessage({
   message,
   isStreaming,
@@ -276,6 +338,7 @@ export function ChatMessage({
   streamIterations,
   currentToolCalls: _currentToolCalls,
   currentIteration: _currentIteration,
+  conversationId,
 }: ChatMessageProps) {
   const isUser = message.role === 'user'
 
@@ -355,6 +418,7 @@ export function ChatMessage({
           {!isStreaming && !iterations?.length && message.itinerary && (
             <ItineraryCard itinerary={message.itinerary} />
           )}
+          {!isStreaming && <SettleButton message={message} conversationId={conversationId} />}
         </div>
       </div>
     )
@@ -385,6 +449,7 @@ export function ChatMessage({
             </div>
           )
         })}
+          {!isStreaming && <SettleButton message={message} conversationId={conversationId} />}
       </div>
     </div>
   )

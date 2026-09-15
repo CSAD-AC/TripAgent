@@ -7,12 +7,15 @@ import { GraphFlow } from './components/GraphFlow'
 import { MultiAgentProgress } from './components/MultiAgentProgress'
 import { useChat } from './hooks/useChat'
 import { useConversations } from './hooks/useConversations'
-import { Menu, MapPin, GitBranch, Zap, Cpu, Rocket, Users } from 'lucide-react'
+import { Knowledge } from './pages/Knowledge'
+import { Menu, MapPin, GitBranch, Zap, Cpu, Rocket, Users, ArrowLeft } from 'lucide-react'
 import { cn } from './lib/utils'
 import type { ApiMode, ModelInfo } from './types'
 
 export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  /** 主视图: 'chat' = 聊天, 'knowledge' = 知识库管理 */
+  const [view, setView] = useState<'chat' | 'knowledge'>('chat')
   /** API 模式: 'react' = ReAct 工具调用, 'graph' = Graph 工作流 */
   const [apiMode, setApiMode] = useState<ApiMode>('react')
   /** 模型列表(来自 GET /api/models, 顺序即后端配置, 第一项 deepseek 为默认) */
@@ -142,6 +145,12 @@ export default function App() {
     [renameConversation]
   )
 
+  // ── 聊天 ↔ 知识库视图切换(侧边栏"知识库"入口触发) ──
+  const toggleView = useCallback(() => {
+    setView((v) => (v === 'chat' ? 'knowledge' : 'chat'))
+    setSidebarOpen(false)
+  }, [])
+
   // 自动滚动到底部(尊重 prefers-reduced-motion)
   useEffect(() => {
     const prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
@@ -164,6 +173,8 @@ export default function App() {
         onRename={handleRenameConversation}
         open={sidebarOpen}
         onToggle={() => setSidebarOpen(!sidebarOpen)}
+        view={view}
+        onToggleView={toggleView}
       />
 
       {/* 主区域 */}
@@ -189,9 +200,23 @@ export default function App() {
             </div>
           </div>
 
+          {/* 知识库视图下的返回聊天按钮 */}
+          {view === 'knowledge' && (
+            <button
+              onClick={toggleView}
+              className="ml-auto flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium text-warm-white bg-charcoal-900 dark:bg-charcoal-700 hover:bg-charcoal-700 dark:hover:bg-charcoal-600 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-terracotta-500"
+            >
+              <ArrowLeft className="w-3.5 h-3.5" />
+              返回聊天
+            </button>
+          )}
+
           {/* API 模式切换器 */}
           <div
-            className="ml-auto flex items-center gap-1 p-1 rounded-lg bg-warm-white dark:bg-charcoal-800 border border-warm-white-200 dark:border-charcoal-700"
+            className={cn(
+              'ml-auto flex items-center gap-1 p-1 rounded-lg bg-warm-white dark:bg-charcoal-800 border border-warm-white-200 dark:border-charcoal-700',
+              view === 'knowledge' && 'hidden' /* 知识库视图隐藏模式切换, 避免拥挤 */
+            )}
             role="tablist"
             aria-label="API 模式"
           >
@@ -314,6 +339,11 @@ export default function App() {
           )}
         </header>
 
+        {/* 知识库视图: 渲染管理页 */}
+        {view === 'knowledge' ? (
+          <Knowledge />
+        ) : (
+          <>
         {/* Graph 模式 DAG 流程图 */}
         {apiMode === 'graph' && graphTrace && (
           <GraphFlow
@@ -371,6 +401,7 @@ export default function App() {
                   isStreaming={isLastAssistant && isLoading}
                   streamContent={isLastAssistant ? streamContent : undefined}
                   streamIterations={isLastAssistant ? streamIterations : undefined}
+                  conversationId={conversationId}
                 />
               )
             })}
@@ -394,6 +425,8 @@ export default function App() {
           isLoading={isLoading}
           awaitingClarification={!!pendingClarification}
         />
+          </>
+        )}
       </div>
     </div>
   )
