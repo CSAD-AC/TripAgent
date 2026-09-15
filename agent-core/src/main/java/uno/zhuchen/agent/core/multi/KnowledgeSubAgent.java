@@ -25,6 +25,6 @@ public class KnowledgeSubAgent extends SubAgentBase {
 
     @Override
     protected String[] ownToolNames() {
-        return new String[]{"webSearch", "pageFetch"};
+        return new String[]{"knowledgeSearch", "webSearch", "pageFetch"};
     }
 }
