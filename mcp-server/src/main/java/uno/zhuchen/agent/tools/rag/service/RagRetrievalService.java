@@ -8,6 +8,7 @@ import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.stereotype.Service;
 import uno.zhuchen.agent.tools.rag.mapper.KnowledgeChunkMapper;
 import uno.zhuchen.agent.tools.rag.mapper.KnowledgeDocMapper;
+import uno.zhuchen.agent.tools.rag.model.KnowledgeStats;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -118,35 +119,33 @@ public class RagRetrievalService {
      * @return JSON 文本: {docTotal, chunkTotal, docByStatus, docBySourceType}
      */
     public String stats() {
-        Map<String, Object> payload = new LinkedHashMap<>();
         try {
             var docs = docMapper.selectList(null);
             long chunkTotal = chunkMapper.selectCount(null);
-            payload.put("docTotal", docs.size());
-            payload.put("chunkTotal", chunkTotal);
-            payload.put("docByStatus", docs.stream()
-                    .collect(java.util.stream.Collectors.groupingBy(
+            KnowledgeStats stats = new KnowledgeStats(
+                    docs.size(),
+                    chunkTotal,
+                    docs.stream().collect(java.util.stream.Collectors.groupingBy(
                             d -> d.getStatus() == null ? "unknown" : d.getStatus(),
-                            java.util.stream.Collectors.counting())));
-            payload.put("docBySourceType", docs.stream()
-                    .collect(java.util.stream.Collectors.groupingBy(
+                            java.util.stream.Collectors.counting())),
+                    docs.stream().collect(java.util.stream.Collectors.groupingBy(
                             d -> d.getSourceType() == null ? "unknown" : d.getSourceType(),
                             java.util.stream.Collectors.counting())));
             log.info("知识库统计: docs={}, chunks={}", docs.size(), chunkTotal);
+            return toJson(stats);
         } catch (Exception e) {
-            payload.put("error", "stats_unavailable: " + e.getMessage());
             log.warn("知识库统计降级: error={}", e.getMessage());
+            return "{\"error\":\"stats_unavailable\"}";
         }
-        return toJson(payload);
     }
 
     /**
-     * Map 转 JSON 文本, 序列化失败时返回极简错误 JSON.
+     * 对象转 JSON 文本, 序列化失败时返回极简错误 JSON.
      *
-     * @param payload 待序列化的数据
+     * @param payload 待序列化数据(强类型响应体)
      * @return JSON 文本
      */
-    private String toJson(Map<String, Object> payload) {
+    private String toJson(Object payload) {
         try {
             return objectMapper.writeValueAsString(payload);
         } catch (Exception e) {

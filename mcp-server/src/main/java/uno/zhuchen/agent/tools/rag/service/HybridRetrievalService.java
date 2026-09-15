@@ -10,6 +10,7 @@ import org.springframework.stereotype.Service;
 import uno.zhuchen.agent.tools.rag.mapper.KnowledgeChunkMapper;
 import uno.zhuchen.agent.tools.rag.model.KnowledgeChunk;
 import uno.zhuchen.agent.tools.rag.model.RetrievalHit;
+import uno.zhuchen.agent.tools.rag.model.RetrievalResponse;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -109,19 +110,19 @@ public class HybridRetrievalService {
             results = doRetrieve(query, null, limit, degraded);
         }
 
-        Map<String, Object> payload = new LinkedHashMap<>();
-        payload.put("results", results);
-        payload.put("degraded", summaryDegraded(degraded));
-        payload.put("tookMs", System.currentTimeMillis() - start);
-        if (results.isEmpty()) {
-            payload.put("hint", "知识库无匹配结果, 建议转用 webSearch 检索");
-        }
+        // 组装响应体
+        RetrievalResponse resp = new RetrievalResponse(
+                results,
+                summaryDegraded(degraded),
+                System.currentTimeMillis() - start,
+                results.isEmpty() ? "知识库无匹配结果, 建议转用 webSearch 检索" : null);
         log.info("混合检索成功: query={}, destination={}, final={}, degraded={}, tookMs={}",
                 query, destination, results.size(), degraded, System.currentTimeMillis() - start);
 
         // L1 写缓存(含空结果, 防止空结果反复穿透)
-        cache.put(cacheKey, new Object[]{toJson(payload), System.currentTimeMillis() + CACHE_TTL_MS});
-        return toJson(payload);
+        String json = toJson(resp);
+        cache.put(cacheKey, new Object[]{json, System.currentTimeMillis() + CACHE_TTL_MS});
+        return json;
     }
 
     /**
@@ -286,12 +287,12 @@ public class HybridRetrievalService {
     }
 
     /**
-     * Map 转 JSON 文本, 序列化失败时返回极简错误 JSON.
+     * 对象转 JSON 文本, 序列化失败时返回极简错误 JSON.
      *
-     * @param payload 待序列化数据
+     * @param payload 待序列化数据(强类型响应体或集合)
      * @return JSON 文本
      */
-    private String toJson(Map<String, Object> payload) {
+    private String toJson(Object payload) {
         try {
             return objectMapper.writeValueAsString(payload);
         } catch (Exception e) {
