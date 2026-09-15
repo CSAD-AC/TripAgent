@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { cn } from '../lib/utils'
 import { useKnowledge } from '../hooks/useKnowledge'
-import { Upload, RefreshCw, Trash2, Loader2, Database, MapPin } from 'lucide-react'
+import { Upload, RefreshCw, Trash2, Loader2, Database, MapPin, Info } from 'lucide-react'
 import type { KnowledgeDoc } from '../types'
 
 /** 来源类型中文映射: 后端 sourceType 枚举 → 界面展示文案 */
@@ -63,6 +63,17 @@ export function Knowledge() {
   // ── reindex 状态 ──
   const [reindexing, setReindexing] = useState(false)
 
+  // ── 操作反馈提示(上传/重建结果) ──
+  const [notice, setNotice] = useState('')
+  const [noticeType, setNoticeType] = useState<'info' | 'success'>('info')
+
+  /** 展示一条可自动消失的操作反馈 */
+  const flash = (msg: string, type: 'info' | 'success' = 'info') => {
+    setNotice(msg)
+    setNoticeType(type)
+    window.setTimeout(() => setNotice(''), 4000)
+  }
+
   /** 分页大小(知识库文档通常量小, 一次拉取 50 条足够; 可后续扩展翻页) */
   const PAGE_SIZE = 50
 
@@ -83,6 +94,7 @@ export function Knowledge() {
       setTitle('')
       setContent('')
       setDestination('')
+      flash('已提交入库，正在后台分块/索引', 'success')
     } catch (err) {
       console.error('[Knowledge] upload error:', err)
       setUploadError('上传失败, 请稍后重试')
@@ -96,9 +108,15 @@ export function Knowledge() {
     if (!window.confirm('将全量重建索引, 确定继续?')) return
     setReindexing(true)
     try {
-      await reindex()
+      const result = await reindex()
+      if (result.status === 'busy') {
+        flash('索引已在重建中, 请稍后查看')
+      } else {
+        flash(`重建完成: 共 ${result.total ?? 0} 块, 成功 ${result.success ?? 0}, 失败 ${result.failed ?? 0}`, 'success')
+      }
     } catch (err) {
       console.error('[Knowledge] reindex error:', err)
+      flash('重建失败, 请查看服务日志')
     } finally {
       setReindexing(false)
     }
@@ -163,6 +181,21 @@ export function Knowledge() {
   return (
     <div className="flex-1 overflow-y-auto">
       <div className="max-w-3xl mx-auto px-4 py-6 space-y-6">
+        {/* 操作反馈提示(上传/重建) */}
+        {notice && (
+          <div
+            className={cn(
+              'flex items-center gap-2 px-3 py-2 rounded-lg border text-xs transition-opacity',
+              noticeType === 'success'
+                ? 'bg-terracotta-50 dark:bg-terracotta-900/30 text-terracotta-700 dark:text-terracotta-300 border-terracotta-200 dark:border-terracotta-700'
+                : 'bg-charcoal-100 dark:bg-charcoal-800 text-charcoal-700 dark:text-charcoal-300 border-charcoal-200 dark:border-charcoal-700',
+            )}
+          >
+            <Info className="w-3.5 h-3.5 flex-shrink-0" />
+            <span>{notice}</span>
+          </div>
+        )}
+
         {/* 页头 */}
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-xl bg-terracotta-500 flex items-center justify-center">
