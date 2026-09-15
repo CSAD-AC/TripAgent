@@ -119,3 +119,8 @@ mcp:
 rag:
   seed:
     enabled: true
+  # RAG 文档入库分块参数 (改参后可用 reindex 重建验证)
+  ingestion:
+    chunk-size: 500       # 目标块大小(字符数, 中文约一顿口语 0.75 token/字)
+    chunk-overlap: 60     # 相邻块重叠(字符数, 约 12%)
+    min-chunk: 50         # 小于该长度的块与相邻块合并
