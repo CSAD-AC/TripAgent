@@ -9,6 +9,7 @@ import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.stereotype.Service;
 import uno.zhuchen.agent.tools.rag.mapper.KnowledgeChunkMapper;
 import uno.zhuchen.agent.tools.rag.model.KnowledgeChunk;
+import uno.zhuchen.agent.tools.rag.model.RetrievalHit;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -99,7 +100,7 @@ public class HybridRetrievalService {
         List<String> degraded = new ArrayList<>();
 
         // 1. 双路召回 + 融合 + 重排, 得到最终结果条目
-        List<Map<String, Object>> results = doRetrieve(query, destination, limit, degraded);
+        List<RetrievalHit> results = doRetrieve(query, destination, limit, degraded);
 
         // 2. 目的地过滤过严(库中写法不同, 如 "凤凰" vs "凤凰古城")导致漏召回时,
         //    放宽为全库召回一次, 标记 filter_relaxed 便于观测与调参
@@ -139,7 +140,7 @@ public class HybridRetrievalService {
      * @param degraded    降级标记收集器
      * @return 结果条目列表(可能为空)
      */
-    private List<Map<String, Object>> doRetrieve(String query, String destination, int limit, List<String> degraded) {
+    private List<RetrievalHit> doRetrieve(String query, String destination, int limit, List<String> degraded) {
         // 双路并行召回(各自降级, 不互相阻断)
         CompletableFuture<List<Document>> vectorFuture =
                 CompletableFuture.supplyAsync(() -> fetchVector(query, destination, degraded));
@@ -182,23 +183,23 @@ public class HybridRetrievalService {
         List<Document> finals;
         if (reranked == null) {
             degraded.add("rerank");
-            finals = candidates;
+            finals = candidates.stream().limit(limit).toList();
+        } else if (reranked.isEmpty()) {
+            degraded.add("rerank_empty");
+            finals = candidates.stream().limit(limit).toList();
         } else {
-            finals = reranked.isEmpty() ? candidates : reranked;
+            finals = reranked;
         }
 
-        // 组装结果条目
-        return finals.stream().limit(limit).map(doc -> {
-            Map<String, Object> item = new LinkedHashMap<>();
-            item.put("content", doc.getText());
-            item.put("docTitle", doc.getMetadata().getOrDefault("docTitle", ""));
-            item.put("destination", doc.getMetadata().getOrDefault("destination", ""));
-            item.put("theme", doc.getMetadata().getOrDefault("theme", ""));
-            item.put("docId", doc.getMetadata().getOrDefault("docId", doc.getId()));
-            item.put("source", doc.getMetadata().getOrDefault("source", "seed"));
-            item.put("score", doc.getScore());
-            return item;
-        }).toList();
+        // 组装强类型命中条目
+        return finals.stream().limit(limit).map(doc -> new RetrievalHit(
+                doc.getText(),
+                metaStr(doc, "docTitle", ""),
+                metaStr(doc, "destination", ""),
+                metaStr(doc, "theme", ""),
+                metaStr(doc, "docId", doc.getId()),
+                metaStr(doc, "source", "seed"),
+                doc.getScore())).toList();
     }
 
     /**
@@ -259,6 +260,12 @@ public class HybridRetrievalService {
     private String docIdOf(Document doc) {
         Object v = doc.getMetadata().get("docId");
         return v == null ? doc.getId() : v.toString();
+    }
+
+    /** 从 Document metadata 取字符串值, 缺失时返回默认值 */
+    private static String metaStr(Document doc, String key, String def) {
+        Object v = doc.getMetadata().get(key);
+        return v == null ? def : v.toString();
     }
 
     /** 由目的地与主题构造 metadata(用于关键词路重建的 Document) */
