@@ -70,6 +70,25 @@ public class IngestionService {
      */
     public String submit(String title, String content, String sourceType, String sourceRef,
                          String destination, String theme) {
+        // 去重: 同类来源且同溯源(如 messageId)已入库则直接返回既有 id, 避免重复沉淀
+        if (sourceRef != null && !sourceRef.isBlank()) {
+            Long existed = docMapper.selectCount(new LambdaQueryWrapper<KnowledgeDoc>()
+                    .eq(KnowledgeDoc::getSourceType, sourceType == null ? "manual" : sourceType)
+                    .eq(KnowledgeDoc::getSourceRef, sourceRef)
+                    .ne(KnowledgeDoc::getStatus, "deleted"));
+            if (existed != null && existed > 0) {
+                KnowledgeDoc old = docMapper.selectOne(new LambdaQueryWrapper<KnowledgeDoc>()
+                        .eq(KnowledgeDoc::getSourceType, sourceType == null ? "manual" : sourceType)
+                        .eq(KnowledgeDoc::getSourceRef, sourceRef)
+                        .ne(KnowledgeDoc::getStatus, "deleted")
+                        .last("LIMIT 1"));
+                if (old != null) {
+                    log.info("知识已存在(去重跳过): sourceType={}, sourceRef={}, docId={}",
+                            sourceType, sourceRef, old.getId());
+                    return old.getId();
+                }
+            }
+        }
         KnowledgeDoc doc = new KnowledgeDoc();
         doc.setTitle(title);
         doc.setSourceType(sourceType == null ? "manual" : sourceType);
