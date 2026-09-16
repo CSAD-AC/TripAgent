@@ -8,8 +8,9 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
-import java.util.Map;
+import jakarta.validation.Valid;
 import uno.zhuchen.agent.common.Result;
+import uno.zhuchen.agent.domain.dto.UpdateConversationTitleRequest;
 import uno.zhuchen.agent.domain.vo.ConversationDetailVO;
 import uno.zhuchen.agent.persistence.service.ConversationService;
 import uno.zhuchen.agent.domain.vo.ConversationVO;
@@ -60,12 +61,8 @@ public class ConversationController {
      */
     @PutMapping("/{id}")
     public Result<Void> updateConversation(@PathVariable String id,
-                                            @RequestBody Map<String, String> body) {
-        String title = body.get("title");
-        if (title == null || title.isBlank()) {
-            return Result.error(400, "title 不能为空");
-        }
-        conversationService.updateConversation(id, title.trim());
+                                            @Valid @RequestBody UpdateConversationTitleRequest req) {
+        conversationService.updateConversation(id, req.getTitle().trim());
         return Result.success(null);
     }
 
