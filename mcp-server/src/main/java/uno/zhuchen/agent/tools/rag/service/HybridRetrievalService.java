@@ -19,6 +19,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import jakarta.annotation.PreDestroy;
 
 /**
  * 混合检索服务 — 向量路 + 关键词路双路召回, RRF 融合, 可选 Rerank 重排.
@@ -61,6 +65,24 @@ public class HybridRetrievalService {
     private final ConcurrentHashMap<String, Object[]> cache = new ConcurrentHashMap<>();
 
     /**
+     * 双路召回专用线程池(固定 2 线程).
+     *
+     * <p>用于 {@code CompletableFuture.supplyAsync(task, executor)}, 避免阻塞的
+     * MyBatis/Milvus 调用占用全局 ForkJoinPool.commonPool().
+     */
+    private final ExecutorService recallExecutor = Executors.newFixedThreadPool(2, r -> {
+        Thread t = new Thread(r, "rag-recall");
+        t.setDaemon(true);
+        return t;
+    });
+
+    /** 容器关闭时释放召回线程池 */
+    @PreDestroy
+    public void shutdown() {
+        recallExecutor.shutdownNow();
+    }
+
+    /**
      * 构造注入向量库、分块表 Mapper、重排服务与 JSON 序列化器.
      *
      * @param vectorStore    Milvus 向量库(向量路)
@@ -98,7 +120,8 @@ public class HybridRetrievalService {
                     query, destination, limit, System.currentTimeMillis() - start);
             return (String) cached[0];
         }
-        List<String> degraded = new ArrayList<>();
+        // L1 缓存命中与否之外, 统一用并发安全集合收集 degrade 标记(双路 + 主线程并发写)
+        List<String> degraded = new CopyOnWriteArrayList<>();
 
         // 1. 双路召回 + 融合 + 重排, 得到最终结果条目
         List<RetrievalHit> results = doRetrieve(query, destination, limit, degraded);
@@ -126,10 +149,24 @@ public class HybridRetrievalService {
     }
 
     /**
-     * 构造 L1 缓存 key(destination|query|limit).
+     * 构造 L1 缓存 key(归一化后的 destination|query|limit).
+     *
+     * <p>query 归一化(去标点/空白/转小写)提升缓存命中率: LLM 每次生成的 query 文本
+     * 常有细微波动, 归一化后语义相近的 query 可复用缓存.
      */
     private static String cacheKey(String query, String destination, int limit) {
-        return (destination == null ? "" : destination) + "|" + (query == null ? "" : query) + "|" + limit;
+        return (destination == null ? "" : destination) + "|" + normalizeQuery(query) + "|" + limit;
+    }
+
+    /**
+     * query 轻量归一化: 折叠空白、去除常见中英文标点、转小写.
+     */
+    private static String normalizeQuery(String q) {
+        if (q == null) {
+            return "";
+        }
+        return q.toLowerCase()
+                .replaceAll("[\\s，。！？、；：“”‘’（）【】《》…·,.:;!?()\\[\\]{}<>\\-]", "").trim();
     }
 
     /**
@@ -142,11 +179,11 @@ public class HybridRetrievalService {
      * @return 结果条目列表(可能为空)
      */
     private List<RetrievalHit> doRetrieve(String query, String destination, int limit, List<String> degraded) {
-        // 双路并行召回(各自降级, 不互相阻断)
+        // 双路并行召回(各自降级, 不互相阻断); 阻塞调用在专用池 rag-recall 上执行, 不占公共 ForkJoinPool
         CompletableFuture<List<Document>> vectorFuture =
-                CompletableFuture.supplyAsync(() -> fetchVector(query, destination, degraded));
+                CompletableFuture.supplyAsync(() -> fetchVector(query, destination, degraded), recallExecutor);
         CompletableFuture<List<KnowledgeChunk>> keywordFuture =
-                CompletableFuture.supplyAsync(() -> fetchKeyword(query, destination, degraded));
+                CompletableFuture.supplyAsync(() -> fetchKeyword(query, destination, degraded), recallExecutor);
         List<Document> vectorDocs = vectorFuture.join();
         List<KnowledgeChunk> keywordChunks = keywordFuture.join();
 
