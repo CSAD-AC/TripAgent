@@ -16,7 +16,9 @@ import org.springframework.web.server.ResponseStatusException;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 import uno.zhuchen.agent.tools.rag.mapper.KnowledgeDocMapper;
+import uno.zhuchen.agent.tools.rag.model.DeleteResultVO;
 import uno.zhuchen.agent.tools.rag.model.KnowledgeDoc;
+import uno.zhuchen.agent.tools.rag.model.KnowledgeDocPageVO;
 import uno.zhuchen.agent.tools.rag.model.KnowledgeDocVO;
 import uno.zhuchen.agent.tools.rag.model.KnowledgeStats;
 import uno.zhuchen.agent.tools.rag.model.KnowledgeUploadRequest;
@@ -24,9 +26,7 @@ import uno.zhuchen.agent.tools.rag.model.ReindexResult;
 import uno.zhuchen.agent.tools.rag.model.UploadDocResult;
 import uno.zhuchen.agent.tools.rag.service.RagRetrievalService;
 
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 
 /**
  * 知识库文档管理 REST — 上传/列表/详情/删除.
@@ -63,7 +63,7 @@ public class KnowledgeDocController {
     /**
      * 上传文档入库(异步). 立即返回 doc_id, 后台分块/向量化, 可轮询详情看状态.
      *
-     * @param body {title, content, destination?, theme?, sourceRef?, sourceType?}
+     * @param req {title, content, destination?, theme?, sourceRef?, sourceType?}
      * @return {docId}
      */
     @PostMapping
@@ -81,11 +81,11 @@ public class KnowledgeDocController {
      *
      * @param page 页码(从 1 起)
      * @param size 每页条数
-     * @return {total, items:[...]}
+     * @return 强类型分页视图 {total, items:[...]}
      */
     @GetMapping
-    public Mono<Map<String, Object>> list(@RequestParam(defaultValue = "1") int page,
-                                          @RequestParam(defaultValue = "20") int size) {
+    public Mono<KnowledgeDocPageVO> list(@RequestParam(defaultValue = "1") int page,
+                                         @RequestParam(defaultValue = "20") int size) {
         return Mono.fromCallable(() -> {
             LambdaQueryWrapper<KnowledgeDoc> qw = new LambdaQueryWrapper<KnowledgeDoc>()
                     .ne(KnowledgeDoc::getStatus, "deleted")
@@ -93,10 +93,8 @@ public class KnowledgeDocController {
             List<KnowledgeDoc> all = docMapper.selectList(qw);
             int from = Math.min((Math.max(1, page) - 1) * Math.max(1, size), all.size());
             int to = Math.min(from + Math.max(1, size), all.size());
-            Map<String, Object> resp = new LinkedHashMap<>();
-            resp.put("total", all.size());
-            resp.put("items", all.subList(from, to).stream().map(KnowledgeDocController::docToVO).toList());
-            return resp;
+            return new KnowledgeDocPageVO((long) all.size(),
+                    all.subList(from, to).stream().map(KnowledgeDocController::docToVO).toList());
         }).subscribeOn(Schedulers.boundedElastic());
     }
 
@@ -121,18 +119,16 @@ public class KnowledgeDocController {
      * 删除文档(软删 doc + 物理删分块与向量).
      *
      * @param id 文档主键
-     * @return {success: true} 或 {code:404}
+     * @return 强类型结果 {success: true} 或 {code:404}
      */
     @DeleteMapping("/{id}")
-    public Mono<Map<String, Object>> delete(@PathVariable String id) {
+    public Mono<DeleteResultVO> delete(@PathVariable String id) {
         return Mono.fromCallable(() -> {
             boolean ok = ingestionService.delete(id);
             if (!ok) {
                 throw new ResponseStatusException(HttpStatus.NOT_FOUND, "文档不存在");
             }
-            Map<String, Object> resp = new LinkedHashMap<>();
-            resp.put("success", true);
-            return resp;
+            return new DeleteResultVO(true);
         }).subscribeOn(Schedulers.boundedElastic());
     }
 

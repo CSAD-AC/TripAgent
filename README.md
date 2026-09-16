@@ -19,6 +19,7 @@ TravelPal 是一个基于大语言模型的 AI 旅游规划系统，具备两种
 | 语言模型 | DeepSeek（默认）/ 通义千问 | deepseek-v4-flash / qwen3.6-flash |
 | 工具协议 | Model Context Protocol (MCP) | — |
 | 持久化 | MySQL + Redis（MyBatis-Plus + Flyway） | 8.x / 7.x |
+| 向量库 | Milvus（RAG 语义检索，Docker Compose 部署） | - |
 | 前端框架 | React | 19.x |
 | 构建工具 | Vite | 8.x |
 | 样式 | Tailwind CSS | 4.x |
@@ -45,7 +46,8 @@ TripAgent/
 │       └── tools/
 │           ├── amap/          # 高德地图工具组（地理编码/路线/POI/天气）
 │           ├── ticket12306/   # 12306 工具组（车站/余票/联程/车次路线）
-│           └── cloud/         # 云端工具组（网页搜索/页面抓取）
+│           ├── cloud/         # 云端工具组（网页搜索/页面抓取）
+│           └── rag/           # RAG 知识库工具组（混合检索/入库/统计/重建）
 │
 └── frontend/                  # 前端（React + Vite :5173）
     └── src/
@@ -61,6 +63,7 @@ TripAgent/
 - **Node.js 18+**
 - **npm 9+**
 - **MySQL 8+ 与 Redis 7+**（仅 `deepseek` 生产 profile 需要，见下文）
+- **Milvus**（RAG 知识库语义检索需要，Docker Compose 一键启动）
 
 ## 快速开始
 
@@ -72,6 +75,7 @@ TripAgent/
 |-----|------|----------|----------|
 | DeepSeek | 大语言模型（默认 profile） | https://platform.deepseek.com | agent-core `.env` |
 | 通义千问 | 大语言模型（备选 profile） | https://dashscope.aliyun.com | agent-core `.env` |
+| DashScope | RAG 向量化/重排（text-embedding-v3 / qwen3.7-text-rerank） | https://dashscope.aliyun.com | mcp-server `.env` |
 | 高德地图 | 地理编码/路线/POI/天气 | https://console.amap.com | mcp-server `.env` |
 | 百度千帆 | 网页搜索 | https://console.bce.baidu.com/qianfan/ | mcp-server `.env` |
 | Tavily | 网页搜索（百度降级后备） | https://app.tavily.com | mcp-server `.env` |
@@ -92,7 +96,15 @@ cp mcp-server/src/main/resources/.env.example mcp-server/src/main/resources/.env
 > `deepseek` 生产 profile 会启用持久化层，需要**本地 MySQL + Redis**；
 > 改用 `dev` 或 `dashscope` profile 则使用内存记忆（InMemoryChatMemory），无需数据库。
 
-### 3. 启动后端
+### 3. 启动 Milvus（RAG 需要）
+
+知识库语义检索依赖 Milvus 向量库，一键启动：
+
+```bash
+cd docker/milvus && docker compose up -d
+```
+
+### 4. 启动后端
 
 ```bash
 # 终端 1: 启动 MCP Server（工具服务，必须先启动）
@@ -107,7 +119,7 @@ mvn spring-boot:run -Dspring-boot.run.profiles=deepseek
 > `deepseek` profile 调用 DeepSeek API（默认）；`dashscope` profile 调用通义千问 API。
 > 两个服务都使用 `deepseek` profile 时即可启用完整的持久化与链路追踪能力。
 
-### 4. 启动前端
+### 5. 启动前端
 
 ```bash
 cd frontend
@@ -166,6 +178,16 @@ npm run dev
 
 > 复杂旅游规划会被主管自动"外包"给 Graph 流水线（tripPlanner 子代理），形成"自主调度 + 固定流水线"混合编排。
 
+### RAG 知识库检索与自沉淀
+
+系统内置旅游知识库（景点/美食/行程/历史规划报告），LLM 在回答旅游知识类问题时**优先检索知识库**，不足时才转外部搜索，回答更有据、可溯源。
+
+- **检索接入**：ReAct / Multi-Agent 模式会自动调用知识检索工具（`knowledgeSearch`），无需手动操作。
+- **知识来源**：内置种子、手动上传文档、消息点赞沉淀。
+- **消息点赞沉淀**：对满意的 assistant 回答点「赞」，其全文会自动入库（同消息去重），之后可被检索复用，越用越准。
+- **知识库管理**：前端「知识库」页支持上传文档、查看/删除、全量重建索引。
+- **降级容错**：Milvus / 向量化 / 重排等任一组件故障只会损失部分检索质量，自动降级（单路召回/跳过重排），不中断 Agent 主流程。
+
 ### 反问交互
 
 在 Graph 模式下，如果信息不足，系统会弹出反问问题卡：
@@ -194,6 +216,13 @@ npm run dev
 | `/api/conversations/{id}` | GET | 对话详情（含消息列表） |
 | `/api/conversations/{id}` | PUT | 修改对话标题 |
 | `/api/conversations/{id}` | DELETE | 软删除对话 |
+| `/api/knowledge/documents` | POST | 上传文档入知识库（异步入库，返回 docId） |
+| `/api/knowledge/documents?page&size` | GET | 知识文档分页列表 |
+| `/api/knowledge/documents/{id}` | GET | 文档详情 + 索引状态（上传后轮询） |
+| `/api/knowledge/documents/{id}` | DELETE | 删除文档（软删 + 物理删分块与向量） |
+| `/api/knowledge/reindex` | POST | 全量重建向量索引 |
+| `/api/knowledge/documents/stats` | GET | 知识库统计（文档数/分块数/状态分布） |
+| `/api/messages/{id}/like` | POST | 点赞消息并沉淀进知识库 |
 
 聊天请求体 `ChatRequest`：`message`（必填）、`conversationId`（可选 UUID）、`modelId`（可选，仅 ReAct 生效）、`superMode`（可选，仅 ReAct 生效）。
 
@@ -261,3 +290,6 @@ A: 检查后端两个服务是否都已启动，前端会代理 `/api` 请求到
 
 **Q: 模型选择器里没有模型？**
 A: 调用 `GET /api/models` 检查后端是否正常返回 `app.models` 注册表（默认 deepseek / qwen 两项）。
+
+**Q: RAG 知识库检索不可用 / 返回 `degraded=rerank`？**
+A: 语义检索依赖 Milvus（需先 `cd docker/milvus && docker compose up -d`）与 DashScope（向量化 + 重排，`DASHSCOPE_API_KEY` 配在 mcp-server `.env`）。任一组件的故障会自动降级（单路召回 / 跳过重排），不会中断主流程；`degraded=rerank` 表示重排未生效（如账号未开通对应模型），检索仍会返回 RRF 粗排结果。
