@@ -11,6 +11,10 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Mono;
 import uno.zhuchen.agent.common.Result;
+import uno.zhuchen.agent.domain.dto.KnowledgeUploadRequest;
+import uno.zhuchen.agent.domain.dto.MessageLikeRequest;
+
+import jakarta.validation.Valid;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -44,20 +48,18 @@ public class MessageController {
     /**
      * 点赞消息并沉淀进知识库.
      *
+     * <p>入参走 {@link MessageLikeRequest} + {@link Valid} 强类型校验, 与项目接口风格一致.
+     *
      * @param messageId 消息主键(作为知识 sourceRef 溯源)
-     * @param body      {conversationId, content, destination?}
-     *                  其中 content 为被点赞的 assistant 回答全文.
+     * @param req       {conversationId, content, destination?}, 其中 content 为被点赞的 assistant 回答全文
      * @return {docId, status} 或错误
      */
     @PostMapping("/{id}/like")
     public Mono<Result<Map<String, Object>>> likeAndPrecipitate(@PathVariable("id") String messageId,
-                                                                @RequestBody Map<String, Object> body) {
-        String conversationId = str(body.get("conversationId"));
-        String content = str(body.get("content"));
-        String destination = str(body.get("destination"));
-        if (content == null || content.isBlank()) {
-            return Mono.just(Result.error(400, "content 不能为空(需为被点赞的 assistant 回答全文)"));
-        }
+                                                                @Valid @RequestBody MessageLikeRequest req) {
+        String conversationId = req.getConversationId();
+        String content = req.getContent();
+        String destination = req.getDestination();
         // 长度保护: 超大内容截断前段入库, 防止异常上传撑爆分块
         if (content.length() > MAX_PRECIP_CONTENT) {
             log.warn("点赞沉淀内容超长, 截断入库: messageId={}, len={}, cap={}",
@@ -69,15 +71,13 @@ public class MessageController {
 
         // 标题取回答前若干字符
         String title = content.length() > 60 ? content.substring(0, 60) + "…" : content;
-        Map<String, Object> payload = new LinkedHashMap<>();
-        payload.put("title", title);
-        payload.put("content", content);
-        payload.put("sourceType", "self_precip");
-        payload.put("sourceRef", messageId);
-        payload.put("destination", destination);
+        KnowledgeUploadRequest uploadReq = KnowledgeUploadRequest.builder()
+                .title(title).content(content)
+                .sourceType("self_precip").sourceRef(messageId)
+                .destination(destination).build();
 
         return mcpClient.post().uri("/api/knowledge/documents")
-                .contentType(MediaType.APPLICATION_JSON).bodyValue(payload)
+                .contentType(MediaType.APPLICATION_JSON).bodyValue(uploadReq)
                 .retrieve().bodyToMono(Map.class)
                 .map(resp -> {
                     Map<String, Object> out = new LinkedHashMap<>();
@@ -85,10 +85,5 @@ public class MessageController {
                     out.put("status", resp.getOrDefault("status", "pending"));
                     return Result.success(out);
                 });
-    }
-
-    /** Map 取值容错转字符串 */
-    private static String str(Object v) {
-        return v == null ? null : v.toString();
     }
 }
