@@ -32,9 +32,9 @@ public interface MessageMapper extends BaseMapper<MessageEntity> {
      * 批量插入消息（替代逐条 insert，减少网络往返）。
      */
     @Insert("<script>"
-        + "INSERT IGNORE INTO message (conversation_id, role, content, metadata, model, token_count, trace_id, sequence_num, created_at) VALUES "
+        + "INSERT IGNORE INTO message (conversation_id, role, content, metadata, model, token_count, prompt_tokens, completion_tokens, trace_id, sequence_num, created_at) VALUES "
         + "<foreach collection='list' item='e' separator=','>"
-        + "(#{e.conversationId}, #{e.role}, #{e.content}, #{e.metadata}, #{e.model}, #{e.tokenCount}, #{e.traceId}, #{e.sequenceNum}, #{e.createdAt})"
+        + "(#{e.conversationId}, #{e.role}, #{e.content}, #{e.metadata}, #{e.model}, #{e.tokenCount}, #{e.promptTokens}, #{e.completionTokens}, #{e.traceId}, #{e.sequenceNum}, #{e.createdAt})"
         + "</foreach>"
         + "</script>")
     int insertBatch(@Param("list") List<MessageEntity> entities);

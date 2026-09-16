@@ -233,8 +233,8 @@ public class MultiAgentManager {
                         "第 " + (i + 1) + " 轮调度完成"));
             }
 
-            // 收尾: 保存历史 + 发射 final/error
-            chatMemory.save(conversationId, state.getNewMessages(), traceId);
+            // 收尾: 保存历史 + 发射 final/error; 落模型名与模式 multi(M3)
+            chatMemory.save(conversationId, state.getNewMessages(), traceId, modelName, "multi");
             if (finalResponse != null && finalResponse.getText() != null) {
                 sink.tryEmitNext(StreamChunk.final_(conversationId, finalResponse.getText(),
                         System.currentTimeMillis() - startMs));
@@ -247,7 +247,8 @@ public class MultiAgentManager {
             }
         } catch (Exception e) {
             log.error("[traceId={}] [MultiAgent] 执行异常", traceId, e);
-            chatMemory.save(conversationId, state.getNewMessages(), traceId);
+            chatMemory.save(conversationId, state.getNewMessages(), traceId,
+                    (modelId == null || modelId.isBlank()) ? null : modelRouter.resolveModelName(modelId), "multi");
             sink.tryEmitNext(StreamChunk.error(conversationId,
                     "Multi-Agent 执行异常: " + e.getMessage(),
                     System.currentTimeMillis() - startMs));

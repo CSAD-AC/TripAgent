@@ -84,18 +84,19 @@ public class PersistentChatMemory implements ChatMemory {
 
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public void save(String conversationId, List<Message> messages, String traceId) {
+    public void save(String conversationId, List<Message> messages, String traceId,
+                     String model, String mode) {
         Objects.requireNonNull(conversationId, "conversationId");
         Objects.requireNonNull(messages, "messages");
 
-        // 1. 确保 conversation 存在(幂等)
-        ensureConversationExists(conversationId, messages);
+        // 1. 确保 conversation 存在(幂等), 并落 mode/model 元数据
+        ensureConversationExists(conversationId, messages, mode, model);
 
         // 2. 查询当前最大序号作为起始偏移
         int seqOffset = messageMapper.selectMaxSequenceNum(conversationId) + 1;
 
-        // 3. 批量写 message 表(INSERT IGNORE 幂等)
-        List<MessageEntity> entities = toEntities(conversationId, messages, seqOffset, traceId);
+        // 3. 批量写 message 表(INSERT IGNORE 幂等), assistant 消息落 model 与 token 元数据
+        List<MessageEntity> entities = toEntities(conversationId, messages, seqOffset, traceId, model);
         if (!entities.isEmpty()) {
             messageMapper.insertBatch(entities);
         }
@@ -157,9 +158,12 @@ public class PersistentChatMemory implements ChatMemory {
 
     // ============ 会话管理 ============
 
-    private void ensureConversationExists(String conversationId, List<Message> messages) {
+    private void ensureConversationExists(String conversationId, List<Message> messages,
+                                          String mode, String model) {
         ConversationEntity conv = new ConversationEntity();
         conv.setId(conversationId);
+        conv.setMode(mode == null ? "react" : mode);
+        conv.setModel(model);
         messages.stream()
                 .filter(m -> m instanceof UserMessage)
                 .findFirst()
@@ -178,7 +182,7 @@ public class PersistentChatMemory implements ChatMemory {
     // ============ 序列化:Message ↔ MessageEntity(MySQL 持久化方向) ============
 
     private static List<MessageEntity> toEntities(String conversationId, List<Message> messages,
-                                                   int seqOffset, String traceId) {
+                                                   int seqOffset, String traceId, String model) {
         List<MessageEntity> entities = new ArrayList<>();
         int seq = seqOffset;
         LocalDateTime now = LocalDateTime.now();
@@ -199,6 +203,15 @@ public class PersistentChatMemory implements ChatMemory {
             } else if (msg instanceof AssistantMessage am) {
                 entity.setRole("assistant");
                 entity.setContent(am.getText());
+                // assistant 消息由 LLM 生成, 落模型名支撑成本/模型维度统计(H1)
+                entity.setModel(model);
+                // 计费: 从 metadata.tokenUsage(官方 API usage)落 token 拆分到列(token_count 机制)
+                Object tu = am.getMetadata() == null ? null : am.getMetadata().get("tokenUsage");
+                if (tu instanceof Map<?, ?> usage) {
+                    entity.setTokenCount(asInt(usage.get("totalTokens")));
+                    entity.setPromptTokens(asInt(usage.get("promptTokens")));
+                    entity.setCompletionTokens(asInt(usage.get("completionTokens")));
+                }
                 List<AssistantMessage.ToolCall> toolCalls = am.getToolCalls();
                 if (toolCalls != null && !toolCalls.isEmpty()) {
                     entity.setMetadata(toJson(toolCalls.stream()
@@ -416,5 +429,10 @@ public class PersistentChatMemory implements ChatMemory {
     private static String truncate(String s, int max) {
         if (s == null) return "";
         return s.length() <= max ? s : s.substring(0, max) + "...";
+    }
+
+    /** Number 取值容错转 int, 非数值返回 null */
+    private static Integer asInt(Object v) {
+        return v instanceof Number n ? n.intValue() : null;
     }
 }

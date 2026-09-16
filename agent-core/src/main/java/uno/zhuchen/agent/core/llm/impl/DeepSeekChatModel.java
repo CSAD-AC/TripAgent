@@ -114,12 +114,25 @@ public class DeepSeekChatModel implements ChatModel {
                 return new AssistantMessage("抱歉，我没有得到有效的回复。");
             }
 
-            AssistantMessage result = (AssistantMessage) response.getResult().getOutput();
+            AssistantMessage output = (AssistantMessage) response.getResult().getOutput();
             log.debug("DeepSeek 响应完成, hasToolCalls={}, text长度={}",
-                    result.hasToolCalls(),
-                    result.getText() != null ? result.getText().length() : 0);
+                    output.hasToolCalls(),
+                    output.getText() != null ? output.getText().length() : 0);
 
-            return result;
+            // 把官方 API 的 token usage 挂到返回值 metadata, 供持久化为计费数据(token_count 机制)
+            Map<String, Object> props = new HashMap<>();
+            if (output.getMetadata() != null) {
+                props.putAll(output.getMetadata());
+            }
+            Map<String, Object> usage = ChatModel.tokenUsageOf(response);
+            if (usage != null) {
+                props.put(ChatModel.TOKEN_USAGE_METADATA_KEY, usage);
+            }
+            return AssistantMessage.builder()
+                    .content(output.getText())
+                    .properties(props)
+                    .toolCalls(output.getToolCalls())
+                    .build();
 
         } catch (Exception e) {
             log.error("DeepSeek 同步调用异常", e);

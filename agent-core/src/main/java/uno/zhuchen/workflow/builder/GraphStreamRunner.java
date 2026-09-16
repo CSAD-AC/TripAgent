@@ -6,11 +6,16 @@ import com.alibaba.cloud.ai.graph.OverAllState;
 import com.alibaba.cloud.ai.graph.RunnableConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.Sinks;
 import reactor.core.scheduler.Schedulers;
+import uno.zhuchen.agent.config.ModelRouter;
+import uno.zhuchen.agent.core.memory.ChatMemory;
 import uno.zhuchen.agent.domain.dto.StreamChunk;
 import uno.zhuchen.workflow.agent.BaseAgent;
 import uno.zhuchen.workflow.state.TripPlanningStateKeys;
@@ -57,9 +62,15 @@ public class GraphStreamRunner {
     private static final Logger log = LoggerFactory.getLogger(GraphStreamRunner.class);
 
     private final TripPlanningGraphBuilder graphBuilder;
+    private final ChatMemory chatMemory;
+    private final ModelRouter modelRouter;
 
-    public GraphStreamRunner(TripPlanningGraphBuilder graphBuilder) {
+    public GraphStreamRunner(TripPlanningGraphBuilder graphBuilder,
+                             ChatMemory chatMemory,
+                             ModelRouter modelRouter) {
         this.graphBuilder = graphBuilder;
+        this.chatMemory = chatMemory;
+        this.modelRouter = modelRouter;
     }
 
     /**
@@ -154,8 +165,10 @@ public class GraphStreamRunner {
                     })
                     .blockLast();
 
-            // Graph 正常结束
-            safelyEmit(sink, StreamChunk.final_(conversationId, extractReport(graph, config, traceId),
+            // Graph 正常结束: 先落库(可回看/续聊), 再发射最终报告事件(M1)
+            String finalReport = extractReport(graph, config, traceId);
+            persistGraph(conversationId, rawRequest, finalReport, traceId);
+            safelyEmit(sink, StreamChunk.final_(conversationId, finalReport,
                     System.currentTimeMillis() - startMs));
 
         } catch (Exception e) {
@@ -341,6 +354,25 @@ public class GraphStreamRunner {
         } catch (Exception e) {
             log.warn("[traceId={}] [GraphStreamRunner] 提取报告失败: {}", traceId, e.getMessage());
             return "(报告提取失败)";
+        }
+    }
+
+    /**
+     * 将 Graph 规划会话落库: 用户请求 + 最终报告, 模式记 graph, 模型记注册表默认模型(M1).
+     *
+     * <p>此前 Graph 路径零 chatMemory 调用, 规划会话全程不留痕; 落库后前端可回看/续聊.
+     * 落库失败仅记日志, 不阻断事件发射.
+     */
+    private void persistGraph(String conversationId, String rawRequest, String report, String traceId) {
+        try {
+            List<Message> messages = List.of(
+                    new UserMessage(rawRequest),
+                    new AssistantMessage(report));
+            chatMemory.save(conversationId, messages, traceId,
+                    modelRouter.resolveModelName(null), "graph");
+            log.info("[traceId={}] Graph 规划已落库: conversationId={}", traceId, conversationId);
+        } catch (Exception e) {
+            log.warn("[traceId={}] [GraphStreamRunner] Graph 落库失败: {}", traceId, e.getMessage());
         }
     }
 
