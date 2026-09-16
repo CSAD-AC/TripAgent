@@ -13,11 +13,9 @@ import reactor.core.publisher.Mono;
 import uno.zhuchen.agent.common.Result;
 import uno.zhuchen.agent.domain.dto.KnowledgeUploadRequest;
 import uno.zhuchen.agent.domain.dto.MessageLikeRequest;
+import uno.zhuchen.agent.domain.vo.UploadedDocVO;
 
 import jakarta.validation.Valid;
-
-import java.util.LinkedHashMap;
-import java.util.Map;
 
 /**
  * 消息点赞与知识自沉淀 REST — 用户点赞一条优质 assistant 回答, 触发其沉淀进知识库.
@@ -52,38 +50,35 @@ public class MessageController {
      *
      * @param messageId 消息主键(作为知识 sourceRef 溯源)
      * @param req       {conversationId, content, destination?}, 其中 content 为被点赞的 assistant 回答全文
-     * @return {docId, status} 或错误
+     * @return Result&lt;UploadedDocVO&gt;, 成功携带 {docId, status}; 下游异常返回友好错误
      */
     @PostMapping("/{id}/like")
-    public Mono<Result<Map<String, Object>>> likeAndPrecipitate(@PathVariable("id") String messageId,
-                                                                @Valid @RequestBody MessageLikeRequest req) {
-        String conversationId = req.getConversationId();
+    public Mono<Result<UploadedDocVO>> likeAndPrecipitate(@PathVariable("id") String messageId,
+                                                          @Valid @RequestBody MessageLikeRequest req) {
         String content = req.getContent();
-        String destination = req.getDestination();
         // 长度保护: 超大内容截断前段入库, 防止异常上传撑爆分块
         if (content.length() > MAX_PRECIP_CONTENT) {
             log.warn("点赞沉淀内容超长, 截断入库: messageId={}, len={}, cap={}",
                     messageId, content.length(), MAX_PRECIP_CONTENT);
             content = content.substring(0, MAX_PRECIP_CONTENT) + "…";
         }
-        log.info("消息点赞沉淀: messageId={}, conversationId={}, len={}", messageId, conversationId,
-                content.length());
+        log.info("消息点赞沉淀: messageId={}, conversationId={}, len={}", messageId,
+                req.getConversationId(), content.length());
 
         // 标题取回答前若干字符
         String title = content.length() > 60 ? content.substring(0, 60) + "…" : content;
         KnowledgeUploadRequest uploadReq = KnowledgeUploadRequest.builder()
                 .title(title).content(content)
                 .sourceType("self_precip").sourceRef(messageId)
-                .destination(destination).build();
+                .destination(req.getDestination()).build();
 
         return mcpClient.post().uri("/api/knowledge/documents")
                 .contentType(MediaType.APPLICATION_JSON).bodyValue(uploadReq)
-                .retrieve().bodyToMono(Map.class)
-                .map(resp -> {
-                    Map<String, Object> out = new LinkedHashMap<>();
-                    out.put("docId", resp.get("docId"));
-                    out.put("status", resp.getOrDefault("status", "pending"));
-                    return Result.success(out);
+                .retrieve().bodyToMono(UploadedDocVO.class)
+                .map(Result::success)
+                .onErrorResume(e -> {
+                    log.warn("点赞沉淀下游失败: messageId={}, error={}", messageId, e.getMessage());
+                    return Mono.just(Result.error(502, "知识库服务暂不可用, 请稍后重试"));
                 });
     }
 }
