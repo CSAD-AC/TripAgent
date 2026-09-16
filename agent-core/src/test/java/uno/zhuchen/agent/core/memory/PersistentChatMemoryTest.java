@@ -25,6 +25,7 @@ import uno.zhuchen.agent.persistence.mapper.MessageMapper;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -163,6 +164,41 @@ class PersistentChatMemoryTest {
         assertEquals("user", entities.get(0).getRole());
         assertEquals("tool", entities.get(1).getRole());
         assertEquals("amapWeather(北京 晴 25°C)", entities.get(1).getContent());
+    }
+
+    // ============= save: token 计费 =============
+
+    @Test
+    void save_shouldPersistTokenUsageIntoEntity() {
+        // given - AssistantMessage 携带官方 API usage 元数据(tokenUsage: prompt/completion/total)
+        String conversationId = "test-conv-token";
+        Map<String, Object> usage = Map.of(
+                "promptTokens", 120,
+                "completionTokens", 45,
+                "totalTokens", 165);
+        AssistantMessage assistant = AssistantMessage.builder()
+                .content("北京今天晴, 25°C")
+                .properties(Map.of("tokenUsage", usage))
+                .build();
+
+        // when - 5 参 save 携带模型名与模式
+        persistentChatMemory.save(conversationId, List.of(assistant), "token-trace",
+                "deepseek-v4-flash", "react");
+
+        // then - conversation 落 mode 与 model 元数据
+        verify(conversationMapper).insert(argThat((ConversationEntity conv) ->
+                "react".equals(conv.getMode())
+                        && "deepseek-v4-flash".equals(conv.getModel())));
+
+        // then - assistant 消息落 token 拆分到列(计费数据)
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<MessageEntity>> captor = ArgumentCaptor.forClass(List.class);
+        verify(messageMapper).insertBatch(captor.capture());
+        MessageEntity entity = captor.getValue().get(0);
+        assertEquals("deepseek-v4-flash", entity.getModel());
+        assertEquals(Integer.valueOf(165), entity.getTokenCount());
+        assertEquals(Integer.valueOf(120), entity.getPromptTokens());
+        assertEquals(Integer.valueOf(45), entity.getCompletionTokens());
     }
 
     // ============= load =============

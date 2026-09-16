@@ -216,8 +216,9 @@ public class ReactAgent {
             long duration = System.currentTimeMillis() - start;
 
             if (finalResponse != null) {
-                // 保存对话历史(traceId 落 message.trace_id 列支撑溯源)
-                chatMemory.save(state.getConversationId(), state.getNewMessages(), traceId);
+                // 保存对话历史(traceId 落 message.trace_id 列支撑溯源); 落模型名与模式元数据
+                chatMemory.save(state.getConversationId(), state.getNewMessages(), traceId,
+                        inv.modelName(), "react");
                 return ChatDTO.success(
                         state.getConversationId(), userInput,
                         finalResponse.getText(),
@@ -228,7 +229,8 @@ public class ReactAgent {
             }
 
             // 达到最大迭代次数仍未得出最终答案
-            chatMemory.save(state.getConversationId(), state.getNewMessages(), traceId);
+            chatMemory.save(state.getConversationId(), state.getNewMessages(), traceId,
+                    inv.modelName(), "react");
             String lastContent = !state.getMessages().isEmpty()
                     ? state.getMessages().get(state.getMessages().size() - 1).getText()
                     : "";
@@ -343,6 +345,8 @@ public class ReactAgent {
     private static final class RoundAccumulator {
         private final StringBuilder thoughtBuilder = new StringBuilder();
         private final Map<String, AssistantMessage.ToolCall> toolCallMap = new LinkedHashMap<>();
+        /** 本轮官方 token usage(取末段非空 usage), 供持久化为计费数据 */
+        private Map<String, Object> tokenUsage;
 
         /** 追加一个 chunk 的文本与 tool calls (按 id 后写覆盖, 同一调用跨 chunk 时保留最完整 arguments) */
         void append(AssistantMessage chunk) {
@@ -357,6 +361,14 @@ public class ReactAgent {
             }
         }
 
+        /** 累积本轮 token usage(流式末段 chunk 携带 usage) */
+        void attachUsage(org.springframework.ai.chat.model.ChatResponse resp) {
+            Map<String, Object> usage = ChatModel.tokenUsageOf(resp);
+            if (usage != null) {
+                this.tokenUsage = usage;
+            }
+        }
+
         /** 边界读取: 完整推理文本 */
         String thought() {
             return thoughtBuilder.toString();
@@ -365,6 +377,11 @@ public class ReactAgent {
         /** 边界读取: 工具调用不可变快照 */
         List<AssistantMessage.ToolCall> toolCalls() {
             return List.copyOf(toolCallMap.values());
+        }
+
+        /** 边界读取: 本轮 token usage(可能为 null) */
+        Map<String, Object> tokenUsage() {
+            return tokenUsage;
         }
     }
 
@@ -411,6 +428,7 @@ public class ReactAgent {
                     .handle((resp, sink) -> {
                         AssistantMessage msg = resp.getResult().getOutput();
                         acc.append(msg);
+                        acc.attachUsage(resp);
                         String text = msg.getText();
                         if (text != null && !text.isEmpty()) {
                             sink.next(StreamChunk.thinkingToken(text,
@@ -422,12 +440,12 @@ public class ReactAgent {
             // Mono.fromSupplier 保证 supplier 仅执行一次, 避免 Flux.defer + 递归订阅的副作用重放
             Flux<StreamChunk> continuationStream = Mono.fromSupplier(() ->
                             proceedAfterReasoning(state, tools, acc.thought(), acc.toolCalls(),
-                                    traceId, iterNum, iteration, start, superMode))
+                                    traceId, inv.modelName(), acc.tokenUsage(), iterNum, iteration, start, superMode))
                     .subscribeOn(Schedulers.boundedElastic())
                     .flatMapMany(flux -> flux);
 
             return Flux.concat(thinkingStream, continuationStream)
-                    .onErrorResume(e -> saveAndEmitError(state, traceId, e, start));
+                    .onErrorResume(e -> saveAndEmitError(state, traceId, inv.modelName(), e, start));
         });
     }
 
@@ -436,15 +454,16 @@ public class ReactAgent {
      */
     private Flux<StreamChunk> proceedAfterReasoning(AgentState state, ToolCallback[] tools,
                                                        String thought, List<AssistantMessage.ToolCall> toolCalls,
-                                                       String traceId, int iterNum,
-                                                       int iteration, long start, boolean superMode) {
+                                                       String traceId, String modelName, Map<String, Object> tokenUsage,
+                                                       int iterNum, int iteration, long start, boolean superMode) {
         if (toolCalls.isEmpty()) {
             // 无工具调用 → 最终答案
             AssistantMessage response = AssistantMessage.builder()
                     .content(thought)
+                    .properties(usageProps(tokenUsage))
                     .build();
             state.addReasoningResult(response);
-            chatMemory.save(state.getConversationId(), state.getNewMessages(), traceId);
+            chatMemory.save(state.getConversationId(), state.getNewMessages(), traceId, modelName, "react");
             log.debug("[traceId={}] 第 {} 轮无工具调用, 得到最终答案", traceId, iterNum);
             return Flux.just(StreamChunk.final_(state.getConversationId(), thought,
                     System.currentTimeMillis() - start));
@@ -454,10 +473,19 @@ public class ReactAgent {
         state.addReasoningResult(AssistantMessage.builder()
                 .content(thought)
                 .toolCalls(toolCalls)
+                .properties(usageProps(tokenUsage))
                 .build());
 
         return executeToolsAndContinue(state, tools, toolCalls,
                 traceId, iterNum, iteration, start, superMode);
+    }
+
+    /** 把 token usage 装进 assistant 消息 properties(计费数据随历史落库) */
+    private static Map<String, Object> usageProps(Map<String, Object> tokenUsage) {
+        if (tokenUsage == null || tokenUsage.isEmpty()) {
+            return Map.of();
+        }
+        return Map.of(ChatModel.TOKEN_USAGE_METADATA_KEY, tokenUsage);
     }
 
     /**
@@ -622,11 +650,11 @@ public class ReactAgent {
      * <p>原代码散落在正常路径与 onErrorResume 两处的 chatMemory.save 合并到此处,
      * 消除状态更新分支重复.
      */
-    private Flux<StreamChunk> saveAndEmitError(AgentState state, String traceId,
+    private Flux<StreamChunk> saveAndEmitError(AgentState state, String traceId, String modelName,
                                                   Throwable e, long start) {
         log.error("[traceId={}] [{}] ReAct 流式处理异常",
                 traceId, state.getConversationId(), e);
-        chatMemory.save(state.getConversationId(), state.getNewMessages(), traceId);
+        chatMemory.save(state.getConversationId(), state.getNewMessages(), traceId, modelName, "react");
         return Flux.just(StreamChunk.error(state.getConversationId(),
                 "处理异常: " + e.getMessage(), System.currentTimeMillis() - start));
     }

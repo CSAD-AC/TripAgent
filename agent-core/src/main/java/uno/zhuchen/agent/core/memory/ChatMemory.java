@@ -18,14 +18,16 @@ public interface ChatMemory {
      * @param messages       消息列表
      * @param traceId        链路追踪 ID, 落库到 message.trace_id 列支撑溯源;
      *                       无链路追踪上下文时可传空字符串
+     * @param model          LLM 模型 API 名, 落库到 message.model 与 conversation.model(可为 null)
+     * @param mode           对话模式(react/graph/multi), 落库到 conversation.mode
      */
-    void save(String conversationId, List<Message> messages, String traceId);
+    void save(String conversationId, List<Message> messages, String traceId, String model, String mode);
 
     /**
-     * 保存指定会话的消息列表(无链路追踪上下文的便捷入口)
+     * 保存指定会话的消息列表(无链路追踪上下文的便捷入口, 模型/模式缺省)
      */
-    default void save(String conversationId, List<Message> messages) {
-        save(conversationId, messages, "");
+    default void save(String conversationId, List<Message> messages, String traceId) {
+        save(conversationId, messages, traceId, null, "react");
     }
 
     /**

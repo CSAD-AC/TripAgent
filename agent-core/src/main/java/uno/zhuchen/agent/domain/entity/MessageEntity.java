@@ -34,6 +34,14 @@ public class MessageEntity {
     @TableField("token_count")
     private Integer tokenCount;
 
+    /** 计费: 输入 token 数(官方 API usage.prompt_tokens) */
+    @TableField("prompt_tokens")
+    private Integer promptTokens;
+
+    /** 计费: 输出 token 数(官方 API usage.completion_tokens) */
+    @TableField("completion_tokens")
+    private Integer completionTokens;
+
     @TableField("trace_id")
     private String traceId;
 

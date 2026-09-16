@@ -7,6 +7,7 @@ import org.springframework.ai.tool.ToolCallback;
 import reactor.core.publisher.Flux;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * LLM 调用抽象 — 隔离具体模型实现
@@ -20,12 +21,15 @@ import java.util.List;
  */
 public interface ChatModel {
 
+    /** 从 Spring AI ChatResponse 元数据中提取 token 用量(官方 API usage 字段). */
+    String TOKEN_USAGE_METADATA_KEY = "tokenUsage";
+
     /**
      * 同步调用 LLM，返回模型回复
      *
      * @param messages  包含 system prompt 和消息历史的完整列表
      * @param modelName API 模型名; null 表示使用默认模型
-     * @return 模型回复（可能含 toolCalls）
+     * @return 模型回复（可能含 toolCalls, metadata 携带 tokenUsage）
      */
     AssistantMessage call(List<Message> messages, String modelName, ToolCallback... tools);
 
@@ -46,5 +50,24 @@ public interface ChatModel {
     /** 便捷入口: 不指定模型, 用默认 */
     default Flux<ChatResponse> stream(List<Message> messages, ToolCallback... tools) {
         return stream(messages, null, tools);
+    }
+
+    /**
+     * 从官方 API 的 usage 元数据提取 token 用量, 供持久化为计费数据.
+     *
+     * <p>来源: 供应商响应的 usage 字段(OpenAI 兼容: prompt_tokens / completion_tokens /
+     * total_tokens), Spring AI 暴露在 ChatResponseMetadata.getUsage() 上. 这是官方权威计数,
+     * 非本地推算. 返回 {promptTokens, completionTokens, totalTokens}, 无 usage 时返回 null.
+     */
+    static Map<String, Object> tokenUsageOf(ChatResponse response) {
+        if (response == null || response.getMetadata() == null
+                || response.getMetadata().getUsage() == null) {
+            return null;
+        }
+        var usage = response.getMetadata().getUsage();
+        return Map.of(
+                "promptTokens", usage.getPromptTokens(),
+                "completionTokens", usage.getCompletionTokens(),
+                "totalTokens", usage.getTotalTokens());
     }
 }

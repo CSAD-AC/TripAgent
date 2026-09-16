@@ -12,6 +12,7 @@ import uno.zhuchen.agent.domain.entity.MessageEntity;
 import uno.zhuchen.agent.domain.vo.ConversationDetailVO;
 import uno.zhuchen.agent.domain.vo.ConversationVO;
 import uno.zhuchen.agent.domain.vo.MessageVO;
+import uno.zhuchen.agent.persistence.cache.RedisMessageCache;
 import uno.zhuchen.agent.persistence.mapper.ConversationMapper;
 import uno.zhuchen.agent.persistence.mapper.MessageMapper;
 
@@ -27,11 +28,14 @@ public class ConversationService {
 
     private final ConversationMapper conversationMapper;
     private final MessageMapper messageMapper;
+    private final RedisMessageCache messageCache;
 
     public ConversationService(ConversationMapper conversationMapper,
-                                MessageMapper messageMapper) {
+                                MessageMapper messageMapper,
+                                RedisMessageCache messageCache) {
         this.conversationMapper = conversationMapper;
         this.messageMapper = messageMapper;
+        this.messageCache = messageCache;
     }
 
     /**
@@ -77,7 +81,7 @@ public class ConversationService {
     }
 
     /**
-     * 软删除对话及关联消息。
+     * 软删除对话及关联消息，并失效 Redis 会话缓存.
      */
     @Transactional
     public void deleteConversation(String conversationId) {
@@ -86,6 +90,8 @@ public class ConversationService {
                 .eq("conversation_id", conversationId));
         // 软删除对话
         conversationMapper.softDeleteById(conversationId);
+        // 失效 Redis 会话缓存: 否则已删会话仍可能命中缓存读到残留消息(M2 修复)
+        messageCache.clear(conversationId);
         log.info("Deleted conversation: {}", conversationId);
     }
 }
