@@ -17,6 +17,7 @@ import reactor.core.scheduler.Schedulers;
 import uno.zhuchen.agent.tools.rag.mapper.KnowledgeDocMapper;
 import uno.zhuchen.agent.tools.rag.model.KnowledgeDoc;
 import uno.zhuchen.agent.tools.rag.model.KnowledgeDocVO;
+import uno.zhuchen.agent.tools.rag.model.KnowledgeStats;
 import uno.zhuchen.agent.tools.rag.model.ReindexResult;
 import uno.zhuchen.agent.tools.rag.model.UploadDocResult;
 import uno.zhuchen.agent.tools.rag.service.RagRetrievalService;
@@ -146,7 +147,7 @@ public class KnowledgeDocController {
      * @return 统计 JSON
      */
     @GetMapping("/stats")
-    public Mono<String> stats() {
+    public Mono<KnowledgeStats> stats() {
         return Mono.fromCallable(statsService::stats).subscribeOn(Schedulers.boundedElastic());
     }
 
