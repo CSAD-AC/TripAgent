@@ -44,7 +44,7 @@ public class KnowledgeForwardController {
     /**
      * 上传文档入库(异步). 透传 mcp-server, 返回 {docId, status}.
      *
-     * @param body {title, content, destination?, theme?, sourceRef?, sourceType?}
+     * @param request {title, content, destination?, theme?, sourceRef?, sourceType?}
      * @return mcp-server 响应体 JSON
      */
     @PostMapping(value = "/documents", produces = MediaType.APPLICATION_JSON_VALUE)

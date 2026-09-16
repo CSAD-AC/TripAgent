@@ -23,7 +23,7 @@ spring:
       # RAG: DashScope Rerank (混合检索重排, 不可用时降级 degraded=rerank)
       rerank:
         options:
-          model: gte-rerank
+          model: qwen3.7-text-rerank
           top-n: ${RAG_RERANK_TOP_N:5}
 
     # RAG: Milvus 向量库 (启动前需先 docker compose up, 见 docker/milvus/)

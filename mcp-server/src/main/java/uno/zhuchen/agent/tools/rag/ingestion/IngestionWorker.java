@@ -1,5 +1,6 @@
 package uno.zhuchen.agent.tools.rag.ingestion;
 
+import com.baomidou.mybatisplus.core.toolkit.IdWorker;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.vectorstore.VectorStore;
@@ -73,6 +74,7 @@ public class IngestionWorker {
             List<String> subtasks = Chunker.chunk(content, chunkSize, overlap, minChunk);
             List<KnowledgeChunk> chunks = new ArrayList<>();
             List<Document> documents = new ArrayList<>();
+            List<String> chunkIds = new ArrayList<>();
             int seq = 0;
             for (String text : subtasks) {
                 String chunkContent = text.trim();
@@ -80,6 +82,8 @@ public class IngestionWorker {
                     continue;
                 }
                 KnowledgeChunk chunk = new KnowledgeChunk();
+                // 预分配主键(与 Milvus 向量主键一致), 供批量插入; 等价于插入时 MP ASSIGN_UUID
+                chunk.setId(IdWorker.getIdStr());
                 chunk.setDocId(docId);
                 chunk.setSeq(seq);
                 chunk.setContent(chunkContent);
@@ -87,8 +91,8 @@ public class IngestionWorker {
                 chunk.setDestination(destination);
                 chunk.setTheme(theme);
                 chunk.setEmbeddingStatus("pending");
-                chunkMapper.insert(chunk);
                 chunks.add(chunk);
+                chunkIds.add(chunk.getId());
 
                 Map<String, Object> metadata = new HashMap<>();
                 metadata.put("docId", docId);
@@ -101,14 +105,19 @@ public class IngestionWorker {
                 seq++;
             }
 
+            // 批量落库分块(一次往返), 避免大文档数百条分块逐条 insert 的往返放大
+            if (!chunks.isEmpty()) {
+                chunkMapper.batchInsert(chunks);
+            }
+
             // 分批向量化写入 Milvus
             for (int i = 0; i < documents.size(); i += EMBED_BATCH_SIZE) {
                 List<Document> batch = documents.subList(i, Math.min(i + EMBED_BATCH_SIZE, documents.size()));
                 vectorStore.add(batch);
             }
-            for (KnowledgeChunk chunk : chunks) {
-                chunk.setEmbeddingStatus("indexed");
-                chunkMapper.updateById(chunk);
+            // 批量回写向量化状态 indexed
+            if (!chunkIds.isEmpty()) {
+                chunkMapper.batchMarkEmbedded(chunkIds);
             }
             doc.setChunkCount(chunks.size());
             doc.setStatus("indexed");

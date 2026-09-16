@@ -56,6 +56,9 @@ public class HybridRetrievalService {
     /** L1 检索缓存 TTL(ms): 知识库内容相对静态, 短缓存即可复合同一 query 复用 */
     private static final long CACHE_TTL_MS = 60_000L;
 
+    /** L1 缓存最大条目数(超限先清过期, 仍超则逐出一个活条目, 保证有界防内存泄漏) */
+    private static final int CACHE_MAX_ENTRIES = 1000;
+
     private final VectorStore vectorStore;
     private final KnowledgeChunkMapper chunkMapper;
     private final RerankService rerankService;
@@ -147,9 +150,27 @@ public class HybridRetrievalService {
         log.info("混合检索成功: query={}, destination={}, final={}, degraded={}, tookMs={}",
                 query, destination, results.size(), degraded, System.currentTimeMillis() - start);
 
-        // L1 写缓存(含空结果, 防止空结果反复穿透)
-        cache.put(cacheKey, new Object[]{toJson(resp), System.currentTimeMillis() + CACHE_TTL_MS});
+        // L1 写缓存(含空结果, 防止空结果反复穿透); 先做容量/过期治理避免无界增长
+        writeCache(cacheKey, resp);
         return resp;
+    }
+
+    /**
+     * 写 L1 缓存并治理容量, 保证 map 大小有界.
+     *
+     * <p>cache 的条目只在被再次命中的 set 才被惰性清理, 若无容量约束会无限增长;
+     * 故在写入前: ① 若已达上限先扫一次过期条目移除; ② 仍超上限(条目全存活)则逐出
+     * 任意一个键兜底, 确保条目数始终收敛于 {@link #CACHE_MAX_ENTRIES}.
+     */
+    private void writeCache(String cacheKey, RetrievalResponse resp) {
+        if (cache.size() >= CACHE_MAX_ENTRIES) {
+            long now = System.currentTimeMillis();
+            cache.entrySet().removeIf(e -> now >= (long) e.getValue()[1]);
+        }
+        if (cache.size() >= CACHE_MAX_ENTRIES && !cache.containsKey(cacheKey)) {
+            cache.keySet().stream().findFirst().ifPresent(cache::remove);
+        }
+        cache.put(cacheKey, new Object[]{toJson(resp), System.currentTimeMillis() + CACHE_TTL_MS});
     }
 
     /**
@@ -258,8 +279,11 @@ public class HybridRetrievalService {
                     .query(query)
                     .topK(RECALL_TOP_K)
                     .similarityThreshold(0.0);
-            if (destination != null && !destination.isBlank()) {
-                builder.filterExpression("destination == '" + destination.trim().replace("'", "") + "'");
+            // 目的地过滤: 过滤值先规范化(剔除引号/反斜杠等可能污染表达式或注入的字符),
+            // 规范化后为空则不设过滤(退化为全库), 避免拼出非法/危险的 filterExpression
+            String filterValue = filterValue(destination);
+            if (!filterValue.isEmpty()) {
+                builder.filterExpression("destination == '" + filterValue + "'");
             }
             return vectorStore.similaritySearch(builder.build());
         } catch (Exception e) {
@@ -308,6 +332,24 @@ public class HybridRetrievalService {
     private static String metaStr(Document doc, String key, String def) {
         Object v = doc.getMetadata().get(key);
         return v == null ? def : v.toString();
+    }
+
+    /**
+     * 规范化 Milvus filterExpression 的字符串字面量值.
+     *
+     * <p>目的地等过滤值会拼进 {@code destination == '...'} 表达式, 若含单引号/反斜杠等
+     * 字符会破坏表达式语义或构成注入. 规范化: 去首尾空白, 剔除非"单词/中文/连词"的安全集
+     * 之外字符(含引号与反斜杠), 彻底杜绝拼出的非法表达式.
+     *
+     * @param raw 原始过滤值(可为 null)
+     * @return 规范化后的安全字符串; 空/全不合法字符时返回空串(调用方据此跳过过滤)
+     */
+    private static String filterValue(String raw) {
+        if (raw == null) {
+            return "";
+        }
+        // 保留中英文、数字、常见地名连字符与分隔点, 剔除引号/反斜杠/空白等危险字符
+        return raw.trim().replaceAll("[^\\p{L}\\p{N}\\s·\\-——()（）]", "").trim();
     }
 
     /** 由目的地与主题构造 metadata(用于关键词路重建的 Document) */
