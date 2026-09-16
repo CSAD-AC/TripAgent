@@ -2,6 +2,7 @@ package uno.zhuchen.agent.tools.rag.ingestion;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import lombok.extern.slf4j.Slf4j;
+import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -18,6 +19,7 @@ import uno.zhuchen.agent.tools.rag.mapper.KnowledgeDocMapper;
 import uno.zhuchen.agent.tools.rag.model.KnowledgeDoc;
 import uno.zhuchen.agent.tools.rag.model.KnowledgeDocVO;
 import uno.zhuchen.agent.tools.rag.model.KnowledgeStats;
+import uno.zhuchen.agent.tools.rag.model.KnowledgeUploadRequest;
 import uno.zhuchen.agent.tools.rag.model.ReindexResult;
 import uno.zhuchen.agent.tools.rag.model.UploadDocResult;
 import uno.zhuchen.agent.tools.rag.service.RagRetrievalService;
@@ -65,18 +67,11 @@ public class KnowledgeDocController {
      * @return {docId}
      */
     @PostMapping
-    public Mono<UploadDocResult> upload(@RequestBody Map<String, Object> body) {
+    public Mono<UploadDocResult> upload(@Valid @RequestBody KnowledgeUploadRequest req) {
         return Mono.fromCallable(() -> {
-            String title = str(body.get("title"));
-            String content = str(body.get("content"));
-            String destination = str(body.get("destination"));
-            String theme = str(body.get("theme"));
-            String sourceRef = str(body.get("sourceRef"));
-            String sourceType = str(body.get("sourceType"));
-            if (title == null || title.isBlank() || content == null || content.isBlank()) {
-                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "title 与 content 必填");
-            }
-            String docId = ingestionService.submit(title, content, sourceType, sourceRef, destination, theme);
+            String docId = ingestionService.submit(
+                    req.getTitle(), req.getContent(), req.getSourceType(), req.getSourceRef(),
+                    req.getDestination(), req.getTheme());
             return new UploadDocResult(docId, "pending");
         }).subscribeOn(Schedulers.boundedElastic());
     }
@@ -182,10 +177,5 @@ public class KnowledgeDocController {
                 doc.getChunkCount(),
                 doc.getErrorMsg(),
                 doc.getCreatedAt() == null ? null : doc.getCreatedAt().toString());
-    }
-
-    /** Map 取值容错转字符串 */
-    private static String str(Object v) {
-        return v == null ? null : v.toString();
     }
 }

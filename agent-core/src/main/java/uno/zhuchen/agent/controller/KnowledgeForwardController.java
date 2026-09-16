@@ -1,5 +1,6 @@
 package uno.zhuchen.agent.controller;
 
+import jakarta.validation.Valid;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
@@ -13,6 +14,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Mono;
+import uno.zhuchen.agent.domain.dto.KnowledgeUploadRequest;
 
 /**
  * 知识库管理转发层 — 对外统一暴露 8080 入口, 透传到 mcp-server(:8081) 的文档管理 REST.
@@ -46,10 +48,10 @@ public class KnowledgeForwardController {
      * @return mcp-server 响应体 JSON
      */
     @PostMapping(value = "/documents", produces = MediaType.APPLICATION_JSON_VALUE)
-    public Mono<String> upload(@RequestBody String body) {
-        log.info("知识库转发: 上传文档");
+    public Mono<String> upload(@Valid @RequestBody KnowledgeUploadRequest request) {
+        log.info("知识库转发: 上传文档 title={}", request.getTitle());
         return mcpClient.post().uri("/api/knowledge/documents").contentType(MediaType.APPLICATION_JSON)
-                .bodyValue(body).retrieve().bodyToMono(String.class);
+                .bodyValue(request).retrieve().bodyToMono(String.class);
     }
 
     /**
