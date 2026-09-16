@@ -106,9 +106,9 @@ public class HybridRetrievalService {
      * @param query       检索问题, 如 "北京秋季适合亲子的一日游路线"
      * @param destination 目的地过滤, 如 "北京"; 为 null 时不过滤
      * @param topK        返回条数, 为 null 时取默认 5
-     * @return JSON 文本: {results: [...], degraded, tookMs, hint}
+     * @return 强类型检索响应 {@link RetrievalResponse}(由调用方序列化)
      */
-    public String retrieve(String query, String destination, Integer topK) {
+    public RetrievalResponse retrieve(String query, String destination, Integer topK) {
         long start = System.currentTimeMillis();
         int limit = (topK == null || topK <= 0) ? DEFAULT_TOP_K : Math.min(topK, RECALL_TOP_K);
 
@@ -118,7 +118,12 @@ public class HybridRetrievalService {
         if (cached != null && System.currentTimeMillis() < (long) cached[1]) {
             log.info("L1 缓存命中: query={}, destination={}, limit={}, tookMs={}",
                     query, destination, limit, System.currentTimeMillis() - start);
-            return (String) cached[0];
+            try {
+                // 缓存存的是 JSON, 反序列化为强类型返回(调用方无需解析字符串)
+                return objectMapper.readValue((String) cached[0], RetrievalResponse.class);
+            } catch (Exception e) {
+                log.warn("L1 缓存反序列化失败, 走完整检索: key={}, error={}", cacheKey, e.getMessage());
+            }
         }
         // L1 缓存命中与否之外, 统一用并发安全集合收集 degrade 标记(双路 + 主线程并发写)
         List<String> degraded = new CopyOnWriteArrayList<>();
@@ -143,9 +148,8 @@ public class HybridRetrievalService {
                 query, destination, results.size(), degraded, System.currentTimeMillis() - start);
 
         // L1 写缓存(含空结果, 防止空结果反复穿透)
-        String json = toJson(resp);
-        cache.put(cacheKey, new Object[]{json, System.currentTimeMillis() + CACHE_TTL_MS});
-        return json;
+        cache.put(cacheKey, new Object[]{toJson(resp), System.currentTimeMillis() + CACHE_TTL_MS});
+        return resp;
     }
 
     /**
