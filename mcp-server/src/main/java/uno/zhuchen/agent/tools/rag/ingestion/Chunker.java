@@ -42,13 +42,38 @@ public final class Chunker {
             return List.of();
         }
         List<String> sections = splitByHeading(clean);
-        boolean hasHeading = sections.size() > 1 || !sections.isEmpty() && sections.get(0) != null;
-        // 仅当确实切出多个标题块时才按标题分块; 否则整体滑窗
-        if (hasHeading && sections.size() > 1) {
-            return chunkSections(sections, chunkSize, overlap, minChunk);
+        // 含 markdown 标题(含单一标题)时按标题语义分块, 避免滑窗把标题行切碎丢失语义
+        boolean hasHeading = sections.stream().anyMatch(s -> s != null && s.startsWith("#"));
+        List<String> result;
+        if (hasHeading) {
+            result = chunkSections(sections, chunkSize, overlap, minChunk);
+        } else {
+            // 无标题纯文本: 整体滑窗
+            result = slidingWindow(clean, chunkSize, overlap);
         }
-        // 无标题或单个标题: 全文滑窗
-        return slidingWindow(clean, chunkSize, overlap);
+        // minChunk 生效: 过短块并入前一块, 控制碎片
+        return mergeTiny(result, minChunk);
+    }
+
+    /**
+     * 合并过短分块: 长度 {@code < minChunk} 且非首块的并入其前一块(自后向前).
+     *
+     * @param chunks   分块列表
+     * @param minChunk 最小块阈值(<=1 时视为不合并)
+     * @return 合并后分块列表
+     */
+    private static List<String> mergeTiny(List<String> chunks, int minChunk) {
+        if (chunks.isEmpty() || minChunk <= 1) {
+            return chunks;
+        }
+        List<String> out = new ArrayList<>(chunks);
+        for (int i = out.size() - 1; i >= 1; i--) {
+            if (out.get(i).length() < minChunk) {
+                out.set(i - 1, out.get(i - 1) + "\n" + out.get(i));
+                out.remove(i);
+            }
+        }
+        return out;
     }
 
     /**

@@ -2,6 +2,7 @@ package uno.zhuchen.agent.tools.rag.ingestion;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -10,6 +11,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.server.ResponseStatusException;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 import uno.zhuchen.agent.tools.rag.mapper.KnowledgeDocMapper;
@@ -62,7 +64,7 @@ public class KnowledgeDocController {
      * @return {docId}
      */
     @PostMapping
-    public Mono<Object> upload(@RequestBody Map<String, Object> body) {
+    public Mono<UploadDocResult> upload(@RequestBody Map<String, Object> body) {
         return Mono.fromCallable(() -> {
             String title = str(body.get("title"));
             String content = str(body.get("content"));
@@ -71,7 +73,7 @@ public class KnowledgeDocController {
             String sourceRef = str(body.get("sourceRef"));
             String sourceType = str(body.get("sourceType"));
             if (title == null || title.isBlank() || content == null || content.isBlank()) {
-                return err(400, "title 与 content 必填");
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "title 与 content 必填");
             }
             String docId = ingestionService.submit(title, content, sourceType, sourceRef, destination, theme);
             return new UploadDocResult(docId, "pending");
@@ -109,10 +111,13 @@ public class KnowledgeDocController {
      * @return 文档实体或 {code:404}
      */
     @GetMapping("/{id}")
-    public Mono<Object> detail(@PathVariable String id) {
+    public Mono<KnowledgeDocVO> detail(@PathVariable String id) {
         return Mono.fromCallable(() -> {
             KnowledgeDoc doc = docMapper.selectById(id);
-            return doc != null ? docToVO(doc) : err(404, "文档不存在");
+            if (doc == null) {
+                throw new ResponseStatusException(HttpStatus.NOT_FOUND, "文档不存在");
+            }
+            return docToVO(doc);
         }).subscribeOn(Schedulers.boundedElastic());
     }
 
@@ -127,26 +132,12 @@ public class KnowledgeDocController {
         return Mono.fromCallable(() -> {
             boolean ok = ingestionService.delete(id);
             if (!ok) {
-                return err(404, "文档不存在");
+                throw new ResponseStatusException(HttpStatus.NOT_FOUND, "文档不存在");
             }
             Map<String, Object> resp = new LinkedHashMap<>();
             resp.put("success", true);
             return resp;
         }).subscribeOn(Schedulers.boundedElastic());
-    }
-
-    /**
-     * 统一错误响应体.
-     *
-     * @param code    业务码
-     * @param message 错误信息
-     * @return 错误 Map
-     */
-    private static Map<String, Object> err(int code, String message) {
-        Map<String, Object> m = new LinkedHashMap<>();
-        m.put("code", code);
-        m.put("message", message);
-        return m;
     }
 
     /**

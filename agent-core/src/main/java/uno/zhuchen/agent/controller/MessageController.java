@@ -27,6 +27,9 @@ import java.util.Map;
 @RequestMapping("/api/messages")
 public class MessageController {
 
+    /** 单次点赞沉淀内容长度上限(字符数), 超长截断前段入库 */
+    private static final int MAX_PRECIP_CONTENT = 20_000;
+
     private final WebClient mcpClient;
 
     /**
@@ -54,6 +57,12 @@ public class MessageController {
         String destination = str(body.get("destination"));
         if (content == null || content.isBlank()) {
             return Mono.just(Result.error(400, "content 不能为空(需为被点赞的 assistant 回答全文)"));
+        }
+        // 长度保护: 超大内容截断前段入库, 防止异常上传撑爆分块
+        if (content.length() > MAX_PRECIP_CONTENT) {
+            log.warn("点赞沉淀内容超长, 截断入库: messageId={}, len={}, cap={}",
+                    messageId, content.length(), MAX_PRECIP_CONTENT);
+            content = content.substring(0, MAX_PRECIP_CONTENT) + "…";
         }
         log.info("消息点赞沉淀: messageId={}, conversationId={}, len={}", messageId, conversationId,
                 content.length());
