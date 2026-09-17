@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type {
+  KnowledgeChunk,
   KnowledgeDoc,
   KnowledgeDocPage,
+  KnowledgeStats,
   ReindexResult,
   UploadDocResult,
 } from '../types'
@@ -63,9 +65,31 @@ export function useKnowledge() {
   }, [])
 
   /** 首次挂载拉取一次列表 */
+
+  // ── 知识库统计(透明度: 文档/分块总数, 状态与来源分布) ──
+  const [stats, setStats] = useState<KnowledgeStats | null>(null)
+  const [statsLoading, setStatsLoading] = useState(false)
+
+  /** 拉取知识库统计 */
+  const loadStats = useCallback(async (): Promise<void> => {
+    setStatsLoading(true)
+    try {
+      const data = await unwrap<KnowledgeStats>(
+        await fetch(`${API_BASE}/documents/stats`)
+      )
+      if (mountedRef.current) setStats(data)
+    } catch (err) {
+      console.error('[useKnowledge] loadStats error:', err)
+    } finally {
+      if (mountedRef.current) setStatsLoading(false)
+    }
+  }, [])
+
+  /** 首次挂载拉取列表与统计 */
   useEffect(() => {
     list()
-  }, [list])
+    loadStats()
+  }, [list, loadStats])
 
   // ── 上传文档 ──
   const upload = useCallback(
@@ -77,15 +101,20 @@ export function useKnowledge() {
           body: JSON.stringify(payload),
         })
       )
-      // 上传成功后刷新列表(新文档可能处于 pending,由后端异步索引)
-      await list()
+      // 上传成功后刷新列表与统计(新文档可能处于 pending,由后端异步索引)
+      await Promise.all([list(), loadStats()])
     },
-    [list]
+    [list, loadStats]
   )
 
   // ── 文档详情 ──
   const get = useCallback(async (id: string): Promise<KnowledgeDoc> => {
     return unwrap<KnowledgeDoc>(await fetch(`${API_BASE}/documents/${id}`))
+  }, [])
+
+  // ── 文档分块(阅读文档内容) ──
+  const getChunks = useCallback(async (id: string): Promise<KnowledgeChunk[]> => {
+    return unwrap<KnowledgeChunk[]>(await fetch(`${API_BASE}/documents/${id}/chunks`))
   }, [])
 
   // ── 删除文档 ──
@@ -104,10 +133,10 @@ export function useKnowledge() {
     const data = await unwrap<ReindexResult>(
       await fetch(`${API_BASE}/reindex`, { method: 'POST' })
     )
-    // 重建后索引状态可能变化,刷新列表
-    await list()
+    // 重建后索引状态可能变化,刷新列表与统计
+    await Promise.all([list(), loadStats()])
     return data
-  }, [list])
+  }, [list, loadStats])
 
-  return { docs, total, loading, list, upload, get, remove, reindex }
+  return { docs, total, loading, stats, statsLoading, list, loadStats, upload, get, getChunks, remove, reindex }
 }

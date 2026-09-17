@@ -2,7 +2,6 @@ package uno.zhuchen.agent.controller;
 
 import jakarta.validation.Valid;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -14,6 +13,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Mono;
+import uno.zhuchen.agent.config.McpClientProperties;
 import uno.zhuchen.agent.domain.dto.KnowledgeUploadRequest;
 
 /**
@@ -33,12 +33,12 @@ public class KnowledgeForwardController {
     private final WebClient mcpClient;
 
     /**
-     * 构造注入 mcp-server 基础地址并建立转发 WebClient.
+     * 构造注入 mcp-server 连接配置并建立转发 WebClient.
      *
-     * @param mcpServerUrl mcp-server 地址, 默认 http://localhost:8081
+     * @param mcp mcp-server 连接配置(取 server-url 作为基础地址)
      */
-    public KnowledgeForwardController(@Value("${mcp.server-url:http://localhost:8081}") String mcpServerUrl) {
-        this.mcpClient = WebClient.builder().baseUrl(mcpServerUrl).build();
+    public KnowledgeForwardController(McpClientProperties mcp) {
+        this.mcpClient = WebClient.builder().baseUrl(mcp.getServerUrl()).build();
     }
 
     /**
@@ -80,6 +80,19 @@ public class KnowledgeForwardController {
     public Mono<String> detail(@PathVariable String id) {
         log.info("知识库转发: 文档详情 id={}", id);
         return mcpClient.get().uri("/api/knowledge/documents/{id}", id)
+                .retrieve().bodyToMono(String.class);
+    }
+
+    /**
+     * 文档分块列表(阅读文档内容). 透传 mcp-server.
+     *
+     * @param id 文档主键
+     * @return 分块列表 JSON
+     */
+    @GetMapping(value = "/documents/{id}/chunks", produces = MediaType.APPLICATION_JSON_VALUE)
+    public Mono<String> chunks(@PathVariable String id) {
+        log.info("知识库转发: 文档分块 id={}", id);
+        return mcpClient.get().uri("/api/knowledge/documents/{id}/chunks", id)
                 .retrieve().bodyToMono(String.class);
     }
 

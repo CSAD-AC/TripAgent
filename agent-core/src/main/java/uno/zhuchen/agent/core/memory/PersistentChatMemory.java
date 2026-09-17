@@ -68,17 +68,20 @@ public class PersistentChatMemory implements ChatMemory {
     private final ConversationMapper conversationMapper;
     private final RedisMessageCache messageCache;
     private final ApplicationEventPublisher eventPublisher;
+    private final HistoryCompactor compactor;
     private final long cacheTtlSeconds;
 
     public PersistentChatMemory(MessageMapper messageMapper,
                                  ConversationMapper conversationMapper,
                                  RedisMessageCache messageCache,
                                  ApplicationEventPublisher eventPublisher,
+                                 HistoryCompactor compactor,
                                  @Value("${app.cache.session-ttl:1800}") long cacheTtlSeconds) {
         this.messageMapper = messageMapper;
         this.conversationMapper = conversationMapper;
         this.messageCache = messageCache;
         this.eventPublisher = eventPublisher;
+        this.compactor = compactor;
         this.cacheTtlSeconds = cacheTtlSeconds;
     }
 
@@ -104,7 +107,15 @@ public class PersistentChatMemory implements ChatMemory {
         // 4. 原子自增消息计数
         conversationMapper.incrementMessageCount(conversationId, entities.size());
 
-        // 5. 发事务提交后事件,由 RedisMessageCache 监听器回填缓存
+        // 5. 若超窗口, 异步触发历史压缩(LLM 摘要最旧段; 配置关闭时跳过)
+        if (compactor.enabled()) {
+            Integer count = conversationMapper.selectMessageCount(conversationId);
+            if (count != null && count > compactor.windowSize()) {
+                compactor.condenseAsync(conversationId);
+            }
+        }
+
+        // 6. 发事务提交后事件,由 RedisMessageCache 监听器回填缓存
         //    载荷用 DTO 而非 Message,让缓存层不依赖 Spring AI 类型
         eventPublisher.publishEvent(
                 new SessionMessageSavedEvent(this, conversationId, toDtos(messages)));
@@ -115,25 +126,21 @@ public class PersistentChatMemory implements ChatMemory {
         Objects.requireNonNull(conversationId, "conversationId");
 
         // 1. 缓存优先
+        List<Message> messages;
         var cached = messageCache.get(conversationId);
-        if (cached.isPresent()) {
-            List<Message> messages = fromDtos(cached.get());
+        if (cached.isPresent() && !cached.get().isEmpty()) {
+            messages = fromDtos(cached.get());
+        } else {
+            // 2. 缓存未命中/Redis 不可用 -> 查 MySQL
+            List<MessageEntity> entities = messageMapper.listByConversation(conversationId);
+            messages = fromEntities(entities);
+            // 3. 非空回填缓存(RedisMessageCache.put 内部已降级)
             if (!messages.isEmpty()) {
-                return messages;
+                messageCache.put(conversationId, toDtos(messages), Duration.ofSeconds(cacheTtlSeconds));
             }
-            // 防御性:空列表视为未命中
         }
-
-        // 2. 缓存未命中/Redis 不可用 -> 查 MySQL
-        List<MessageEntity> entities = messageMapper.listByConversation(conversationId);
-        List<Message> messages = fromEntities(entities);
-
-        // 3. 非空回填缓存(RedisMessageCache.put 内部已降级)
-        if (!messages.isEmpty()) {
-            messageCache.put(conversationId, toDtos(messages), Duration.ofSeconds(cacheTtlSeconds));
-        }
-
-        return messages;
+        // 4. 滑动窗口: 超窗口则截断并前缀注入 LLM 摘要(配置关闭时为原样返回)
+        return applyWindow(conversationId, messages);
     }
 
     @Override
@@ -157,6 +164,30 @@ public class PersistentChatMemory implements ChatMemory {
     }
 
     // ============ 会话管理 ============
+
+    /**
+     * 滑动窗口: 超窗口时截断为最近 N 条并前缀注入 LLM 摘要.
+     *
+     * <p>边界安全: 窗口起始位置回退到非 tool 消息, 避免把 assistant(tool_calls)
+     * 与其 tool 响应切断(DeepSeek 对 tool 消息成对有序敏感). 摘要为空时窗口照常截断.
+     * 压缩由 {@link HistoryCompactor} 异步执行, 此处只做读侧裁剪.
+     */
+    private List<Message> applyWindow(String conversationId, List<Message> messages) {
+        if (!compactor.enabled() || messages.size() <= compactor.windowSize()) {
+            return messages;
+        }
+        int start = Math.max(0, messages.size() - compactor.windowSize());
+        while (start > 0 && messages.get(start) instanceof ToolResponseMessage) {
+            start--;
+        }
+        List<Message> tail = new ArrayList<>(messages.subList(start, messages.size()));
+        String summary = conversationMapper.selectSummary(conversationId);
+        if (summary != null && !summary.isBlank()) {
+            tail.add(0, new SystemMessage(summary));
+        }
+        compactor.condenseAsync(conversationId); // 触发异步 LLM 摘要, 非阻塞
+        return tail;
+    }
 
     private void ensureConversationExists(String conversationId, List<Message> messages,
                                           String mode, String model) {

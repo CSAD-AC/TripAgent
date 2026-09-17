@@ -15,8 +15,11 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
+import uno.zhuchen.agent.tools.rag.mapper.KnowledgeChunkMapper;
 import uno.zhuchen.agent.tools.rag.mapper.KnowledgeDocMapper;
 import uno.zhuchen.agent.tools.rag.model.DeleteResultVO;
+import uno.zhuchen.agent.tools.rag.model.KnowledgeChunk;
+import uno.zhuchen.agent.tools.rag.model.KnowledgeChunkVO;
 import uno.zhuchen.agent.tools.rag.model.KnowledgeDoc;
 import uno.zhuchen.agent.tools.rag.model.KnowledgeDocPageVO;
 import uno.zhuchen.agent.tools.rag.model.KnowledgeDocVO;
@@ -43,18 +46,21 @@ import java.util.List;
 public class KnowledgeDocController {
 
     private final KnowledgeDocMapper docMapper;
+    private final KnowledgeChunkMapper chunkMapper;
     private final IngestionService ingestionService;
     private final RagRetrievalService statsService;
     private final ReindexService reindexService;
 
     /**
-     * 构造注入文档 mapper、入库服务、统计服务与重建服务.
+     * 构造注入文档/分块 mapper、入库服务、统计服务与重建服务.
      */
     public KnowledgeDocController(KnowledgeDocMapper docMapper,
+                                  KnowledgeChunkMapper chunkMapper,
                                   IngestionService ingestionService,
                                   RagRetrievalService statsService,
                                   ReindexService reindexService) {
         this.docMapper = docMapper;
+        this.chunkMapper = chunkMapper;
         this.ingestionService = ingestionService;
         this.statsService = statsService;
         this.reindexService = reindexService;
@@ -112,6 +118,30 @@ public class KnowledgeDocController {
                 throw new ResponseStatusException(HttpStatus.NOT_FOUND, "文档不存在");
             }
             return docToVO(doc);
+        }).subscribeOn(Schedulers.boundedElastic());
+    }
+
+    /**
+     * 文档分块列表(用于阅读文档内容).
+     *
+     * @param id 文档主键
+     * @return 分块列表(id/seq/content/destination/theme)
+     */
+    @GetMapping("/{id}/chunks")
+    public Mono<List<KnowledgeChunkVO>> chunks(@PathVariable String id) {
+        return Mono.fromCallable(() -> {
+            if (docMapper.selectById(id) == null) {
+                throw new ResponseStatusException(HttpStatus.NOT_FOUND, "文档不存在");
+            }
+            return chunkMapper.selectList(
+                            new LambdaQueryWrapper<KnowledgeChunk>()
+                                    .eq(KnowledgeChunk::getDocId, id)
+                                    .orderByAsc(KnowledgeChunk::getSeq))
+                    .stream()
+                    .map(c -> new KnowledgeChunkVO(
+                            c.getId(), c.getSeq(), c.getContent(),
+                            c.getDestination(), c.getTheme()))
+                    .toList();
         }).subscribeOn(Schedulers.boundedElastic());
     }
 

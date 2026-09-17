@@ -101,10 +101,11 @@ export default function App() {
         conversationId,
         selectedModelId || undefined,
         apiMode === 'react' ? superMode : false,
-        handleSessionInit
+        handleSessionInit,
+        fetchConversations // 流结束后刷新列表, 让新对话/消息数出现在侧边栏
       )
     },
-    [apiMode, conversationId, selectedModelId, superMode, handleSessionInit, sendMessage]
+    [apiMode, conversationId, selectedModelId, superMode, handleSessionInit, fetchConversations, sendMessage]
   )
 
   // ── 从侧边栏选择对话 ──
@@ -402,6 +403,7 @@ export default function App() {
                   streamContent={isLastAssistant ? streamContent : undefined}
                   streamIterations={isLastAssistant ? streamIterations : undefined}
                   conversationId={conversationId}
+                  showSettle={isLastAssistant && !isLoading}
                 />
               )
             })}

@@ -65,6 +65,8 @@ class PersistentChatMemoryTest {
     private RedisMessageCache messageCache;
     @Mock
     private ApplicationEventPublisher eventPublisher;
+    @Mock
+    private HistoryCompactor compactor;
 
     private PersistentChatMemory persistentChatMemory;
 
@@ -73,7 +75,9 @@ class PersistentChatMemoryTest {
     @BeforeEach
     void setUp() {
         persistentChatMemory = new PersistentChatMemory(
-                messageMapper, conversationMapper, messageCache, eventPublisher, CACHE_TTL_SECONDS);
+                messageMapper, conversationMapper, messageCache, eventPublisher, compactor, CACHE_TTL_SECONDS);
+        // 默认关闭压缩, 保持既有 load 行为
+        when(compactor.enabled()).thenReturn(false);
     }
 
     // ============= save =============
@@ -199,6 +203,37 @@ class PersistentChatMemoryTest {
         assertEquals(Integer.valueOf(165), entity.getTokenCount());
         assertEquals(Integer.valueOf(120), entity.getPromptTokens());
         assertEquals(Integer.valueOf(45), entity.getCompletionTokens());
+    }
+
+    // ============= load: 滑动窗口 =============
+
+    @Test
+    void load_whenOverWindow_shouldTrimAndInjectSummary() {
+        // given - 开启窗口(2), 缓存未命中, DB 返回 3 条, 已有摘要
+        String conversationId = "test-conv-win";
+        when(compactor.enabled()).thenReturn(true);
+        when(compactor.windowSize()).thenReturn(2);
+        when(messageCache.get(conversationId)).thenReturn(Optional.empty());
+        when(conversationMapper.selectSummary(conversationId)).thenReturn("旧约摘要");
+
+        MessageEntity u1 = new MessageEntity();
+        u1.setRole("user"); u1.setContent("一");
+        MessageEntity a2 = new MessageEntity();
+        a2.setRole("assistant"); a2.setContent("二");
+        MessageEntity u3 = new MessageEntity();
+        u3.setRole("user"); u3.setContent("三");
+        when(messageMapper.listByConversation(conversationId)).thenReturn(List.of(u1, a2, u3));
+
+        // when
+        List<Message> result = persistentChatMemory.load(conversationId);
+
+        // then - 保留最近 2 条, 前缀注入摘要(system), 并异步触发压缩
+        assertEquals(3, result.size());
+        assertEquals(MessageType.SYSTEM, result.get(0).getMessageType());
+        assertEquals("旧约摘要", result.get(0).getText());
+        assertEquals("二", result.get(1).getText());
+        assertEquals("三", result.get(2).getText());
+        verify(compactor).condenseAsync(conversationId);
     }
 
     // ============= load =============

@@ -37,6 +37,9 @@ public class ConversationEntity {
     @TableField("first_message")
     private String firstMessage;
 
+    /** 历史 LLM 摘要(滑动窗口压缩存根, 加载时前缀注入; NULL=未压缩) */
+    private String summary;
+
     @TableField(value = "created_at", fill = FieldFill.INSERT)
     private LocalDateTime createdAt;
 

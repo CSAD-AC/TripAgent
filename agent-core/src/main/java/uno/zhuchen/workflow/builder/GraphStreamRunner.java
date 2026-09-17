@@ -9,11 +9,14 @@ import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
+import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.Sinks;
 import reactor.core.scheduler.Schedulers;
+import uno.zhuchen.agent.config.McpClientProperties;
 import uno.zhuchen.agent.config.ModelRouter;
 import uno.zhuchen.agent.core.memory.ChatMemory;
 import uno.zhuchen.agent.domain.dto.StreamChunk;
@@ -64,13 +67,17 @@ public class GraphStreamRunner {
     private final TripPlanningGraphBuilder graphBuilder;
     private final ChatMemory chatMemory;
     private final ModelRouter modelRouter;
+    /** 指向 mcp-server, 用于 Graph 报告自动沉淀进知识库(graph_report) */
+    private final WebClient mcpClient;
 
     public GraphStreamRunner(TripPlanningGraphBuilder graphBuilder,
                              ChatMemory chatMemory,
-                             ModelRouter modelRouter) {
+                             ModelRouter modelRouter,
+                             McpClientProperties mcp) {
         this.graphBuilder = graphBuilder;
         this.chatMemory = chatMemory;
         this.modelRouter = modelRouter;
+        this.mcpClient = WebClient.builder().baseUrl(mcp.getServerUrl()).build();
     }
 
     /**
@@ -165,9 +172,10 @@ public class GraphStreamRunner {
                     })
                     .blockLast();
 
-            // Graph 正常结束: 先落库(可回看/续聊), 再发射最终报告事件(M1)
+            // Graph 正常结束: 先落库(可回看/续聊), 再沉淀到知识库, 最后发射最终报告事件(M1)
             String finalReport = extractReport(graph, config, traceId);
             persistGraph(conversationId, rawRequest, finalReport, traceId);
+            precipitateReport(conversationId, finalReport);
             safelyEmit(sink, StreamChunk.final_(conversationId, finalReport,
                     System.currentTimeMillis() - startMs));
 
@@ -373,6 +381,36 @@ public class GraphStreamRunner {
             log.info("[traceId={}] Graph 规划已落库: conversationId={}", traceId, conversationId);
         } catch (Exception e) {
             log.warn("[traceId={}] [GraphStreamRunner] Graph 落库失败: {}", traceId, e.getMessage());
+        }
+    }
+
+    /**
+     * 将 Graph 最终报告自动沉淀进知识库(sourceType=graph_report, sourceRef=conversationId).
+     *
+     * <p>打通"规划报告 → 知识库 → 被 knowledgeSearch 复用"闭环; 异步 best-effort,
+     * 失败仅记日志不阻断 Graph 主流程(与报告落库解耦).
+     */
+    private void precipitateReport(String conversationId, String report) {
+        if (report == null || report.isBlank()) {
+            return;
+        }
+        try {
+            String title = report.length() > 60 ? report.substring(0, 60) + "…" : report;
+            Map<String, Object> body = new HashMap<>();
+            body.put("title", title);
+            body.put("content", report);
+            body.put("sourceType", "graph_report");
+            body.put("sourceRef", conversationId);
+            mcpClient.post().uri("/api/knowledge/documents")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .bodyValue(body)
+                    .retrieve().bodyToMono(String.class)
+                    .subscribe(null,
+                            err -> log.warn("[GraphStreamRunner] Graph 报告沉淀失败: conversationId={}, error={}",
+                                    conversationId, err.getMessage()));
+        } catch (Exception e) {
+            log.warn("[GraphStreamRunner] Graph 报告沉淀异常: conversationId={}, error={}",
+                    conversationId, e.getMessage());
         }
     }
 

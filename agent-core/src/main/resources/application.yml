@@ -26,11 +26,20 @@ agent:
     max-iterations: 20
     timeout-seconds: 30
 
+# MCP 客户端连接: agent-core 经此基础地址调 mcp-server(:8081) 的 REST(知识库等)
+# 由 McpClientProperties(prefix=mcp) 绑定并启动校验(@Validated)
+mcp:
+  server-url: http://localhost:8081
+
 # 对话消息缓存 TTL(秒),作用在 RedisMessageCache@persistentChatMemory
 # 仅在生产 profile(非 dev/test)下生效,因为 InMemoryChatMemory 不依赖 Redis
 app:
   cache:
     session-ttl: 1800
+  # 对话历史滑动窗口压缩(生产标配): 保留最近 N 条完整消息, 超限时异步把最旧段
+  # LLM 摘要写入 conversation.summary 并在加载时前缀注入. 0 = 关闭(默认, 不压缩)
+  memory:
+    window-size: 0
   # 模型注册表: 列表顺序即前端展示顺序, 第一项为默认模型(未指定 modelId 时回退)
   # provider 与 ChatModel 实现的 bean 路由键对应(见 ModelRouter)
   models:

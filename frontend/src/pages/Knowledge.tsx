@@ -1,8 +1,8 @@
 import { useState } from 'react'
 import { cn } from '../lib/utils'
 import { useKnowledge } from '../hooks/useKnowledge'
-import { Upload, RefreshCw, Trash2, Loader2, Database, MapPin, Info } from 'lucide-react'
-import type { KnowledgeDoc } from '../types'
+import { Upload, RefreshCw, Trash2, Loader2, Database, MapPin, Info, FileText } from 'lucide-react'
+import type { KnowledgeChunk, KnowledgeDoc } from '../types'
 
 /** 来源类型中文映射: 后端 sourceType 枚举 → 界面展示文案 */
 const SOURCE_TYPE_LABEL: Record<string, string> = {
@@ -11,6 +11,28 @@ const SOURCE_TYPE_LABEL: Record<string, string> = {
   graph_report: '规划报告',
   seed: '内置',
   url: '网页',
+}
+
+/** 状态 → 中文文案 */
+const STATUS_LABEL: Record<string, string> = {
+  indexed: '已索引',
+  pending: '待处理',
+  processing: '处理中',
+  failed: '失败',
+  deleted: '已删除',
+}
+
+/** 渲染统计卡片: 大数字 + 副标签 */
+function StatCard({ label, value, sub }: { label: string; value: number | string; sub?: string }) {
+  return (
+    <div className="rounded-xl border border-charcoal-200/60 dark:border-charcoal-700/60 bg-white/80 dark:bg-charcoal-800/80 px-3 py-2.5">
+      <div className="text-xs text-charcoal-400 dark:text-charcoal-500">{label}</div>
+      <div className="text-xl font-semibold text-charcoal-900 dark:text-warm-white mt-0.5">
+        {value}
+      </div>
+      {sub && <div className="text-[10px] text-charcoal-300 dark:text-charcoal-600 mt-0.5">{sub}</div>}
+    </div>
+  )
 }
 
 /** 状态 → 徽章样式(success 用 terracotta 主色, failed 用红, pending 用灰) */
@@ -51,7 +73,32 @@ function formatDate(dateStr?: string): string {
  * 样式遵循 terracotta 主色 + 暖灰暗色风格。
  */
 export function Knowledge() {
-  const { docs, total, loading, list, upload, remove, reindex } = useKnowledge()
+  const { docs, total, loading, stats, statsLoading, list, upload, remove, reindex, getChunks } = useKnowledge()
+
+  // ── 阅读文档内容状态 ──
+  const [chunkMap, setChunkMap] = useState<Record<string, KnowledgeChunk[]>>({})
+  const [readingId, setReadingId] = useState<string | null>(null)
+  const [readingLoading, setReadingLoading] = useState(false)
+
+  /** 展开/收起某篇文档的分块内容(阅读) */
+  const toggleRead = async (id: string) => {
+    if (readingId === id) {
+      setReadingId(null)
+      return
+    }
+    setReadingId(id)
+    setReadingLoading(true)
+    try {
+      if (!chunkMap[id]) {
+        const chunks = await getChunks(id)
+        setChunkMap((prev) => ({ ...prev, [id]: chunks }))
+      }
+    } catch (err) {
+      console.error('[Knowledge] read chunks error:', err)
+    } finally {
+      setReadingLoading(false)
+    }
+  }
 
   // ── 上传表单状态 ──
   const [title, setTitle] = useState('')
@@ -127,8 +174,8 @@ export function Knowledge() {
     const badge = statusBadge(doc.status)
     const sourceLabel = SOURCE_TYPE_LABEL[doc.sourceType || ''] || doc.sourceType || '未知'
     return (
+      <div key={doc.id} className="space-y-2">
       <div
-        key={doc.id}
         className="group flex items-center gap-3 px-4 py-3 rounded-xl bg-white/80 dark:bg-charcoal-800/80 border border-charcoal-200/60 dark:border-charcoal-700/60 hover:border-terracotta-300 dark:hover:border-terracotta-700 transition-colors"
       >
         {/* 类型图标 */}
@@ -158,6 +205,21 @@ export function Knowledge() {
           )}
         </div>
 
+        {/* 阅读按钮 */}
+        <button
+          onClick={() => toggleRead(doc.id)}
+          disabled={readingLoading && readingId === doc.id}
+          className="p-1.5 rounded-lg hover:bg-terracotta-50 dark:hover:bg-terracotta-900/30 text-charcoal-300 dark:text-charcoal-500 hover:text-terracotta-500 transition-colors flex-shrink-0"
+          aria-label="阅读文档内容"
+          title="阅读文档内容"
+        >
+          {readingLoading && readingId === doc.id ? (
+            <Loader2 className="w-4 h-4 animate-spin" />
+          ) : (
+            <FileText className="w-4 h-4" />
+          )}
+        </button>
+
         {/* 删除按钮 */}
         <button
           onClick={async () => {
@@ -174,6 +236,38 @@ export function Knowledge() {
         >
           <Trash2 className="w-4 h-4" />
         </button>
+      </div>
+
+      {/* 阅读预览: 文档分块内容 */}
+      {readingId === doc.id && (
+        <div className="rounded-xl border border-charcoal-200/60 dark:border-charcoal-700/60 bg-white/80 dark:bg-charcoal-800/80 overflow-hidden">
+          <div className="px-3 py-2 text-[11px] font-semibold uppercase tracking-wider text-charcoal-400 dark:text-charcoal-500 border-b border-charcoal-200/30 dark:border-charcoal-700/30">
+            文档内容（{chunkMap[doc.id]?.length ?? 0} 个分块）
+          </div>
+          <div className="max-h-72 overflow-y-auto divide-y divide-charcoal-100 dark:divide-charcoal-700/40">
+            {chunkMap[doc.id]?.map((c, i) => (
+              <div key={c.id || i} className="px-3 py-2">
+                <div className="flex items-center gap-1.5 mb-1 text-[10px] text-charcoal-300 dark:text-charcoal-500">
+                  <span>#{c.seq ?? i + 1}</span>
+                  {c.destination && <span>· {c.destination}</span>}
+                  {c.theme && <span>· {c.theme}</span>}
+                </div>
+                <div className="text-xs text-charcoal-700 dark:text-charcoal-200 leading-relaxed whitespace-pre-wrap">
+                  {c.content}
+                </div>
+              </div>
+            ))}
+            {!chunkMap[doc.id] && (
+              <div className="px-3 py-6 text-center text-xs text-charcoal-400">
+                加载中...
+              </div>
+            )}
+            {chunkMap[doc.id]?.length === 0 && (
+              <div className="px-3 py-6 text-center text-xs text-charcoal-400">暂无分块内容</div>
+            )}
+          </div>
+        </div>
+      )}
       </div>
     )
   }
@@ -218,6 +312,26 @@ export function Knowledge() {
             全量重建
           </button>
         </div>
+
+        {/* 统计总览(透明度: 规模 + 状态/来源分布) */}
+        <section className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+          <StatCard label="文档" value={statsLoading ? '…' : (stats?.docTotal ?? total)} />
+          <StatCard label="分块" value={statsLoading ? '…' : (stats?.chunkTotal ?? '-')} />
+        </section>
+        {(stats?.docByStatus || stats?.docBySourceType) && (
+          <div className="flex flex-wrap gap-1.5 text-[11px]">
+            {Object.entries(stats?.docByStatus || {}).map(([k, v]) => (
+              <span key={`s-${k}`} className="px-2 py-0.5 rounded-full bg-charcoal-100 dark:bg-charcoal-800 text-charcoal-500 dark:text-charcoal-400">
+                {STATUS_LABEL[k] || k}: {v}
+              </span>
+            ))}
+            {Object.entries(stats?.docBySourceType || {}).map(([k, v]) => (
+              <span key={`t-${k}`} className="px-2 py-0.5 rounded-full bg-terracotta-50 dark:bg-terracotta-900/30 text-terracotta-600 dark:text-terracotta-400">
+                {SOURCE_TYPE_LABEL[k] || k}: {v}
+              </span>
+            ))}
+          </div>
+        )}
 
         {/* 上传表单 */}
         <section className="rounded-xl border border-charcoal-200/60 dark:border-charcoal-700/60 bg-white/80 dark:bg-charcoal-800/80 p-4 space-y-3">

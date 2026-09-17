@@ -182,6 +182,27 @@ export interface ReindexResult {
   failed: number
 }
 
+/** 知识库统计（匹配后端 KnowledgeStats） */
+export interface KnowledgeStats {
+  /** 文档总数(不含已删除) */
+  docTotal: number
+  /** 分块总数 */
+  chunkTotal: number
+  /** 按索引状态分组计数 */
+  docByStatus?: Record<string, number>
+  /** 按来源类型分组计数 */
+  docBySourceType?: Record<string, number>
+}
+
+/** 知识分块（匹配后端 KnowledgeChunkVO，用于阅读文档内容） */
+export interface KnowledgeChunk {
+  id: string
+  seq?: number
+  content: string
+  destination?: string
+  theme?: string
+}
+
 /** 分页结果（匹配后端 PageResult） */
 export interface PageResult<T> {
   data: T[]
