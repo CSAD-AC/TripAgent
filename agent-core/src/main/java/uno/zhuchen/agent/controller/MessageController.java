@@ -1,7 +1,6 @@
 package uno.zhuchen.agent.controller;
 
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -11,6 +10,7 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Mono;
 import uno.zhuchen.agent.common.Result;
+import uno.zhuchen.agent.config.McpClientProperties;
 import uno.zhuchen.agent.domain.dto.KnowledgeUploadRequest;
 import uno.zhuchen.agent.domain.dto.MessageLikeRequest;
 import uno.zhuchen.agent.domain.vo.UploadedDocVO;
@@ -35,12 +35,12 @@ public class MessageController {
     private final WebClient mcpClient;
 
     /**
-     * 构造注入 mcp-server 地址并建立沉淀推送 WebClient.
+     * 构造注入 mcp-server 连接配置并建立沉淀推送 WebClient.
      *
-     * @param mcpServerUrl mcp-server 地址, 默认 http://localhost:8081
+     * @param mcp mcp-server 连接配置(取 server-url 作为基础地址)
      */
-    public MessageController(@Value("${mcp.server-url:http://localhost:8081}") String mcpServerUrl) {
-        this.mcpClient = WebClient.builder().baseUrl(mcpServerUrl).build();
+    public MessageController(McpClientProperties mcp) {
+        this.mcpClient = WebClient.builder().baseUrl(mcp.getServerUrl()).build();
     }
 
     /**

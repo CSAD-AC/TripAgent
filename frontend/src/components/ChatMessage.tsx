@@ -18,6 +18,8 @@ interface ChatMessageProps {
   currentIteration?: number
   /** 当前会话 ID(消息点赞沉淀时随 body 提交) */
   conversationId?: string
+  /** 是否为本次会话的最终回答(仅最终回答展示沉淀按钮) */
+  showSettle?: boolean
 }
 
 /** 工具名称转中文 */
@@ -271,6 +273,16 @@ function IterationText({
   )
 }
 
+/** 提取可沉淀的"最终结果正文": 仅取最后一次迭代的文本(去掉思考链与工具调用中间内容) */
+function finalBody(m: Message): string {
+  const its = m.iterationData
+  if (its && its.length > 0) {
+    const last = its[its.length - 1]
+    if (last && last.text && last.text.trim()) return last.text.trim()
+  }
+  return m.content || ''
+}
+
 /** 消息点赞沉淀按钮: 把一条高质量助手答复沉淀进知识库 */
 function SettleButton({
   message,
@@ -282,7 +294,7 @@ function SettleButton({
   const [liked, setLiked] = useState(false)
   const [loading, setLoading] = useState(false)
 
-  /** 点击点赞: 调 POST /api/messages/{id}/like 沉淀该消息内容 */
+  /** 点击点赞: 调 POST /api/messages/{id}/like 沉淀最终正文(不含思考/工具调用) */
   const handleLike = async () => {
     if (loading || liked) return
     setLoading(true)
@@ -292,7 +304,7 @@ function SettleButton({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           conversationId,
-          content: message.content,
+          content: finalBody(message),
         }),
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
@@ -339,8 +351,12 @@ export function ChatMessage({
   currentToolCalls: _currentToolCalls,
   currentIteration: _currentIteration,
   conversationId,
+  showSettle,
 }: ChatMessageProps) {
   const isUser = message.role === 'user'
+
+  // 仅"最终回答"在回答结束后展示沉淀按钮(中间的工具调用/思考帧不展示)
+  const canSettle = !!showSettle && !isStreaming
 
   // ── 决定用哪种数据源渲染 ──
   // 流式阶段：streamIterations 优先；如果没有，回退到 streamContent
@@ -418,7 +434,7 @@ export function ChatMessage({
           {!isStreaming && !iterations?.length && message.itinerary && (
             <ItineraryCard itinerary={message.itinerary} />
           )}
-          {!isStreaming && <SettleButton message={message} conversationId={conversationId} />}
+          {canSettle && <SettleButton message={message} conversationId={conversationId} />}
         </div>
       </div>
     )
@@ -449,7 +465,7 @@ export function ChatMessage({
             </div>
           )
         })}
-          {!isStreaming && <SettleButton message={message} conversationId={conversationId} />}
+          {canSettle && <SettleButton message={message} conversationId={conversationId} />}
       </div>
     </div>
   )

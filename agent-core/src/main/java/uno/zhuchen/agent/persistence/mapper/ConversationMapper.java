@@ -35,4 +35,22 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
      */
     @Update("UPDATE conversation SET title=#{title} WHERE id=#{id}")
     int updateTitle(@Param("id") String id, @Param("title") String title);
+
+    /**
+     * 更新对话历史摘要(滑动窗口压缩存根).
+     */
+    @Update("UPDATE conversation SET summary=#{summary} WHERE id=#{conversationId}")
+    int updateSummary(@Param("conversationId") String conversationId, @Param("summary") String summary);
+
+    /**
+     * 读取对话历史摘要(轻量, 供加载时前缀注入).
+     */
+    @Select("SELECT summary FROM conversation WHERE id=#{conversationId}")
+    String selectSummary(@Param("conversationId") String conversationId);
+
+    /**
+     * 读取消息计数(用于判断是否需要触发历史压缩).
+     */
+    @Select("SELECT message_count FROM conversation WHERE id=#{conversationId}")
+    Integer selectMessageCount(@Param("conversationId") String conversationId);
 }

@@ -423,7 +423,8 @@ export function useChat() {
       conversationId?: string,
       modelId?: string,
       superMode?: boolean,
-      onSessionInit?: (id: string) => void
+      onSessionInit?: (id: string) => void,
+      onComplete?: () => void
     ) => {
       const userMsg: Message = {
         id: `user-${Date.now()}`,
@@ -553,6 +554,8 @@ export function useChat() {
         iterationToolCallsRef.current = [[]]
         currentAssistantIdRef.current = null
         abortRef.current = null
+        // 流结束,后端已完成本轮落库;刷新对话列表使新对话/消息数出现在侧边栏
+        onComplete?.()
       }
     },
     []
