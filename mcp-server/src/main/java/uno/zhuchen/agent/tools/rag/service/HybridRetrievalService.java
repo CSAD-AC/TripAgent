@@ -34,6 +34,10 @@ import jakarta.annotation.PreDestroy;
  *   <li>RRF 融合: 名次融合取前 20 候选</li>
  *   <li>Rerank: DashScope 重排(query + 候选, 2 秒超时, 失败跳过)</li>
  * </ol>
+ *
+ * <p><b>不变量</b>: 双路参与 RRF 融合的 id 必须是同一个空间 —— chunk 主键
+ * (向量路用 {@code Document#getId()}, 关键词路用 {@code KnowledgeChunk#getId()})。
+ * 详见 {@link #fusionKeyOf(Document)}。
  * 降级(对应 4.2 矩阵): 任一路失败仅损失该路召回并标记 degraded, 检索主链路不中断;
  * 两路全失败返回空结果 + hint, 由上层 LLM 转用 webSearch.
  *
@@ -212,15 +216,16 @@ public class HybridRetrievalService {
         List<Document> vectorDocs = vectorFuture.join();
         List<KnowledgeChunk> keywordChunks = keywordFuture.join();
 
-        // RRF 融合
-        List<String> vectorIds = vectorDocs.stream().map(this::docIdOf).toList();
+        // RRF 融合: 两路必须使用同一个 id 空间(chunk 主键), 否则同一分块在向量路与
+        // 关键词路拿到不同 key, 跨路增强永远不生效(见 fusionKeyOf 注释)
+        List<String> vectorIds = vectorDocs.stream().map(this::fusionKeyOf).toList();
         List<String> keywordIds = keywordChunks.stream().map(KnowledgeChunk::getId).toList();
         List<Map.Entry<String, Double>> fused = RrfFuser.fuse(List.of(vectorIds, keywordIds));
         List<String> candidateIds = fused.stream().map(Map.Entry::getKey).limit(FUSE_CANDIDATES).toList();
 
-        // 重建候选 Document(向量路优先, 否则关键词路)
+        // 重建候选 Document(向量路优先, 否则关键词路), 索引 key 与融合 key 一致
         Map<String, Document> vectorIndex = new HashMap<>();
-        vectorDocs.forEach(d -> vectorIndex.put(docIdOf(d), d));
+        vectorDocs.forEach(d -> vectorIndex.put(fusionKeyOf(d), d));
         Map<String, KnowledgeChunk> keywordIndex = new HashMap<>();
         keywordChunks.forEach(c -> keywordIndex.put(c.getId(), c));
         List<Document> candidates = new ArrayList<>();
@@ -230,7 +235,7 @@ public class HybridRetrievalService {
                 KnowledgeChunk chunk = keywordIndex.get(docId);
                 if (chunk != null) {
                     doc = new Document(docId, chunk.getContent(),
-                            metadataOf(chunk.getDestination(), chunk.getTheme()));
+                            metadataOf(chunk.getDocId(), chunk.getDestination(), chunk.getTheme()));
                 }
             }
             if (doc != null) {
@@ -322,10 +327,23 @@ public class HybridRetrievalService {
         }
     }
 
-    /** 从 Document 提取 docId(优先 metadata, 回退 id) */
-    private String docIdOf(Document doc) {
-        Object v = doc.getMetadata().get("docId");
-        return v == null ? doc.getId() : v.toString();
+    /**
+     * 取分块在 RRF 融合与候选索引中使用的 key —— <b>必须是 chunk 主键</b>。
+     *
+     * <p>为什么不取 metadata 里的 {@code docId}: Milvus collection 的主键是
+     * {@code chunk.getId()}（见 {@code IngestionWorker} 入库时
+     * {@code new Document(chunk.getId(), ...)}），而 metadata 里的 {@code docId}
+     * 是**父文档 id**。关键词路融合用的是 {@code KnowledgeChunk::getId}（chunk 主键），
+     * 两路口径一旦不一致，同一分块在向量路与关键词路会拿到两个不同的 key，
+     * {@link RrfFuser} 里的跨路加分永远不会发生（混合检索名存实亡）；
+     * 且按父文档 id 建索引时，同一父文档的多个分块会互相覆盖，
+     * 向量路候选坍缩成"每文档只剩最后一条"。
+     *
+     * <p>父文档 id 仍保留在 metadata 中，仅用于结果展示（见 {@code doRetrieve}
+     * 组装命中条目时的 {@code metaStr(doc, "docId", doc.getId())}）。
+     */
+    private String fusionKeyOf(Document doc) {
+        return doc.getId();
     }
 
     /** 从 Document metadata 取字符串值, 缺失时返回默认值 */
@@ -352,9 +370,17 @@ public class HybridRetrievalService {
         return raw.trim().replaceAll("[^\\p{L}\\p{N}\\s·\\-——()（）]", "").trim();
     }
 
-    /** 由目的地与主题构造 metadata(用于关键词路重建的 Document) */
-    private Map<String, Object> metadataOf(String destination, String theme) {
+    /**
+     * 由父文档 id、目的地与主题构造 metadata(用于关键词路重建的 Document)。
+     *
+     * <p>这里塞的是 {@code docId}=父文档 id, 仅供命中条目展示/溯源;
+     * 融合与索引用的是 {@code Document#getId()}（chunk 主键）, 二者职责分离。
+     */
+    private Map<String, Object> metadataOf(String docId, String destination, String theme) {
         Map<String, Object> metadata = new LinkedHashMap<>();
+        if (docId != null) {
+            metadata.put("docId", docId);
+        }
         if (destination != null) {
             metadata.put("destination", destination);
         }
