@@ -45,8 +45,8 @@ app:
   models:
     - id: deepseek
       provider: deepseek
-      model: deepseek-v4-flash
-      display-name: DeepSeek V4 Flash
+      model: deepseek-flash
+      display-name: DeepSeek-V4.1-Flash
     - id: qwen
       provider: dashscope
       model: qwen3.6-flash
