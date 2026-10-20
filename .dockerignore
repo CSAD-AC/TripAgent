@@ -1,0 +1,86 @@
+# ============================================================================
+# TripAgent 根级 .dockerignore
+#
+# 三个镜像的 build context 统一为仓库根 TripAgent/ :
+#   docker build -f agent-core/Dockerfile -t tripagent/agent-core .
+#   docker build -f mcp-server/Dockerfile -t tripagent/mcp-server .
+#   docker build -f frontend/Dockerfile   -t tripagent/frontend   .
+# 后端 Maven 多模块的父 pom 在仓库根, -pl <module> -am 必须在根目录执行,
+# 所以 context 只能是仓库根, 这份文件对三个镜像同时生效.
+#
+# 核心安全目标: 密钥文件 .env 绝不进入构建上下文.
+# (第二层防线在 Dockerfile 内: 构建完 jar 后自检 BOOT-INF/classes/.env, 命中即让构建失败)
+# ============================================================================
+
+# ---- 01 密钥与环境文件: 一律不进上下文 --------------------------------------
+**/.env
+**/.env.local
+**/.env.*
+.env
+.env.local
+.env.*
+*.env
+
+# ---- 02 本地构建产物: 镜像内必须从源码重建, 禁止复用本地产物 ---------------
+# target/ 里是本地已构建的 fat jar, 内含密钥, 绝不能作为镜像输入
+**/target
+**/target/
+target
+target/
+**/node_modules
+node_modules/
+**/dist
+**/dist/
+dist/
+**/build
+**/coverage
+**/.next
+**/.turbo
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ---- 03 版本控制 / IDE / Agent 配置 ----------------------------------------
+.git
+.gitignore
+.gitattributes
+.github
+.idea
+.vscode
+*.iml
+*.iws
+*.ipr
+out/
+.claude
+.agents
+.reasonix
+reasonix.toml
+skills-lock.json
+
+# ---- 04 文档与本地资料: 不参与镜像 -----------------------------------------
+dev-docs
+dev-docs/
+README.md
+CLAUDE.md
+**/AGENTS.md
+
+# ---- 05 容器数据卷与运行时数据 ---------------------------------------------
+docker/milvus/volumes
+docker/milvus/volumes/
+docker/milvus/volumes/**
+log
+logs
+log/
+*.log
+*.pid
+*.seed
+
+# ---- 06 OS 杂项与压缩包 ----------------------------------------------------
+.DS_Store
+Thumbs.db
+Desktop.ini
+ehthumbs.db
+*.zip
+*.7z
+*.tz
