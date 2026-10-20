@@ -121,6 +121,21 @@
             <artifactId>h2</artifactId>
             <scope>test</scope>
         </dependency>
+
+        <!-- ============ 迁移测试依赖 (版本由父 pom 的 testcontainers-bom 管理) ============ -->
+
+        <!-- Testcontainers JUnit 5 扩展: @Testcontainers(disabledWithoutDocker = true) -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers-junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- MySQLContainer: 在容器里起 MySQL 8.4, Flyway 迁移对干净库实跑 -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers-mysql</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>
