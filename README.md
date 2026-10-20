@@ -273,6 +273,29 @@ npm run dev
   └─ Report: 完整旅行规划报告
 ```
 
+## 持续集成 (CI)
+
+本仓库已接入 GitHub Actions 持续集成，配置位于 `.github/`：
+
+| 工作流 | 触发 | 内容 |
+|--------|------|------|
+| `ci.yml` | push 到 `main` / `master`、任意 PR、手动 | 后端 `mvn verify` 编译 + 单元测试 + 打包，前端 `npm ci && npm run build`，workflow 配置 actionlint 检查 |
+| `integration-tests.yml` | 仅手动触发（需配置 Secrets） | 依赖 MySQL / Redis / Milvus 与真实 API Key 的集成测试 |
+
+主 CI 不依赖任何密钥，本地可用下列命令复现同样的检查：
+
+```bash
+# 后端（在 TripAgent/ 下）
+mvn -B -ntp clean verify -DexcludedGroups=integration
+
+# 前端
+cd frontend && npm ci && npm run build
+```
+
+需要跑集成测试时，先在 `Settings → Secrets and variables → Actions` 配置下列
+Secret：`DASHSCOPE_API_KEY`、`DEEPSEEK_API_KEY`、`AMAP_API_KEY`、`BAIDU_API_KEY`。
+未配置时集成测试会自动跳过，不影响主 CI。
+
 ## 常见问题
 
 **Q: 启动时提示 API Key 无效？**

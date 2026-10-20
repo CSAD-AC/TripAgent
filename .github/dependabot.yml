@@ -1,0 +1,92 @@
+# Dependabot 依赖更新配置 (GitHub 官方 schema: version 2)
+# 作用: 按 ecosystem 定期扫描依赖版本并自动创建升级 PR, 避免依赖长期滞后带来的安全与兼容风险.
+# 提交信息约定: 统一以 "chore(deps)" 开头, 再按 ecosystem 追加作用域, 最终形如
+#   "chore(deps): maven bump org.springframework.boot from 3.5.13 to 3.5.14".
+# 注意: prefix 末尾保留一个空格是有意为之. Dependabot 仅当 prefix 以字母/数字/括号结尾时
+#   自动补 ": ", 保留空格可避免出现 "chore(deps): maven: bump ..." 这样的双冒号.
+version: 2
+updates:
+  # ---------------------------------------------------------------------------
+  # 1) Maven 后端依赖 (agent-core + mcp-server 多模块)
+  #    仓库根 pom.xml 是父 BOM (Spring Boot / Spring AI / Spring AI Alibaba),
+  #    两个子模块共用同一依赖树, 因此 directory 为仓库根 "/".
+  # ---------------------------------------------------------------------------
+  - package-ecosystem: "maven"
+    directory: "/"
+    schedule:
+      # 每周一 09:00 (Asia/Shanghai) 检查一次, 工作日开始时 PR 已就绪.
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Shanghai"
+    # 同时最多 5 个待合并 PR, 防止依赖 PR 堆积淹没人工评审.
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "java"
+      - "maven"
+    commit-message:
+      prefix: "chore(deps): maven "
+    groups:
+      # 把 patch 与 minor 升级合并成单个 PR (组名 patch-and-minor), 只有 major 升级单独开 PR,
+      # 避免 Spring 全家桶的补丁版本各自开 PR 造成 PR 洪水.
+      patch-and-minor:
+        applies-to: "version-updates"
+        patterns:
+          - "*"
+        update-types:
+          - "patch"
+          - "minor"
+
+  # ---------------------------------------------------------------------------
+  # 2) npm 前端依赖 (React 19 + Vite 8 + Tailwind 4 + TypeScript 6)
+  #    前端有独立 package.json 与 package-lock.json, 位于 frontend/, 因此 directory 为 "/frontend".
+  # ---------------------------------------------------------------------------
+  - package-ecosystem: "npm"
+    directory: "/frontend"
+    schedule:
+      # 与后端保持同一节奏: 每周一 09:00 (Asia/Shanghai).
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Shanghai"
+    # 前端包数量多, 放宽到 5, 配合下方分组即可把大部分升级收敛到一个 PR.
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "frontend"
+      - "npm"
+    commit-message:
+      prefix: "chore(deps): npm "
+    groups:
+      # 同样把 patch 与 minor 合并 (组名 patch-and-minor); major 升级 (如 React / Vite / Tailwind)
+      # 破坏性更强, 保持单独 PR 便于人工评估与验证.
+      patch-and-minor:
+        applies-to: "version-updates"
+        patterns:
+          - "*"
+        update-types:
+          - "patch"
+          - "minor"
+
+  # ---------------------------------------------------------------------------
+  # 3) GitHub Actions 工作流依赖 (actions/checkout, actions/setup-java, actions/upload-artifact 等)
+  #    workflow 文件位于仓库根的 .github/workflows (ci.yml / integration-tests.yml),
+  #    因此 directory 为 "/", Dependabot 会扫描其中的 uses 引用并提示大版本升级.
+  # ---------------------------------------------------------------------------
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      # 每周一 09:00 (Asia/Shanghai) 检查一次, 让 Action 版本自动跟进.
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Shanghai"
+    # Action 数量少且升级通常需要立即验证 CI, 限流到 3 个并保持逐个 PR 便于定位失败.
+    open-pull-requests-limit: 3
+    labels:
+      - "dependencies"
+      - "ci"
+      - "github-actions"
+    commit-message:
+      prefix: "chore(deps): actions "
