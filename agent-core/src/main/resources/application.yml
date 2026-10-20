@@ -8,6 +8,25 @@ spring:
   profiles:
     default: deepseek
 
+  # 始终排除 DashScope starter 的自动配置.
+  # 原因: LLMConfig 里已经手动装配了一个名为 dashScopeChatModel 的 ChatModel bean,
+  # starter 的 DashScopeChatAutoConfiguration 也会注册同名 bean,
+  # 触发 BeanDefinitionOverrideException(Spring Boot 2.1+ 默认禁止 bean 覆盖).
+  # 这个冲突与 profile 无关, 所以不能只写在 deepseek profile 里, 否则 dev / dashscope
+  # profile 启动必然失败. DashScope 凭据由 LLMConfig 直接读 .env 的 DASHSCOPE_API_KEY,
+  # 不依赖这里的自动配置.
+  autoconfigure:
+    exclude:
+      - com.alibaba.cloud.ai.autoconfigure.dashscope.DashScopeChatAutoConfiguration
+      - com.alibaba.cloud.ai.autoconfigure.dashscope.DashScopeAgentAutoConfiguration
+      - com.alibaba.cloud.ai.autoconfigure.dashscope.DashScopeImageAutoConfiguration
+      - com.alibaba.cloud.ai.autoconfigure.dashscope.DashScopeVideoAutoConfiguration
+      - com.alibaba.cloud.ai.autoconfigure.dashscope.DashScopeAudioSpeechAutoConfiguration
+      - com.alibaba.cloud.ai.autoconfigure.dashscope.DashScopeAudioTranscriptionAutoConfiguration
+      - com.alibaba.cloud.ai.autoconfigure.dashscope.DashScopeRerankAutoConfiguration
+      - com.alibaba.cloud.ai.autoconfigure.dashscope.DashScopeEmbeddingAutoConfiguration
+      - com.alibaba.cloud.ai.autoconfigure.dashscope.DashScopeAsyncToolCallingManagerAutoConfiguration
+
   ai:
     mcp:
       client:
@@ -18,8 +37,29 @@ spring:
         streamable-http:
           connections:
             local-mcp:
-              url: http://localhost:8081
+              # 容器/多机部署时用 MCP_SERVER_URL 覆盖(例如 http://mcp-server:8081);
+              # 未设置时回落到 localhost, 与本地开发行为一致.
+              url: ${MCP_SERVER_URL:http://localhost:8081}
               endpoint: /mcp
+
+    # 使用 OpenAI 客户端指向 DeepSeek API(消息转换格式更准确)
+    # 放在根节点而不是某个 profile 里: LLMConfig 无条件注册 deepSeekChatModel,
+    # 而它依赖 spring-ai-openai 自动配置提供的 OpenAiChatModel. 若这段配置只写在
+    # deepseek profile 下, 其他 profile(dev / dashscope)会因缺少 api-key 而启动失败
+    # (OpenAI API key must be set).
+    openai:
+      api-key: ${DEEPSEEK_API_KEY}
+      base-url: https://api.deepseek.com
+      connect-timeout: 30s
+      read-timeout: 120s
+      # DeepSeek 思考模式参数(非标准 OpenAI 属性, 通过 @Value 手动注入)
+      deepseek:
+        thinking: enabled      # 思考模式开关 enabled/disabled
+        reasoning-effort: high  # 思考强度 (high/max)
+      chat:
+        options:
+          model: deepseek-v4-flash
+          max-tokens: 16384
 
 agent:
   react:
@@ -28,8 +68,9 @@ agent:
 
 # MCP 客户端连接: agent-core 经此基础地址调 mcp-server(:8081) 的 REST(知识库等)
 # 由 McpClientProperties(prefix=mcp) 绑定并启动校验(@Validated)
+# 与上面的 MCP 客户端连接共用同一个 MCP_SERVER_URL 环境变量, 部署时只需设一次.
 mcp:
-  server-url: http://localhost:8081
+  server-url: ${MCP_SERVER_URL:http://localhost:8081}
 
 # 对话消息缓存 TTL(秒),作用在 RedisMessageCache@persistentChatMemory
 # 仅在生产 profile(非 dev/test)下生效,因为 InMemoryChatMemory 不依赖 Redis
@@ -88,38 +129,6 @@ spring:
       chat:
         options:
           model: qwen-turbo
----
-spring:
-  config:
-    activate:
-      on-profile: deepseek
-  autoconfigure:
-    exclude:
-      # spring-ai-alibaba-starter-dashscope 在 classpath 上，deepseek profile 下不需 DashScope
-      - com.alibaba.cloud.ai.autoconfigure.dashscope.DashScopeChatAutoConfiguration
-      - com.alibaba.cloud.ai.autoconfigure.dashscope.DashScopeAgentAutoConfiguration
-      - com.alibaba.cloud.ai.autoconfigure.dashscope.DashScopeImageAutoConfiguration
-      - com.alibaba.cloud.ai.autoconfigure.dashscope.DashScopeVideoAutoConfiguration
-      - com.alibaba.cloud.ai.autoconfigure.dashscope.DashScopeAudioSpeechAutoConfiguration
-      - com.alibaba.cloud.ai.autoconfigure.dashscope.DashScopeAudioTranscriptionAutoConfiguration
-      - com.alibaba.cloud.ai.autoconfigure.dashscope.DashScopeRerankAutoConfiguration
-      - com.alibaba.cloud.ai.autoconfigure.dashscope.DashScopeEmbeddingAutoConfiguration
-      - com.alibaba.cloud.ai.autoconfigure.dashscope.DashScopeAsyncToolCallingManagerAutoConfiguration
-  # 使用 OpenAI 客户端指向 DeepSeek API（消息转换格式更准确）
-  ai:
-    openai:
-      api-key: ${DEEPSEEK_API_KEY}
-      base-url: https://api.deepseek.com
-      connect-timeout: 30s
-      read-timeout: 120s
-      # DeepSeek 思考模式参数（非标准 OpenAI 属性，通过 @Value 手动注入）
-      deepseek:
-        thinking: enabled      # 思考模式开关 enabled/disabled
-        reasoning-effort: high  # 思考强度 (high/max)
-      chat:
-        options:
-          model: deepseek-v4-flash
-          max-tokens: 16384
 
 ---
 # ============================================================
