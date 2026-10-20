@@ -71,13 +71,13 @@
         <dependency>
             <groupId>com.baomidou</groupId>
             <artifactId>mybatis-plus-spring-boot3-starter</artifactId>
-            <version>3.5.9</version>
+            <version>3.5.17</version>
         </dependency>
         <!-- MyBatis-Plus 分页插件（3.5.9+ 分离为可选依赖） -->
         <dependency>
             <groupId>com.baomidou</groupId>
             <artifactId>mybatis-plus-jsqlparser</artifactId>
-            <version>3.5.9</version>
+            <version>3.5.17</version>
         </dependency>
 
         <!-- Redis -->
@@ -100,7 +100,7 @@
         <dependency>
             <groupId>com.google.guava</groupId>
             <artifactId>guava</artifactId>
-            <version>33.3.1-jre</version>
+            <version>33.7.2-jre</version>
         </dependency>
 
         <!-- 可观测性：Micrometer Prometheus 注册表 -->
