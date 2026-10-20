@@ -8,11 +8,11 @@
 # 设计要点:
 # 1. 本 workflow 只跑不依赖外部服务的测试(用 -DexcludedGroups=integration
 #    排除 @Tag("integration") 的测试), 因此不需要 MySQL / Redis / Milvus,
-#    也不需要在仓库里放任何 .env 或密钥, fork 出来的 PR 同样能跑绿。
+#    也不需要在仓库里放任何 .env 或密钥, fork 出来的 PR 同样能跑绿.
 # 2. 需要真实外部服务的集成测试走 integration-tests.yml(手动触发, 需配置
-#    GitHub Secrets), 不挂在 push 上, 避免未配置密钥时把主 CI 拖红。
+#    GitHub Secrets), 不挂在 push 上, 避免未配置密钥时把主 CI 拖红.
 # 3. 不加 paths 过滤: 作为分支保护的必需检查(required status check)时,
-#    paths 过滤会让某些 PR 永远等不到检查结果而卡住合并。
+#    paths 过滤会让某些 PR 永远等不到检查结果而卡住合并.
 # ============================================================
 
 name: CI
@@ -66,6 +66,17 @@ jobs:
         with:
           name: backend-surefire-reports
           path: '**/target/surefire-reports/**'
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: 上传 JaCoCo 覆盖率报告
+        # 只生成报告, 不设覆盖率阈值: 覆盖率低不会让构建失败
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: backend-jacoco-report
+          # 每个模块各自的 HTML / XML 报告
+          path: '**/target/site/jacoco/**'
           if-no-files-found: ignore
           retention-days: 7
 
@@ -138,3 +149,65 @@ jobs:
         uses: docker://rhysd/actionlint:latest
         with:
           args: -color
+
+  # ----------------------------------------------------------
+  # 密钥泄漏扫描
+  # ----------------------------------------------------------
+  secret-scan:
+    name: 密钥泄漏扫描 (gitleaks)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
+        with:
+          # 必须拉全量历史: 默认的浅克隆只有 1 个提交, 扫不到历史泄漏
+          fetch-depth: 0
+
+      - name: 扫描全部提交历史中的密钥
+        # 版本写死, 避免工具自身升级改变判定规则.
+        # --baseline-path 指向 .github/gitleaks-baseline.json, 里面记录了
+        # 2026-06 那次历史泄漏的指纹(该 AMAP key 已作废), 只抑制这一条已知发现;
+        # 之后任何新的密钥泄漏仍然会让这一步失败.
+        # --redact 保证即使命中也不会把密钥明文写进 CI 日志.
+        run: |
+          docker run --rm \
+            -v "$PWD:/repo" \
+            ghcr.io/gitleaks/gitleaks:v8.30.1 \
+            git /repo --log-opts="--all" \
+            --baseline-path /repo/.github/gitleaks-baseline.json \
+            --redact --no-banner
+
+  # ----------------------------------------------------------
+  # 镜像构建验证: 只构建, 不推送任何 registry
+  # ----------------------------------------------------------
+  images:
+    name: 镜像构建验证 (不推送)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    # 镜像构建较慢(容器内要从零拉依赖并编译), 只在推送主分支和手动触发时跑,
+    # 避免每个 PR 都多等几分钟. 想让 PR 也验证就把下面这行 if 删掉.
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    env:
+      # 显式打开 BuildKit: Dockerfile 里的 RUN --mount=type=cache 依赖它
+      DOCKER_BUILDKIT: '1'
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
+
+      - name: 查看 Docker 版本
+        run: docker version --format '{{.Server.Version}}'
+
+      - name: 构建三个镜像 (不推送)
+        # build context 统一为仓库根: Maven 父 pom 在根目录, -pl / -am 必须在根执行.
+        # .env 已被 .dockerignore 挡在构建上下文之外, Dockerfile 内还有 jar 级自检作第二道防线.
+        run: |
+          set -euo pipefail
+          docker build -f agent-core/Dockerfile -t tripagent/agent-core:ci .
+          docker build -f mcp-server/Dockerfile -t tripagent/mcp-server:ci .
+          docker build -f frontend/Dockerfile -t tripagent/frontend:ci .
+
+      - name: 输出镜像大小
+        run: docker images --filter reference='tripagent/*' --format 'table {{.Repository}}\t{{.Tag}}\t{{.Size}}'
