@@ -167,16 +167,14 @@ jobs:
 
       - name: 扫描全部提交历史中的密钥
         # 版本写死, 避免工具自身升级改变判定规则.
-        # --baseline-path 指向 .github/gitleaks-baseline.json, 里面记录了
-        # 2026-06 那次历史泄漏的指纹(该 AMAP key 已作废), 只抑制这一条已知发现;
-        # 之后任何新的密钥泄漏仍然会让这一步失败.
+        # 历史里 2026-06 那次 AMAP key 硬编码已于 2026-10-20 用 git filter-repo
+        # 从全部提交中清除, 因此这里不再需要基线文件抑制, 任何命中都应让 CI 失败.
         # --redact 保证即使命中也不会把密钥明文写进 CI 日志.
         run: |
           docker run --rm \
             -v "$PWD:/repo" \
             ghcr.io/gitleaks/gitleaks:v8.30.1 \
             git /repo --log-opts="--all" \
-            --baseline-path /repo/.github/gitleaks-baseline.json \
             --redact --no-banner
 
   # ----------------------------------------------------------
