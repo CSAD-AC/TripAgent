@@ -4,7 +4,7 @@
 
 ## 项目介绍
 
-TravelPal 是一个基于大语言模型的 AI 旅游规划系统，具备两种运行模式：
+TravelPal 是一个基于大语言模型的 AI 旅游规划系统，具备三种运行模式：
 
 - **ReAct 模式**: 单 Agent 推理 + 工具调用，适用于快速查询（天气、路线、景点、12306 余票等）
 - **Graph 模式**: Supervisor-Worker-Validator 多 Agent 工作流，适用于复杂旅游规划（约束提取→路线→行程→预算→校验→报告）
@@ -21,11 +21,14 @@ TravelPal 是一个基于大语言模型的 AI 旅游规划系统，具备两种
 | 持久化 | MySQL + Redis（MyBatis-Plus + Flyway） | 8.x / 7.x |
 | 向量库 | Milvus（RAG 语义检索，Docker Compose 部署） | - |
 | 前端框架 | React | 19.x |
-| 构建工具 | Vite | 8.x |
+| 前端构建 | Vite | 8.x |
 | 样式 | Tailwind CSS | 4.x |
 | DAG 可视化 | @xyflow/react + dagre | — |
-| 构建工具 | Maven | — |
-| 运行环境 | Java 17 | — |
+| 后端构建 | Maven（多模块） | 3.6+ |
+| 测试 | JUnit 5 + Testcontainers + JaCoCo | Testcontainers 2.0.5 / JaCoCo 0.8.15 |
+| 运行时 | Java 17 | — |
+| 容器化 | Docker 多阶段构建（BuildKit 缓存） | — |
+| CI | GitHub Actions（actionlint + gitleaks） | — |
 
 ## 项目结构
 
@@ -49,20 +52,32 @@ TripAgent/
 │           ├── cloud/         # 云端工具组（网页搜索/页面抓取）
 │           └── rag/           # RAG 知识库工具组（混合检索/入库/统计/重建）
 │
-└── frontend/                  # 前端（React + Vite :5173）
-    └── src/
-        ├── components/        # ChatMessage / GraphFlow / NodeDetailPanel / Sidebar 等
-        ├── hooks/             # useChat（SSE 分发）/ useConversations（对话列表）
-        └── types/             # TypeScript 类型定义（SSE 协议 / VO 契约）
+├── frontend/                  # 前端（React + Vite :5173，容器内由 nginx 托管 :80）
+│   ├── Dockerfile             # node:22-alpine 构建 → nginx:1.27-alpine 托管
+│   ├── nginx.conf             # SPA 回退 + /api 反代到 agent-core:8080 + SSE 关缓冲
+│   └── src/
+│       ├── components/        # ChatMessage / GraphFlow / NodeDetailPanel / Sidebar 等
+│       ├── hooks/             # useChat（SSE 分发）/ useConversations（对话列表）
+│       └── types/             # TypeScript 类型定义（SSE 协议 / VO 契约）
+│
+├── docker/
+│   └── milvus/                # Milvus standalone 的 compose（etcd + minio + milvus）
+│
+└── .github/
+    └── workflows/             # ci.yml（主 CI）+ integration-tests.yml（手动集成测试）
 ```
+
+> `agent-core/` 与 `mcp-server/` 根下也各有一份多阶段 `Dockerfile`，三个镜像的构建上下文
+> 统一是仓库根，由根级 `.dockerignore` 裁剪。构建与运行方式见[容器化](#容器化-docker)。
 
 ## 环境要求
 
 - **Java 17+**
 - **Maven 3.6+**
-- **Node.js 18+**
-- **npm 9+**
-- **MySQL 8+ 与 Redis 7+**（仅 `deepseek` 生产 profile 需要，见下文）
+- **Node.js 20.19+ 或 22.12+**（Vite 8 的要求；CI 与前端镜像统一用 Node 22），自带 npm
+- **Docker**（三个用途：跑 RAG 需要的 Milvus、构建镜像、`mvn verify` 里的 Testcontainers 迁移测试。
+  缺 Docker 时后两项对应的部分是跳过而非失败）
+- **MySQL 8+ 与 Redis 7+**（`deepseek` 生产 profile 与 mcp-server 需要，见下文）
 - **Milvus**（RAG 知识库语义检索需要，Docker Compose 一键启动）
 
 ## 快速开始
@@ -273,16 +288,107 @@ npm run dev
   └─ Report: 完整旅行规划报告
 ```
 
+## 容器化 (Docker)
+
+三个服务各有一份多阶段 `Dockerfile`。**构建上下文统一是仓库根 `TripAgent/`**
+（Maven 父 pom 在根目录，`-pl <module> -am` 必须在根执行）：
+
+| 镜像 | 构建阶段 → 运行阶段 | 端口 | 说明 |
+|------|--------------------|------|------|
+| `tripagent/mcp-server` | `maven:3.9-eclipse-temurin-17` → `eclipse-temurin:17-jre-jammy` | 8081 | 工具服务 |
+| `tripagent/agent-core` | 同上 | 8080 | 主服务（三模式） |
+| `tripagent/frontend` | `node:22-alpine` → `nginx:1.27-alpine` | 80 | 静态站点 + `/api` 反代 |
+
+### 构建
+
+```bash
+cd TripAgent
+
+docker build -f mcp-server/Dockerfile  -t tripagent/mcp-server:latest  .
+docker build -f agent-core/Dockerfile  -t tripagent/agent-core:latest  .
+docker build -f frontend/Dockerfile    -t tripagent/frontend:latest    .
+```
+
+首次构建较慢（容器内要从零下载 Maven / npm 依赖，冷缓存时 agent-core 约十分钟），
+之后靠 BuildKit 的 `RUN --mount=type=cache` 复用依赖层。
+
+> **密钥不会被烘进镜像**，由三道防线共同保证：
+>
+> 1. 根级 `.dockerignore` 把 `**/.env` 挡在构建上下文之外；
+> 2. Dockerfile 只在容器内从源码重新构建，**从不 COPY 本地 `target/*.jar`**
+>    （本地 jar 的 `BOOT-INF/classes/.env` 里就是真实密钥）；
+> 3. 构建末尾用 `jar tf` 自检，一旦发现 `BOOT-INF/classes/.env` 直接让构建失败。
+
+### 运行
+
+镜像里只有应用本身，**MySQL / Redis / Milvus 仍需外部提供**（仓库只附带 Milvus 的 compose）。
+密钥一律在运行时用 `-e` 注入，不要写进镜像：
+
+```bash
+docker network create tripagent-net
+
+# 工具服务
+docker run -d --name mcp-server --network tripagent-net -p 8081:8081 \
+  -e AMAP_API_KEY=... -e BAIDU_API_KEY=... -e DASHSCOPE_API_KEY=... \
+  -e MYSQL_HOST=host.docker.internal -e MYSQL_PASSWORD=... \
+  -e MILVUS_HOST=host.docker.internal \
+  tripagent/mcp-server:latest
+
+# 主服务。注意 MCP_SERVER_URL 必须指向容器名: 容器内的 localhost 指向容器自己,
+# 用默认的 localhost:8081 会连不上工具服务。
+docker run -d --name agent-core --network tripagent-net -p 8080:8080 \
+  -e DEEPSEEK_API_KEY=... \
+  -e MCP_SERVER_URL=http://mcp-server:8081 \
+  -e MYSQL_HOST=host.docker.internal -e MYSQL_PASSWORD=... \
+  -e REDIS_HOST=host.docker.internal \
+  tripagent/agent-core:latest
+
+# 前端
+docker run -d --name frontend --network tripagent-net -p 80:80 \
+  tripagent/frontend:latest
+```
+
+访问 http://localhost 即可。前端 nginx 通过 `agent-core:8080` 反代 `/api` 并对 SSE 接口关闭了代理缓冲，
+所以 `agent-core` 必须在同一网络里且容器名为 `agent-core`。
+
+> `host.docker.internal` 是 Docker Desktop（Windows / macOS）提供的宿主机别名。
+> Linux 上需要额外加 `--add-host=host.docker.internal:host-gateway`，
+> 或直接把 `MYSQL_HOST` / `REDIS_HOST` / `MILVUS_HOST` 指向容器网络内的服务名。
+
 ## 持续集成 (CI)
 
-本仓库已接入 GitHub Actions 持续集成，配置位于 `.github/`：
+仓库已接入 GitHub Actions，配置在 `.github/workflows/`：
 
 | 工作流 | 触发 | 内容 |
 |--------|------|------|
-| `ci.yml` | push 到 `main` / `master`、任意 PR、手动 | 后端 `mvn verify` 编译 + 单元测试 + 打包，前端 `npm ci && npm run build`，workflow 配置 actionlint 检查 |
-| `integration-tests.yml` | 仅手动触发（需配置 Secrets） | 依赖 MySQL / Redis / Milvus 与真实 API Key 的集成测试 |
+| `ci.yml` | push 到 `main` / `master`、任意 PR、手动触发 | 五个 job 并行跑，见下表 |
+| `integration-tests.yml` | 仅手动触发 | 依赖 MySQL / Redis / Milvus 与真实 API Key 的集成测试 |
 
-主 CI 不依赖任何密钥，本地可用下列命令复现同样的检查：
+### `ci.yml` 的五个 job
+
+| Job | 名称 | 做什么 | 产出 artifact |
+|-----|------|--------|---------------|
+| `backend` | 后端编译与单元测试 | `mvn -B -ntp verify -DexcludedGroups=integration`：编译 + 单元测试 + 打包（JDK 17） | surefire 报告、JaCoCo 覆盖率、可执行 jar |
+| `frontend` | 前端类型检查与构建 | `npm ci` + `npm run build`（`tsc && vite build`，Node 22） | `frontend/dist` |
+| `workflow-lint` | Workflow 静态检查 | actionlint 校验 `.github/workflows/*.yml` 的语法、表达式与脚本问题 | — |
+| `secret-scan` | 密钥泄漏扫描 | gitleaks v8.30.1 扫**全量提交历史**（`fetch-depth: 0`），命中即失败 | — |
+| `images` | 镜像构建验证 | 构建三个镜像但**不推送**任何 registry，仅 push 主分支与手动触发时跑 | — |
+
+### 设计上的几个取舍
+
+- **主 CI 不依赖任何密钥或外部服务**：用 `-DexcludedGroups=integration` 排除 `@Tag("integration")` 的测试，
+  fork 出来的 PR 也能跑绿，不会因为没配 Secrets 而红。
+- **测试分层**：单元测试与 Testcontainers 测试进主 CI（后者自己起临时容器，不需要本地库）；
+  需要真实 MySQL / Redis / Milvus / API Key 的进 `integration-tests.yml`，手动触发，不拖红主 CI。
+  Flyway 迁移脚本会在主 CI 中于临时 MySQL 8.4 容器上全量跑一遍，本机没有 Docker 时这组测试自动跳过。
+- **覆盖率只报告、不设闸**：JaCoCo 报告作为 artifact 上传，覆盖率低不会让构建失败。
+- **密钥扫描不留基线**：2026-06 那次 `AMAP_API_KEY` 硬编码已于 2026-10 用 `git filter-repo`
+  从全部提交中清除，因此 CI 里没有 baseline 抑制文件——任何新命中都应让 CI 失败。
+  扫描带 `--redact`，即使命中也不会把密钥明文写进 CI 日志。
+- **不加 `paths` 过滤**：作为分支保护的必需检查（required status check）时，
+  `paths` 过滤会让某些 PR 永远等不到检查结果而卡住合并。
+
+### 本地复现
 
 ```bash
 # 后端（在 TripAgent/ 下）
@@ -292,9 +398,14 @@ mvn -B -ntp clean verify -DexcludedGroups=integration
 cd frontend && npm ci && npm run build
 ```
 
-需要跑集成测试时，先在 `Settings → Secrets and variables → Actions` 配置下列
-Secret：`DASHSCOPE_API_KEY`、`DEEPSEEK_API_KEY`、`AMAP_API_KEY`、`BAIDU_API_KEY`。
-未配置时集成测试会自动跳过，不影响主 CI。
+### 手动跑集成测试
+
+先在 `Settings → Secrets and variables → Actions` 配置
+`DASHSCOPE_API_KEY`、`DEEPSEEK_API_KEY`、`AMAP_API_KEY`、`BAIDU_API_KEY`
+（`TAVILY_API_KEY` 可选），再到 Actions 页手动触发「集成测试」。
+
+workflow 会先做一轮 Secrets 完整性预检：缺任何一个必需项就把整个集成测试跳过并打 warning，
+不会失败。触发时可以勾选 `mcp_full_suite`，决定跑 mcp-server 的全部集成测试，还是只跑 `.env` 冒烟用例。
 
 ## 常见问题
 
@@ -316,3 +427,20 @@ A: 调用 `GET /api/models` 检查后端是否正常返回 `app.models` 注册�
 
 **Q: RAG 知识库检索不可用 / 返回 `degraded=rerank`？**
 A: 语义检索依赖 Milvus（需先 `cd docker/milvus && docker compose up -d`）与 DashScope（向量化 + 重排，`DASHSCOPE_API_KEY` 配在 mcp-server `.env`）。任一组件的故障会自动降级（单路召回 / 跳过重排），不会中断主流程；`degraded=rerank` 表示重排未生效（如账号未开通对应模型），检索仍会返回 RRF 粗排结果。
+
+**Q: Docker 构建报 `FATAL: src/main/resources/.env 被打进了 jar`？**
+A: 这是镜像里的密钥自检主动拦截，不是构建环境问题。它表示 jar 中出现了 `BOOT-INF/classes/.env`，
+镜像一旦产出就会带真实密钥。检查根级 `.dockerignore` 是否仍排除 `**/.env`，以及 Dockerfile 是否被改成
+COPY 本地 `target/` 产物；正常走仓库里的 Dockerfile 不会触发。
+
+**Q: `docker run` 后 agent-core 启动时报 MCP 连接失败？**
+A: 容器里的 `localhost` 指向容器自己。启动 agent-core 时显式传
+`-e MCP_SERVER_URL=http://mcp-server:8081`，并确保 `mcp-server` 与 `agent-core` 接在同一个 Docker 网络。
+
+**Q: 本地 `mvn verify` 慢，或者卡在 Flyway 相关测试？**
+A: 那组迁移测试会用 Testcontainers 起一个临时 `mysql:8.4` 容器，首次运行需下载镜像。
+本机没装或没启动 Docker 时它们会自动跳过，不会失败。
+
+**Q: 为什么 PR 上不跑 `images` job？**
+A: 镜像构建要在容器里从零下载依赖，冷缓存时最久一次约十分钟。只在 push 主分支和手动触发时跑，
+避免每个 PR 都多等；想让 PR 也验证，删掉该 job 的 `if` 条件即可。
