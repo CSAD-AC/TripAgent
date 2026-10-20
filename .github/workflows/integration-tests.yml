@@ -1,0 +1,266 @@
+# TravelPal (TripAgent) 集成测试流水线
+#
+# 触发方式: 仅 workflow_dispatch 手动触发, 不挂 push / pull_request
+# 原因: 未配置 Secrets 的仓库不应被集成测试拖红, 常规 CI 由单元测试负责
+#
+# 必需 GitHub Secrets:
+#   DASHSCOPE_API_KEY  mcp-server 的 RAG embedding / rerank 与 agent-core 的 dashscope 均无默认值
+#   DEEPSEEK_API_KEY   agent-core 默认 deepseek profile 与 EnvCheckTest 校验
+#   AMAP_API_KEY       mcp-server amap.api.key, 无默认值
+#   BAIDU_API_KEY      mcp-server search.cloud.baidu-api-key, 无默认值
+# 可选 GitHub Secrets:
+#   TAVILY_API_KEY     mcp-server search.cloud.tavily-api-key, 缺失时为空字符串, 占位符仍可解析
+#
+# 外部依赖: MySQL 8.4 (库 TripAgent 与 agent), Redis 7, Milvus standalone (localhost:19530)
+# 注意: 本文件所有注释与 name 使用中文, 标点统一为 ASCII, 缩进为 2 空格
+
+name: 集成测试
+
+on:
+  # 仅手动触发, 可选控制是否运行 mcp-server 的全部集成测试
+  workflow_dispatch:
+    inputs:
+      mcp_full_suite:
+        description: 是否运行 mcp-server 全部集成测试 (false 时只跑 EnvLoadingTest 冒烟)
+        required: false
+        default: true
+        type: boolean
+
+# 最小权限: 只需要读取仓库内容
+permissions:
+  contents: read
+
+jobs:
+  # 前置检查: 判断必需 Secrets 是否齐全并输出 ready 字符串
+  # 注意: jobs.<job_id>.if 不支持 secrets 上下文, 所以必须先把 Secrets 注入 job 级 env,
+  # 再由 step 的 run 脚本判断, 最后通过 job outputs 传给下游
+  preflight:
+    name: 前置检查 (必需 Secrets 完整性)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      ready: ${{ steps.check_secrets.outputs.ready }}
+    env:
+      DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
+      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+      AMAP_API_KEY: ${{ secrets.AMAP_API_KEY }}
+      BAIDU_API_KEY: ${{ secrets.BAIDU_API_KEY }}
+    steps:
+      - name: 校验必需 Secrets
+        id: check_secrets
+        run: |
+          missing=""
+          for name in DASHSCOPE_API_KEY DEEPSEEK_API_KEY AMAP_API_KEY BAIDU_API_KEY; do
+            value="${!name}"
+            if [ -z "${value}" ]; then
+              missing="${missing} ${name}"
+            fi
+          done
+          if [ -n "${missing}" ]; then
+            echo "ready=false" >> "${GITHUB_OUTPUT}"
+            echo "::warning::缺少必需 Secrets:${missing} , 集成测试将被跳过. 日志不打印任何密钥值"
+          else
+            echo "ready=true" >> "${GITHUB_OUTPUT}"
+            echo "必需 Secrets 齐全, 允许执行集成测试"
+          fi
+
+  # 集成测试: 仅当前置检查输出 ready == true 时执行
+  integration:
+    name: 集成测试 (MySQL + Redis + Milvus + Secrets)
+    needs: preflight
+    if: needs.preflight.outputs.ready == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    # 同一分支只保留一次集成测试, 避免重复占用 runner
+    concurrency:
+      group: integration-tests-${{ github.workflow }}-${{ github.ref }}
+      cancel-in-progress: true
+    env:
+      # 数据库与中间件连接信息: 同时供 .env 生成与 maven 进程使用 (双保险)
+      MYSQL_HOST: 127.0.0.1
+      MYSQL_PORT: '3306'
+      MYSQL_USER: root
+      MYSQL_PASSWORD: integration-root-pw
+      REDIS_HOST: 127.0.0.1
+      REDIS_PORT: '6379'
+      REDIS_PASSWORD: ''
+      MILVUS_HOST: 127.0.0.1
+      MILVUS_PORT: '19530'
+      # 故意不在 job 级设置 MYSQL_DB: mcp-server 需要 TripAgent 库, agent-core 需要 agent 库,
+      # 两个不同的值分别写进各自模块的 .env 文件, 避免 env 覆盖导入配置
+      # API Key 全部来自 Secrets, 经 env 传入, 不在 run 脚本里直接拼接表达式
+      DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
+      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+      AMAP_API_KEY: ${{ secrets.AMAP_API_KEY }}
+      BAIDU_API_KEY: ${{ secrets.BAIDU_API_KEY }}
+      TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+      # 手动输入的开关: true 表示跑全部集成测试, false 表示只跑冒烟用例
+      MCP_FULL_SUITE: ${{ inputs.mcp_full_suite }}
+    services:
+      # mcp-server 的 datasource 没有 profile 门控, @SpringBootTest 必然连 MySQL
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: integration-root-pw
+          MYSQL_DATABASE: TripAgent
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -pintegration-root-pw"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=12
+      # agent-core 持久化段使用 Redis
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=12
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
+
+      - name: 安装 JDK 17 并缓存 Maven 依赖
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: 补建 agent-core 使用的 agent 库
+        run: |
+          # MySQL service 已按 MYSQL_DATABASE 建好 TripAgent 库, 这里补建 agent 库
+          # 优先使用 runner 自带的 mysql 客户端, 缺失时回退到 service 容器内的客户端
+          export MYSQL_PWD="${MYSQL_PASSWORD}"
+          if command -v mysql >/dev/null 2>&1; then
+            client_mode="host"
+          else
+            client_mode="docker"
+            mysql_container="$(docker ps --filter ancestor=mysql:8.4 --format '{{.ID}}' | head -n 1)"
+            if [ -z "${mysql_container}" ]; then
+              echo "::error::runner 无 mysql 客户端且未找到 mysql:8.4 service 容器"
+              exit 1
+            fi
+          fi
+
+          mysql_ready="false"
+          for i in $(seq 1 30); do
+            if [ "${client_mode}" = "host" ]; then
+              mysqladmin ping -h 127.0.0.1 -P 3306 -uroot --silent >/dev/null 2>&1 && mysql_ready="true" || mysql_ready="false"
+            else
+              docker exec -e MYSQL_PWD="${MYSQL_PASSWORD}" "${mysql_container}" mysqladmin ping -h 127.0.0.1 -uroot --silent >/dev/null 2>&1 && mysql_ready="true" || mysql_ready="false"
+            fi
+            if [ "${mysql_ready}" = "true" ]; then
+              break
+            fi
+            echo "等待 MySQL 就绪 ... (${i}/30)"
+            sleep 5
+          done
+          if [ "${mysql_ready}" != "true" ]; then
+            echo "::error::MySQL 在 150 秒内未就绪, 无法补建 agent 库"
+            exit 1
+          fi
+
+          if [ "${client_mode}" = "host" ]; then
+            mysql -h 127.0.0.1 -P 3306 -uroot --protocol=TCP -e "CREATE DATABASE IF NOT EXISTS agent DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+            mysql -h 127.0.0.1 -P 3306 -uroot --protocol=TCP -e "SHOW DATABASES;"
+          else
+            docker exec "${mysql_container}" mysql -uroot -e "CREATE DATABASE IF NOT EXISTS agent DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+            docker exec "${mysql_container}" mysql -uroot -e "SHOW DATABASES;"
+          fi
+          echo "MySQL 库已就绪: TripAgent (service 自带) 与 agent (本步骤补建)"
+
+      - name: 启动 Milvus standalone (etcd + minio + milvus)
+        run: |
+          docker compose -f docker/milvus/docker-compose.yml up -d --wait --wait-timeout 300
+
+      - name: 等待 Milvus 19530 可连接
+        run: |
+          deadline=$(( SECONDS + 300 ))
+          while [ "${SECONDS}" -lt "${deadline}" ]; do
+            if (exec 3<>/dev/tcp/127.0.0.1/19530) 2>/dev/null; then
+              echo "Milvus 19530 已可连接"
+              exit 0
+            fi
+            echo "等待 Milvus 19530 端口开放 ..."
+            sleep 5
+          done
+          echo "::error::等待 Milvus 19530 超时 (300 秒), mcp-server 的 vectorstore initialize-schema 无法完成"
+          docker compose -f docker/milvus/docker-compose.yml ps || true
+          docker compose -f docker/milvus/docker-compose.yml logs --tail=100 || true
+          exit 1
+
+      - name: 从 Secrets 生成两个 .env 文件
+        # 必须使用 heredoc 落盘, 不打印任何密钥内容到日志
+        run: |
+          cat > mcp-server/src/main/resources/.env <<EOF
+          DASHSCOPE_API_KEY=${DASHSCOPE_API_KEY}
+          AMAP_API_KEY=${AMAP_API_KEY}
+          BAIDU_API_KEY=${BAIDU_API_KEY}
+          TAVILY_API_KEY=${TAVILY_API_KEY}
+          MYSQL_HOST=${MYSQL_HOST}
+          MYSQL_PORT=${MYSQL_PORT}
+          MYSQL_DB=TripAgent
+          MYSQL_USER=${MYSQL_USER}
+          MYSQL_PASSWORD=${MYSQL_PASSWORD}
+          MILVUS_HOST=${MILVUS_HOST}
+          MILVUS_PORT=${MILVUS_PORT}
+          EOF
+
+          cat > agent-core/src/main/resources/.env <<EOF
+          DASHSCOPE_API_KEY=${DASHSCOPE_API_KEY}
+          DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
+          MYSQL_HOST=${MYSQL_HOST}
+          MYSQL_PORT=${MYSQL_PORT}
+          MYSQL_DB=agent
+          MYSQL_USER=${MYSQL_USER}
+          MYSQL_PASSWORD=${MYSQL_PASSWORD}
+          REDIS_HOST=${REDIS_HOST}
+          REDIS_PORT=${REDIS_PORT}
+          REDIS_PASSWORD=${REDIS_PASSWORD}
+          MILVUS_HOST=${MILVUS_HOST}
+          MILVUS_PORT=${MILVUS_PORT}
+          EOF
+
+          chmod 600 mcp-server/src/main/resources/.env agent-core/src/main/resources/.env
+
+          for env_file in mcp-server/src/main/resources/.env agent-core/src/main/resources/.env; do
+            if [ ! -s "${env_file}" ]; then
+              echo "::error::${env_file} 生成失败或为空, EnvCheckTest 将无法通过"
+              exit 1
+            fi
+            echo "${env_file} 已生成, 大小 $(wc -c < "${env_file}") 字节 (内容不回显)"
+          done
+
+      - name: 运行集成测试 (仅 integration 标签)
+        # .env 中的值已通过 job 级 env 同时传给 maven 进程 (双保险)
+        run: |
+          if [ "${MCP_FULL_SUITE}" = "true" ]; then
+            echo "运行 mcp-server 全部 @Tag(integration) 测试"
+            mvn -B -ntp -Dgroups=integration verify
+          else
+            echo "冒烟模式: 仅运行 EnvLoadingTest 与 EnvCheckTest"
+            mvn -B -ntp -Dgroups=integration -Dtest='EnvLoadingTest,EnvCheckTest' -DfailIfNoTests=false verify
+          fi
+
+      - name: 失败时输出 Milvus 与容器日志
+        if: failure()
+        run: |
+          docker compose -f docker/milvus/docker-compose.yml ps || true
+          docker compose -f docker/milvus/docker-compose.yml logs --tail=200 || true
+
+      - name: 上传 surefire 报告 (无论成败)
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: surefire-reports
+          path: '**/target/surefire-reports/**'
+          if-no-files-found: ignore
+          retention-days: 7
