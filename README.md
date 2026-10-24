@@ -104,7 +104,7 @@ cp agent-core/src/main/resources/.env.example agent-core/src/main/resources/.env
 
 # 配置 MCP Server
 cp mcp-server/src/main/resources/.env.example mcp-server/src/main/resources/.env
-# 编辑 .env，填入 AMAP_API_KEY、BAIDU_API_KEY，以及可选的 TAVILY_API_KEY
+# 编辑 .env，填入 AMAP_API_KEY、BAIDU_API_KEY、DEEPSEEK_API_KEY（搜索双通道），TAVILY_API_KEY 可选
 ```
 
 > **Profile 说明**：默认 profile 是 `deepseek`（见 application.yml `spring.profiles.default`）。

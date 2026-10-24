@@ -1,45 +1,42 @@
 package uno.zhuchen.agent.mcpserver.service;
 
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
+import uno.zhuchen.agent.tools.cloud.model.SearchResult;
 import uno.zhuchen.agent.tools.cloud.service.CloudSearchService;
 
 import java.util.List;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Tavily 搜索集成测试 — 确保 provider 固定为 tavily
+ * Tavily 通道集成测试 - 把 provider 钉成 tavily, 实际调用 Tavily Search API
  *
- * <p>与 CloudSearchServiceIntegrationTest 分开独立运行，
- * 通过 {@code @SpringBootTest(properties = ...)} 将 provider 强制设为 tavily。
+ * <p>与 {@link CloudSearchServiceIntegrationTest} 一样<b>不启动 Spring 上下文</b>:
+ * 本测试只关心通道本身, 拉全量上下文会连带要求 MySQL / Milvus / DashScope,
+ * Milvus 未启动时整个上下文失败, 测试报错但与 Tavily 通道无关。
  */
-@SpringBootTest(properties = "search.cloud.provider=tavily")
 @Tag("integration")
 class TavilySearchIntegrationTest {
 
     private static final Logger log = LoggerFactory.getLogger(TavilySearchIntegrationTest.class);
 
-    @Autowired
-    private CloudSearchService searchService;
-
     @Test
     void realTavilySearchReturnsResults() {
-        // provider=tavily，确保走 Tavily 而非百度
-        List<CloudSearchService.SearchResult> results = searchService.search("杭州美食攻略", 5);
+        String apiKey = CloudSearchServiceIntegrationTest.key("tavily.api-key", "TAVILY_API_KEY");
+        Assumptions.assumeTrue(apiKey != null, "未配置 TAVILY_API_KEY, 跳过");
+
+        CloudSearchService service = CloudSearchServiceIntegrationTest.service("tavily", apiKey);
+        List<SearchResult> results = service.search("杭州美食攻略", 5);
 
         log.info("Tavily 搜索集成测试: 返回 {} 条结果", results.size());
-        if (results.isEmpty()) {
-            log.warn("Tavily 搜索无返回结果（可能 API Key 无效或网络不可达）");
-            return;
-        }
+        Assumptions.assumeFalse(results.isEmpty(), "Tavily 通道无返回(Key 无效或网络不可达), 跳过");
 
-        // 验证返回结构
-        for (CloudSearchService.SearchResult r : results) {
+        for (SearchResult r : results) {
             assertNotNull(r.title(), "标题不能为空");
             assertNotNull(r.url(), "URL 不能为空");
             assertTrue(r.url().startsWith("http"), "URL 应以 http 开头: " + r.url());

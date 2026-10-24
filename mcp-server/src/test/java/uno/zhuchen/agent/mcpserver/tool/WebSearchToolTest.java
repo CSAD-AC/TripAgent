@@ -2,30 +2,41 @@ package uno.zhuchen.agent.mcpserver.tool;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import uno.zhuchen.agent.tools.cloud.model.ChannelStatus;
+import uno.zhuchen.agent.tools.cloud.model.SearchOutcome;
+import uno.zhuchen.agent.tools.cloud.model.SearchResult;
 import uno.zhuchen.agent.tools.cloud.service.CloudSearchService;
-import uno.zhuchen.agent.tools.cloud.service.CloudSearchService.SearchResult;
 import uno.zhuchen.agent.tools.cloud.tool.WebSearchTool;
 
 import java.util.List;
 
-import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.ArgumentMatchers.*;
-import static org.mockito.Mockito.*;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 /**
  * 搜索工具单元测试
  *
- * <p>覆盖场景：
+ * <p>覆盖场景:
  * <ul>
- *   <li>正常搜索返回结果</li>
- *   <li>搜索无结果（空列表）→ 降级提示</li>
- *   <li>云端搜索服务抛异常 → 降级提示</li>
- *   <li>limit 参数边界：null / 负值 / 超大值</li>
- *   <li>query 为空 → 空结果降级</li>
+ *   <li>正常搜索返回结构化结果</li>
+ *   <li>无结果 / 服务异常 -> 降级提示且不抛异常</li>
+ *   <li>limit 参数边界: null / 负值 / 超大值</li>
+ *   <li>通道降级信息透出</li>
  * </ul>
  */
 @ExtendWith(MockitoExtension.class)
@@ -43,67 +54,92 @@ class WebSearchToolTest {
         tool = new WebSearchTool(searchService, objectMapper);
     }
 
+    /**
+     * 构造一个"所有通道都正常"的 outcome
+     *
+     * <p>两路条数刻意差异化: 真实场景里两路返回条数几乎不会相同,
+     * 若都一样, 断言会依赖"两路条数相等"这个假象。
+     */
+    private static SearchOutcome healthy(List<SearchResult> results) {
+        int baiduHits = results.size();
+        int deepseekHits = Math.max(1, results.size() - 1);
+        return new SearchOutcome(results,
+                List.of(new ChannelStatus("baidu", baiduHits, 120L, null),
+                        new ChannelStatus("deepseek", deepseekHits, 90L, null)));
+    }
+
     @Test
     void normalSearchReturnsStructuredJson() throws Exception {
-        // 准备：模拟云端搜索返回 2 条结果
         List<SearchResult> mockResults = List.of(
                 new SearchResult("北京景点推荐", "https://example.com/beijing", "北京必去景点汇总"),
-                new SearchResult("北京三日游", "https://example.com/3days", "经典路线推荐")
-        );
-        when(searchService.search("北京景点", 10)).thenReturn(mockResults);
+                new SearchResult("北京三日游", "https://example.com/3days", "经典路线推荐"));
+        when(searchService.searchDetailed("北京景点", 10)).thenReturn(healthy(mockResults));
 
-        // 执行
         String json = tool.webSearch("北京景点", null);
 
-        // 验证：JSON 包含预期字段
         assertNotNull(json);
         assertTrue(json.contains("\"query\":\"北京景点\""));
         assertTrue(json.contains("\"source\":\"cloud_search\""));
         assertTrue(json.contains("\"total\":2"));
         assertTrue(json.contains("北京景点推荐"));
         assertTrue(json.contains("北京三日游"));
+        assertFalse(json.contains("degraded"), "两路都正常时不应出现降级标记");
 
-        // 验证：limit 默认值为 10
-        verify(searchService).search("北京景点", 10);
+        verify(searchService).searchDetailed("北京景点", 10);
     }
 
     @Test
     void customLimitIsPassedToService() {
-        when(searchService.search("test", 5)).thenReturn(List.of(
-                new SearchResult("r1", "https://x.com/1", "s1")
-        ));
+        when(searchService.searchDetailed("test", 5))
+                .thenReturn(healthy(List.of(new SearchResult("r1", "https://x.com/1", "s1"))));
 
         tool.webSearch("test", 5);
 
-        verify(searchService).search("test", 5);
+        verify(searchService).searchDetailed("test", 5);
     }
 
     @Test
     void limitClampedToMax20() {
-        when(searchService.search("test", 20)).thenReturn(List.of(
-                new SearchResult("r1", "https://x.com/1", "s1")
-        ));
+        when(searchService.searchDetailed("test", 20))
+                .thenReturn(healthy(List.of(new SearchResult("r1", "https://x.com/1", "s1"))));
 
         tool.webSearch("test", 999);
 
-        verify(searchService).search("test", 20);
+        verify(searchService).searchDetailed("test", 20);
     }
 
     @Test
     void limitAtLeast1() {
-        when(searchService.search("test", 1)).thenReturn(List.of(
-                new SearchResult("r1", "https://x.com/1", "s1")
-        ));
+        when(searchService.searchDetailed("test", 1))
+                .thenReturn(healthy(List.of(new SearchResult("r1", "https://x.com/1", "s1"))));
 
         // 负数应被 clamp 到 1
         tool.webSearch("test", -5);
 
-        verify(searchService).search("test", 1);
+        verify(searchService).searchDetailed("test", 1);
+    }
+
+    @Test
+    @DisplayName("某一路故障时, 结果照常返回并带降级说明")
+    void degradedChannelIsReportedInPayload() throws Exception {
+        List<SearchResult> results = List.of(
+                new SearchResult("Title", "https://url.com", "Snippet"));
+        when(searchService.searchDetailed("t", 10)).thenReturn(new SearchOutcome(results, List.of(
+                new ChannelStatus("baidu", 1, 120L, null),
+                new ChannelStatus("deepseek", 0, 30L, "timeout"))));
+
+        var parsed = objectMapper.readTree(tool.webSearch("t", null));
+
+        assertEquals(1, parsed.get("total").asInt());
+        assertTrue(parsed.has("degraded"), "降级信息应透出给 LLM");
+        assertTrue(parsed.get("degraded").asText().contains("deepseek"));
     }
 
     @Test
     void emptyResultsReturnsUnavailableMessage() throws Exception {
-        when(searchService.search("未知查询", 10)).thenReturn(List.of());
+        when(searchService.searchDetailed("未知查询", 10))
+                .thenReturn(new SearchOutcome(List.of(),
+                        List.of(new ChannelStatus("baidu", 0, 100L, null))));
 
         String json = tool.webSearch("未知查询", null);
 
@@ -114,10 +150,9 @@ class WebSearchToolTest {
 
     @Test
     void serviceExceptionReturnsUnavailableMessage() throws Exception {
-        when(searchService.search(anyString(), anyInt()))
+        when(searchService.searchDetailed(anyString(), anyInt()))
                 .thenThrow(new RuntimeException("Cloud search timeout"));
 
-        // 工具不应抛出异常，应返回降级提示
         String json = tool.webSearch("test", null);
 
         assertNotNull(json);
@@ -127,8 +162,7 @@ class WebSearchToolTest {
 
     @Test
     void nullQueryReturnsEmpty() throws Exception {
-        // null query 应该被 service 层处理为空列表
-        when(searchService.search(null, 10)).thenReturn(List.of());
+        when(searchService.searchDetailed(isNull(), anyInt())).thenReturn(SearchOutcome.empty());
 
         String json = tool.webSearch(null, null);
 
@@ -138,7 +172,7 @@ class WebSearchToolTest {
 
     @Test
     void blankQueryReturnsEmpty() throws Exception {
-        when(searchService.search("   ", 10)).thenReturn(List.of());
+        when(searchService.searchDetailed("   ", 10)).thenReturn(SearchOutcome.empty());
 
         String json = tool.webSearch("   ", null);
 
@@ -148,14 +182,11 @@ class WebSearchToolTest {
 
     @Test
     void resultJsonCanBeParsedByObjectMapper() throws Exception {
-        List<SearchResult> results = List.of(
-                new SearchResult("Title", "https://url.com", "Snippet")
-        );
-        when(searchService.search("t", 10)).thenReturn(results);
+        when(searchService.searchDetailed("t", 10)).thenReturn(healthy(List.of(
+                new SearchResult("Title", "https://url.com", "Snippet"))));
 
         String json = tool.webSearch("t", null);
 
-        // 反序列化验证 JSON 格式正确
         var parsed = objectMapper.readTree(json);
         assertEquals("t", parsed.get("query").asText());
         assertEquals(1, parsed.get("total").asInt());
@@ -166,15 +197,14 @@ class WebSearchToolTest {
 
     @Test
     void serviceExceptionNeverThrows() {
-        // 服务异常应被工具层 try-catch 兜住
-        doThrow(new RuntimeException("search failed")).when(searchService).search(anyString(), anyInt());
+        doThrow(new RuntimeException("search failed")).when(searchService)
+                .searchDetailed(anyString(), anyInt());
         assertDoesNotThrow(() -> tool.webSearch("crash", null));
     }
 
     @Test
     void nullResultNeverThrows() {
-        // null 返回值也应安全处理
-        doReturn(null).when(searchService).search(anyString(), anyInt());
+        doReturn(null).when(searchService).searchDetailed(anyString(), anyInt());
         assertDoesNotThrow(() -> tool.webSearch("nullResult", null));
     }
 }

@@ -61,12 +61,21 @@ amap:
   api:
     key: ${AMAP_API_KEY}
 
-# 云端搜索配置（替换原自建 Bing 爬虫）
+# 云端搜索配置（百度 Qianfan + DeepSeek Search 双通道并行，RRF 名次融合）
 search:
   cloud:
-    provider: baidu-tavily-fallback  # 搜索后端：baidu / tavily / baidu-tavily-fallback
-    baidu-api-key: ${BAIDU_API_KEY}
-    tavily-api-key: ${TAVILY_API_KEY}
+    # parallel: 双通道并行 + 名次融合 + 单路故障降级（默认）
+    # 其它取值: baidu / deepseek / tavily / baidu-tavily-fallback（排查与灰度用）
+    provider: ${SEARCH_PROVIDER:parallel}
+    baidu-api-key: ${BAIDU_API_KEY:}
+    tavily-api-key: ${TAVILY_API_KEY:}
+    # DeepSeek 搜索通道，与模型调用共用同一把 Key
+    deepseek-api-key: ${DEEPSEEK_API_KEY:}
+    deepseek-base-url: ${DEEPSEEK_BASE_URL:https://api.deepseek.com}
+    # 单次 HTTP 超时（秒）；DeepSeek 遇 408/429/5xx 会重试一次
+    http-timeout-seconds: ${SEARCH_HTTP_TIMEOUT:12}
+    # 单通道总守卫超时（秒），应为 2*http-timeout 加余量，否则重试永远来不及
+    channel-timeout-seconds: ${SEARCH_CHANNEL_TIMEOUT:30}
 # 页面抓取配置
 fetch:
   timeout-seconds: 15       # 单次抓取超时（页面下载比搜索慢）
@@ -101,7 +110,7 @@ mcp:
         interline-ticket: true
         train-route: true
 
-    # 云端工具（百度千帆搜索 / 网页抓取），不属于高德
+    # 云端工具（百度 Qianfan + DeepSeek Search 并行搜索 / 网页抓取），不属于高德
     cloud:
       enabled: true
       tools:
