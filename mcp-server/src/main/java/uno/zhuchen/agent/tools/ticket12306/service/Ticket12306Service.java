@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpHeaders;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
 import uno.zhuchen.agent.tools.ticket12306.config.Ticket12306Config;
@@ -20,7 +21,12 @@ public class Ticket12306Service {
 
     private static final Logger log = LoggerFactory.getLogger(Ticket12306Service.class);
     private static final Pattern LCQUERY_PATH_PATTERN = Pattern.compile("var lc_search_url\\s*=\\s*'([^']+)'");
+    private static final Pattern TICKET_QUERY_PATH_PATTERN =
+            Pattern.compile("var\\s+CLeftTicketUrl\\s*=\\s*['\"]([^'\"]+)['\"]");
     private static final int REQUEST_TIMEOUT = 15;
+    private static final String USER_AGENT =
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                    + "(KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36";
 
     private final WebClient webClient;
     private final ObjectMapper mapper;
@@ -47,9 +53,16 @@ public class Ticket12306Service {
      * 获取 12306 Cookie
      */
     public Map<String, String> getCookie() {
+        InitSession session = getInitSession();
+        return session != null ? session.cookies() : new LinkedHashMap<>();
+    }
+
+    private InitSession getInitSession() {
         try {
             return webClient.get()
                     .uri(Ticket12306Config.API_BASE + "/otn/leftTicket/init")
+                    .header(HttpHeaders.USER_AGENT, USER_AGENT)
+                    .header(HttpHeaders.REFERER, Ticket12306Config.WEB_URL)
                     .exchangeToMono(resp -> {
                         Map<String, String> cookies = new LinkedHashMap<>();
                         List<String> setCookieHeaders = resp.headers().asHttpHeaders().get("Set-Cookie");
@@ -62,16 +75,25 @@ public class Ticket12306Service {
                                 }
                             }
                         }
-                        // 读取 body 确保请求完成
-                        return resp.bodyToMono(String.class).thenReturn(cookies);
+                        return resp.bodyToMono(String.class)
+                                .map(body -> new InitSession(cookies, extractTicketQueryPath(body)));
                     })
                     .timeout(Duration.ofSeconds(REQUEST_TIMEOUT))
                     .blockOptional()
-                    .orElse(new LinkedHashMap<>());
+                    .orElse(null);
         } catch (Exception e) {
             log.warn("获取 cookie 失败: {}", e.getMessage());
-            return new LinkedHashMap<>();
+            return null;
         }
+    }
+
+    static String extractTicketQueryPath(String initHtml) {
+        if (initHtml == null || initHtml.isBlank()) return null;
+        Matcher matcher = TICKET_QUERY_PATH_PATTERN.matcher(initHtml);
+        if (!matcher.find()) return null;
+        String path = matcher.group(1).trim();
+        if (path.startsWith("/otn/")) return path;
+        return "/otn/" + path.replaceFirst("^/+", "");
     }
 
     /**
@@ -87,9 +109,11 @@ public class Ticket12306Service {
 
     private String requestGet(String url, Map<String, String> headers) {
         try {
-            WebClient.RequestHeadersSpec<?> spec = webClient.get().uri(url);
+            WebClient.RequestHeadersSpec<?> spec = webClient.get().uri(url)
+                    .header(HttpHeaders.USER_AGENT, USER_AGENT)
+                    .header(HttpHeaders.REFERER, Ticket12306Config.WEB_URL);
             if (headers != null && !headers.isEmpty()) {
-                spec = spec.header("Cookie", formatCookies(headers));
+                spec = spec.header(HttpHeaders.COOKIE, formatCookies(headers));
             }
             return spec.retrieve().bodyToMono(String.class)
                     .timeout(Duration.ofSeconds(REQUEST_TIMEOUT))
@@ -122,21 +146,36 @@ public class Ticket12306Service {
         String toCode = stationService.parseStationCode(toStation);
         if (fromCode == null || toCode == null) return null;
 
-        Map<String, String> cookies = getCookie();
-        if (cookies == null || cookies.isEmpty()) return null;
+        InitSession session = getInitSession();
+        if (session == null || session.cookies().isEmpty()) {
+            throw new IllegalStateException("12306 初始化会话失败");
+        }
+        Map<String, String> cookies = session.cookies();
+        String queryPath = session.ticketQueryPath();
+        if (queryPath == null || queryPath.isBlank()) {
+            throw new IllegalStateException("12306 初始化页面未返回余票查询接口");
+        }
 
-        // 12306 余票查询接口已变更为 queryI
-        String url = Ticket12306Config.API_BASE + "/otn/leftTicket/queryI?"
+        String url = Ticket12306Config.API_BASE + queryPath + "?"
                 + "leftTicketDTO.train_date=" + date
                 + "&leftTicketDTO.from_station=" + fromCode
                 + "&leftTicketDTO.to_station=" + toCode
                 + "&purpose_codes=ADULT";
 
         JsonNode root = requestGetJson(url, cookies);
-        if (root == null) return null;
+        if (root == null) {
+            throw new IllegalStateException("12306 余票接口无响应或返回非 JSON 数据");
+        }
+        if (root.has("status") && !root.get("status").asBoolean()) {
+            String message = root.path("messages").asText("");
+            throw new IllegalStateException("12306 余票接口返回失败"
+                    + (message.isBlank() ? "" : ": " + message));
+        }
 
         JsonNode data = root.get("data");
-        if (data == null) return null;
+        if (data == null || !data.isObject()) {
+            throw new IllegalStateException("12306 余票响应缺少 data");
+        }
 
         LeftTicketQueryResult result = new LeftTicketQueryResult();
 
@@ -350,6 +389,9 @@ public class Ticket12306Service {
     }
 
     // ==================== 内部结果类 ====================
+
+    private record InitSession(Map<String, String> cookies, String ticketQueryPath) {
+    }
 
     /**
      * 余票查询原始结果: 包含管道分隔数据和站名映射
