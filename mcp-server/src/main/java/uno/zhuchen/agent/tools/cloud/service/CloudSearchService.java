@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
 import uno.zhuchen.agent.tools.cloud.config.SearchConfig;
@@ -96,6 +97,7 @@ public class CloudSearchService {
     private final SearchClient deepseekClient;
     private final SearchClient tavilyClient;
 
+    @Autowired
     public CloudSearchService(SearchConfig config, ObjectMapper objectMapper) {
         this(config, createClients(config, objectMapper));
     }
