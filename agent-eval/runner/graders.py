@@ -17,6 +17,8 @@ def grade_case(case, trace):
         failures.append(f"run.exception:{trace['exception']}")
     if trace.get("error"):
         failures.append(f"run.error:{trace['error']}")
+    if trace.get("foreignEventCount", 0):
+        failures.append("run.cross_conversation_event")
 
     for group in expect.get("mustCallTools", []):
         aliases = [group] if isinstance(group, str) else group

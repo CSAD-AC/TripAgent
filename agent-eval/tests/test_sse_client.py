@@ -25,6 +25,11 @@ class SseClientTest(unittest.TestCase):
 
     def test_consume_event_collects_trace(self):
         trace = new_trace("case-1")
+        consume_event(trace, {
+            "type": "session_init",
+            "conversationId": "conversation-1",
+            "traceId": "trace-1",
+        })
         consume_event(trace, {"type": "tool_call", "toolName": "amapWeather", "toolArguments": "{}"})
         consume_event(trace, {"type": "iteration_separator"})
         consume_event(trace, {"type": "node_data", "dataType": "budget", "data": {"totalCost": 10}})
@@ -35,6 +40,24 @@ class SseClientTest(unittest.TestCase):
         self.assertEqual(1, trace["iterationCount"])
         self.assertEqual("amapWeather", trace["toolCalls"][0]["name"])
         self.assertEqual(10, trace["nodeData"]["budget"]["totalCost"])
+
+    def test_consume_event_ignores_other_conversations(self):
+        trace = new_trace("case-1")
+        consume_event(trace, {
+            "type": "session_init",
+            "conversationId": "conversation-1",
+            "traceId": "trace-1",
+        })
+
+        consume_event(trace, {
+            "type": "node_data",
+            "conversationId": "conversation-2",
+            "dataType": "constraints",
+            "data": {"days": 3},
+        })
+
+        self.assertNotIn("constraints", trace["nodeData"])
+        self.assertEqual(1, trace["foreignEventCount"])
 
     @patch("runner.sse_client._stream_once")
     def test_run_case_continues_after_history_clarification(self, stream_once):

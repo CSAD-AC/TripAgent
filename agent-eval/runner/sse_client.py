@@ -131,6 +131,7 @@ def new_trace(case_id, conversation_id=None):
         "nodeErrors": 0,
         "graphIterations": 0,
         "nodeData": {},
+        "foreignEventCount": 0,
         "error": None,
         "exception": None,
         "durationMs": 0,
@@ -142,7 +143,16 @@ def consume_event(trace, event):
     if event_type == "session_init":
         trace["conversationId"] = event.get("conversationId") or trace["conversationId"]
         trace["traceId"] = event.get("traceId")
-    elif event_type == "tool_call":
+        return False
+
+    event_conversation_id = event.get("conversationId")
+    expected_conversation_id = trace.get("conversationId")
+    if event_conversation_id and expected_conversation_id \
+            and event_conversation_id != expected_conversation_id:
+        trace["foreignEventCount"] += 1
+        return False
+
+    if event_type == "tool_call":
         trace["toolCalls"].append({
             "id": event.get("toolCallId"),
             "name": event.get("toolName"),
