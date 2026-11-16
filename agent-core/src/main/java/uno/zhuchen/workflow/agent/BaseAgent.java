@@ -87,11 +87,12 @@ public abstract class BaseAgent implements NodeAction {
     /** ManagerAgent 首次模式 (askUser 追问) 最大轮次。 */
     protected static final int LLM_MAX_MANAGER_FIRST_ROUNDS = 3;
 
-    // ============ Graph 流事件发射器(C1 修复: 构造器注入替代 ThreadLocal) ============
+    // ============ Graph 流事件发射器(C1 修复: 实例引用替代 ThreadLocal) ============
 
     /**
      * 实例级 emitter 引用 — 由 GraphStreamRunner 在 build Graph 前通过 setEmitter() 注入.
      * <p>不再使用 ThreadLocal,避免并行节点(route + itinerary)线程切换时事件丢失.
+     * <p>该 emitter 必须是按 conversationId 路由的共享实例，不能在每次请求中绑定到单个 sink。
      */
     private uno.zhuchen.workflow.util.GraphEventEmitter emitter;
 

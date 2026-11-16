@@ -24,6 +24,7 @@ import uno.zhuchen.workflow.agent.BaseAgent;
 import uno.zhuchen.workflow.state.TripPlanningStateKeys;
 import uno.zhuchen.workflow.state.WorkflowConstants;
 import uno.zhuchen.workflow.util.GraphEventEmitter;
+import uno.zhuchen.workflow.util.GraphEventRouter;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -65,16 +66,19 @@ public class GraphStreamRunner {
     private static final Logger log = LoggerFactory.getLogger(GraphStreamRunner.class);
 
     private final TripPlanningGraphBuilder graphBuilder;
+    private final GraphEventRouter graphEventRouter;
     private final ChatMemory chatMemory;
     private final ModelRouter modelRouter;
     /** 指向 mcp-server, 用于 Graph 报告自动沉淀进知识库(graph_report) */
     private final WebClient mcpClient;
 
     public GraphStreamRunner(TripPlanningGraphBuilder graphBuilder,
+                             GraphEventRouter graphEventRouter,
                              ChatMemory chatMemory,
                              ModelRouter modelRouter,
                              McpClientProperties mcp) {
         this.graphBuilder = graphBuilder;
+        this.graphEventRouter = graphEventRouter;
         this.chatMemory = chatMemory;
         this.modelRouter = modelRouter;
         this.mcpClient = WebClient.builder().baseUrl(mcp.getServerUrl()).build();
@@ -140,10 +144,10 @@ public class GraphStreamRunner {
         // 避免同一个异常被推三次 error 事件 (C5 修复)
         AtomicBoolean errorEmitted = new AtomicBoolean(false);
         long startMs = System.currentTimeMillis();
-        // C1 修复: 实例级 emitter 替代 ThreadLocal,并行节点线程切换时事件不再丢失
-        GraphEventEmitter emitter = chunk -> safelyEmit(sink, chunk);
+        GraphEventEmitter sinkEmitter = chunk -> safelyEmit(sink, chunk);
+        graphEventRouter.register(conversationId, sinkEmitter);
         try {
-            CompiledGraph graph = graphBuilder.build(emitter);
+            CompiledGraph graph = graphBuilder.build(graphEventRouter.emitter());
 
             Map<String, Object> input = new HashMap<>();
             input.put(TripPlanningStateKeys.INPUT_RAW_REQUEST, rawRequest);
@@ -187,6 +191,7 @@ public class GraphStreamRunner {
                         System.currentTimeMillis() - startMs));
             }
         } finally {
+            graphEventRouter.unregister(conversationId, sinkEmitter);
             sink.tryEmitComplete();
         }
     }
