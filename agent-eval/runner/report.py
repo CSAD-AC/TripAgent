@@ -3,6 +3,30 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 
+def sanitize_for_json(value):
+    if isinstance(value, str):
+        try:
+            value.encode("utf-8")
+            return value
+        except UnicodeEncodeError:
+            return value.encode("utf-16", "surrogatepass").decode("utf-16", "replace")
+    if isinstance(value, list):
+        return [sanitize_for_json(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            sanitize_for_json(key): sanitize_for_json(item)
+            for key, item in value.items()
+        }
+    return value
+
+
+def write_json(path, value):
+    Path(path).write_text(
+        json.dumps(sanitize_for_json(value), ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
 def summarize(results):
     total = len(results)
     passed = sum(result["verdict"] == "PASS" for result in results)
@@ -50,22 +74,15 @@ def write_report(out_dir, summary, results, traces=None, metadata=None):
     out_dir.mkdir(parents=True, exist_ok=True)
 
     if metadata:
-        (out_dir / "manifest.json").write_text(
-            json.dumps(metadata, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
-    (out_dir / "summary.json").write_text(
-        json.dumps(summary, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    (out_dir / "scores.json").write_text(
-        json.dumps(results, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
+        write_json(out_dir / "manifest.json", metadata)
+    write_json(out_dir / "summary.json", summary)
+    write_json(out_dir / "scores.json", results)
     if traces is not None:
         with (out_dir / "runs.jsonl").open("w", encoding="utf-8") as handle:
             for trace in traces:
-                handle.write(json.dumps(trace, ensure_ascii=False) + "\n")
+                handle.write(
+                    json.dumps(sanitize_for_json(trace), ensure_ascii=False) + "\n"
+                )
 
     lines = [
         "# Eval Report",

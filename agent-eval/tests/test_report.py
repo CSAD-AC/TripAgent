@@ -39,3 +39,21 @@ class ReportTest(unittest.TestCase):
             self.assertTrue((out / "scores.json").is_file())
             self.assertTrue((out / "runs.jsonl").is_file())
             self.assertEqual("x", json.loads((out / "manifest.json").read_text())["baseUrl"])
+
+    def test_write_report_sanitizes_lone_surrogates(self):
+        results = [{
+            "caseId": "a",
+            "mode": "react",
+            "verdict": "PASS",
+            "failures": [],
+            "warnings": [],
+        }]
+        summary = summarize(results)
+        trace = {"finalAnswer": "broken \ud83d token"}
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "run"
+
+            write_report(out, summary, results, traces=[trace])
+
+            written = json.loads((out / "runs.jsonl").read_text(encoding="utf-8"))
+            self.assertEqual("broken \ufffd token", written["finalAnswer"])
