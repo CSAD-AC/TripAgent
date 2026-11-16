@@ -16,7 +16,7 @@ TravelPal 是一个基于大语言模型的 AI 旅游规划系统，具备三种
 |------|------|------|
 | 后端框架 | Spring Boot | 3.5.14 |
 | AI 框架 | Spring AI + Spring AI Alibaba | 1.1.2 / 1.1.2.0 |
-| 语言模型 | DeepSeek（默认）/ 通义千问 | deepseek-v4-flash / qwen3.6-flash |
+| 语言模型 | DeepSeek（默认）/ 通义千问 | global:deepseek-v4.1-flash / qwen3.6-flash |
 | 工具协议 | Model Context Protocol (MCP) | — |
 | 持久化 | MySQL + Redis（MyBatis-Plus + Flyway） | 8.x / 7.x |
 | 向量库 | Milvus（RAG 语义检索，Docker Compose 部署） | - |

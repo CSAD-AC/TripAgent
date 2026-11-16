@@ -27,7 +27,7 @@ public class OpenAiTimeoutConfig {
 
     private static final Logger log = LoggerFactory.getLogger(OpenAiTimeoutConfig.class);
 
-    @Value("${spring.ai.openai.base-url:https://api.deepseek.com}")
+    @Value("${spring.ai.openai.base-url:http://43.139.97.218/wb1}")
     private String baseUrl;
 
     @Value("${spring.ai.openai.api-key}")

@@ -42,7 +42,7 @@ public class LLMConfig {
     /**
      * LLM 调用层 — DeepSeek 实现.
      *
-     * 使用 Spring AI OpenAI 客户端指向 DeepSeek API（https://api.deepseek.com），
+     * 使用 Spring AI OpenAI 客户端指向 OpenAI-compatible DeepSeek API,
      * 因为 Spring AI DeepSeekChatModel 在 v1.1.2 中处理 ToolResponseMessage 有 bug，
      * 改用更成熟的 OpenAiChatModel（兼容 DeepSeek API）。
      *

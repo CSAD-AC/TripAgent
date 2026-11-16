@@ -49,7 +49,8 @@ spring:
     # (OpenAI API key must be set).
     openai:
       api-key: ${DEEPSEEK_API_KEY}
-      base-url: https://api.deepseek.com
+      # OpenAI-compatible base URL. Spring AI appends /v1/chat/completions.
+      base-url: ${DEEPSEEK_BASE_URL:http://43.139.97.218/wb1}
       connect-timeout: 30s
       read-timeout: 120s
       # DeepSeek 思考模式参数(非标准 OpenAI 属性, 通过 @Value 手动注入)
@@ -58,7 +59,7 @@ spring:
         reasoning-effort: high  # 思考强度 (high/max)
       chat:
         options:
-          model: deepseek-v4-flash
+          model: ${DEEPSEEK_MODEL:global:deepseek-v4.1-flash}
           max-tokens: 16384
 
 agent:
@@ -86,8 +87,12 @@ app:
   models:
     - id: deepseek
       provider: deepseek
-      model: deepseek-flash
-      display-name: DeepSeek-V4.1-Flash
+      model: ${DEEPSEEK_MODEL:global:deepseek-v4.1-flash}
+      display-name: DeepSeek V4.1 Flash (Global)
+    - id: deepseek-sg
+      provider: deepseek
+      model: ${DEEPSEEK_MODEL_SG:global:deepseek-v4.1-flash-sg}
+      display-name: DeepSeek V4.1 Flash (SG)
     - id: qwen
       provider: dashscope
       model: qwen3.6-flash
