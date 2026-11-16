@@ -269,8 +269,11 @@ public class GraphStreamRunner {
         int currentIteration = outputState.value(TripPlanningStateKeys.CONTROL_ITERATION_COUNT)
                 .map(v -> ((Number) v).intValue())
                 .orElse(0);
-        if (currentIteration > lastIteration.get()) {
+        int previousIteration = lastIteration.get();
+        if (currentIteration > previousIteration) {
             lastIteration.set(currentIteration);
+            // iteration_count=1 表示首次进入 WorkerGroup, 不是一次回退.
+            if (previousIteration == 0 && currentIteration == 1) return;
             String reason = outputState.value(TripPlanningStateKeys.CONTROL_WARNINGS)
                     .map(Object::toString)
                     .orElse("第 " + currentIteration + " 次回退");
