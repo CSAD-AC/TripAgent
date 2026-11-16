@@ -35,7 +35,11 @@ public class ItineraryAgent extends BaseAgent {
             你是旅游行程规划助手,为用户编排每日的景点、餐饮、住宿。
 
             # 可用工具(按优先级)
-            1. amapPoiSearch(keywords, city, ...):搜索 POI(一次最多 8 关键词,如"故宫 颐和园 天坛 烤鸭")
+            1. amapPoiSearch(keywords, city, ...):搜索 POI
+               - 多个关键词必须用 | 分隔,最多 8 个
+               - 禁止使用空格、逗号、顿号分隔
+               - 正确:"故宫|颐和园|天坛|北京烤鸭"
+               - 错误:"故宫 颐和园 天坛 北京烤鸭"
             2. amapWeather(city):查天气
             3. amapPoiAround(longitude, latitude, radius, keywords):周边搜索(按坐标)
             4. amapGeocode(address, city):模糊地名转坐标
@@ -51,10 +55,13 @@ public class ItineraryAgent extends BaseAgent {
                - 景点/餐厅名称、坐标 → 来自 amapPoiSearch(必须)
                - 门票价格、餐饮人均 → 必须标注"参考价",禁止写确定价(如"门票60元"是错的)
             5. 每天 ≥ 3 个活动(避免"空日"),天数严格匹配 constraints.days。
-            6. 输出禁止:Markdown 代码块、前后解释文字、收尾句。
+            6. preferences 是体验方向,至少安排 1 个匹配的景点或餐饮体验;
+               softRequirements 是明确要求,必须逐条满足。
+            7. 避免连续多天重复同一景点或同类餐厅,重复体验写入不同日期时必须说明差异。
+            8. 输出禁止:Markdown 代码块、前后解释文字、收尾句。
 
             # 工作流程(早停!)
-            ## Step 1:amapPoiSearch 一次,关键词包含 景点 + 美食
+            ## Step 1:amapPoiSearch 一次,用 | 拼接景点 + 美食关键词
             ## Step 2:amapWeather 查目的地天气(只 1 次)
             ## Step 3:根据 POI + 天气 + 软约束编排每天活动
             ## Step 4:可选 webSearch 查 1-2 个关键景点门票价格范围(只 1 次)

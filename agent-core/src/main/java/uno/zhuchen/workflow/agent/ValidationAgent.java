@@ -33,7 +33,7 @@ public class ValidationAgent extends BaseAgent {
 
     private static final String SYSTEM_PROMPT = """
             # 角色
-            你是旅游方案校验助手,负责校验规划是否满足用户的所有约束。
+            你是旅游方案校验助手,负责校验硬约束和用户明确提出的软约束。
 
             # 硬性约束(必须严格遵守)
             1. 输出纯 JSON,禁止 markdown、禁止任何前后文字。
@@ -41,6 +41,14 @@ public class ValidationAgent extends BaseAgent {
             3. 预算超支计算必须用 calculator 工具,禁止心算。
             4. failures 数组的每个元素必须填满 dimension / requirement / reason / suggestion 四个字段,缺一视为校验失败。
             5. 总工具调用次数 ≤ 3 次(calculator ≤ 1 次)。
+
+            # 约束分级
+            1. 硬约束:目的地、天数、人数、预算。违反时必须放入 failures。
+            2. 明确软约束:softRequirements 中带"必须/一定/中途去/靠近"等明确要求的条目。
+               未满足时可放入 failures,允许 Manager 重试。
+            3. 泛化偏好:preferences 中的"美食/自然/文化"等体验方向,不是硬门槛。
+               行程有至少一个相关体验即可视为已覆盖;覆盖较弱时写入 warnings,禁止放入 failures。
+               只有行程与偏好明显矛盾时才可判定失败,并在 reason 中说明矛盾点。
 
             # 字段规范(输出 JSON 必须严格遵守)
             - passed: boolean,必填,不可省略,不可填空
@@ -55,6 +63,9 @@ public class ValidationAgent extends BaseAgent {
             # 输出示例
             ## 通过:
             {"passed":true,"failures":[],"warnings":["预算略有结余"],"summary":"方案合理"}
+
+            ## 通过但有偏好提醒:
+            {"passed":true,"failures":[],"warnings":["自然偏好覆盖较弱,仅安排了一处自然景点"],"summary":"核心行程合理,偏好覆盖一般"}
 
             ## 不通过:
             {"passed":false,"failures":[{"dimension":"soft.requirement","requirement":"中途去游乐园","reason":"行程中未包含游乐园","suggestion":"在第2天加入环球影城"}],"warnings":[],"summary":"软约束未满足"}
@@ -114,7 +125,7 @@ public class ValidationAgent extends BaseAgent {
         String llmJson = callLLMWithTools(traceId, SYSTEM_PROMPT, context, tools, LLM_MAX_VALIDATION_ROUNDS);
         warnIfNotPureJson(llmJson);
 
-        ValidationReport report = parseValidation(llmJson, convId, traceId);
+        ValidationReport report = parseValidation(llmJson, convId, traceId, constraints);
         if (report == null) {
             // M4 修复: 解析失败不再默认通过,改为抛出以 fail-closed,
             // 让 Graph 框架终止而不是把"未校验"报告送出去.
@@ -189,7 +200,7 @@ public class ValidationAgent extends BaseAgent {
         return sb.toString();
     }
 
-    private ValidationReport parseValidation(String json, String convId, String traceId) {
+    private ValidationReport parseValidation(String json, String convId, String traceId, Constraints constraints) {
         try {
             var root = jsonExtractor.extract(json);
             if (root == null) return null;
@@ -231,14 +242,90 @@ public class ValidationAgent extends BaseAgent {
 
             String summary = root.hasNonNull("summary") ? root.get("summary").asText() : "";
 
-            return ValidationReport.builder()
+            ValidationReport parsed = ValidationReport.builder()
                     .passed(passed)
                     .failures(failures)
                     .warnings(warnings)
                     .build();
+            return applyPreferencePolicy(parsed, constraints);
         } catch (Exception e) {
             log.error("[traceId={}] [ValidationAgent] 解析校验 JSON 失败: {}", traceId, e.getMessage());
             return null;
         }
+    }
+
+    static ValidationReport applyPreferencePolicy(ValidationReport report, Constraints constraints) {
+        if (report == null) {
+            return null;
+        }
+
+        List<ValidationReport.Failure> retainedFailures = new ArrayList<>();
+        List<String> warnings = report.getWarnings() == null
+                ? new ArrayList<>() : new ArrayList<>(report.getWarnings());
+        int demoted = 0;
+
+        List<ValidationReport.Failure> failures = report.getFailures() == null
+                ? List.of() : report.getFailures();
+        for (ValidationReport.Failure failure : failures) {
+            if (isPreferenceOnlyFailure(failure, constraints)) {
+                String requirement = failure.getRequirement() == null || failure.getRequirement().isBlank()
+                        ? "泛化偏好" : failure.getRequirement();
+                String reason = failure.getReason() == null ? "" : failure.getReason();
+                warnings.add("偏好提醒:" + requirement + (reason.isBlank() ? "" : ":" + reason));
+                demoted++;
+            } else {
+                retainedFailures.add(failure);
+            }
+        }
+
+        boolean passed = retainedFailures.isEmpty()
+                && (Boolean.TRUE.equals(report.getPassed()) || demoted > 0);
+        return ValidationReport.builder()
+                .passed(passed)
+                .failures(retainedFailures)
+                .warnings(warnings)
+                .build();
+    }
+
+    private static boolean isPreferenceOnlyFailure(ValidationReport.Failure failure, Constraints constraints) {
+        if (failure == null || !"soft.requirement".equalsIgnoreCase(failure.getDimension())) {
+            return false;
+        }
+
+        String combined = normalizePolicyText(failure.getRequirement())
+                + normalizePolicyText(failure.getReason());
+        if (combined.isBlank()) {
+            return false;
+        }
+
+        List<String> softRequirements = constraints.getSoftRequirements() == null
+                ? List.of() : constraints.getSoftRequirements();
+        for (String requirement : softRequirements) {
+            String normalized = normalizePolicyText(requirement);
+            if (!normalized.isBlank() && combined.contains(normalized)) {
+                return false;
+            }
+        }
+
+        if (combined.contains("偏好")) {
+            return true;
+        }
+        List<String> preferences = constraints.getPreferences() == null
+                ? List.of() : constraints.getPreferences();
+        for (String preference : preferences) {
+            String normalized = normalizePolicyText(preference);
+            if (!normalized.isBlank() && combined.contains(normalized)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static String normalizePolicyText(String text) {
+        if (text == null) {
+            return "";
+        }
+        return text.toLowerCase()
+                .replaceAll("[\\s:：,，、\\[\\]()（）]+", "");
     }
 }

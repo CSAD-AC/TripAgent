@@ -25,7 +25,9 @@ public class PoiSearchTool {
 
     @Tool(description = "关键词搜索兴趣点 — 根据关键词和城市搜索景点、餐厅、酒店、加油站等场所")
     public String amapPoiSearch(
-            @ToolParam(required = true, description = "查询关键词，例如 天安门、故宫、北京烤鸭、加油站") String keywords,
+            @ToolParam(required = true,
+                    description = "查询关键词。多个关键词使用 | 分隔，最多 8 个，禁止空格、逗号、顿号，"
+                            + "例如 故宫|颐和园|北京烤鸭") String keywords,
             @ToolParam(required = false, description = "城市范围（城市中文名/citycode/adcode），例如 北京 或 010。不传则全国范围搜索") String city) {
         log.info("POI搜索: keywords={}, city={}", keywords, city);
         return amapService.poiTextSearch(keywords, city);

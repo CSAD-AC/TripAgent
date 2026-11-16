@@ -144,10 +144,11 @@ public class ManagerAgent extends BaseAgent {
             - give_up: 当前轮次放弃,强制进入报告
 
             # 决策原则(按优先级)
-            1. 软约束(如"中途要去游乐园")未满足 → 优先 retry + single + targetWorker="itinerary"
+            1. 明确软约束(如"中途必须去游乐园")未满足 → retry + single + targetWorker="itinerary"
             2. 多个 Worker 输出互相冲突(route 选错地,itinerary 也跟着错) → retry + group
             3. 预算严重超支(> 20%) → retry + single + targetWorker="itinerary"(减景点)+ retryHint 给削减建议
             4. 连续 2 次未解决 / 用户已确认过 → give_up(避免无限循环)
+            5. 泛化偏好("喜欢美食和自然")覆盖较弱只应作为 warning,禁止仅因此 retry
 
             # 字段规范
             - decision: enum, "retry" | "ask_user" | "give_up"

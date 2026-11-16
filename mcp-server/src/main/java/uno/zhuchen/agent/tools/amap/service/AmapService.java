@@ -101,6 +101,7 @@ public class AmapService {
                 .queryParam("destination", destination)
                 .queryParam("strategy", strategyCode)
                 .build()
+                .encode()
                 .toUriString();
 
         log.debug("驾车路线规划请求: origin={}, destination={}, strategy={}→{}",
@@ -117,6 +118,7 @@ public class AmapService {
                 .queryParam("origin", origin)
                 .queryParam("destination", destination)
                 .build()
+                .encode()
                 .toUriString();
 
         log.debug("步行路线规划请求: origin={}, destination={}", origin, destination);
@@ -132,6 +134,7 @@ public class AmapService {
                 .queryParam("origin", origin)
                 .queryParam("destination", destination)
                 .build()
+                .encode()
                 .toUriString();
 
         log.debug("骑行路线规划请求: origin={}, destination={}", origin, destination);
@@ -156,6 +159,7 @@ public class AmapService {
                 .queryParam("city1", cityCode)
                 .queryParam("city2", cityCode)
                 .build()
+                .encode()
                 .toUriString();
 
         log.debug("公交路线规划请求: origin={}, destination={}, city={}→{}",
@@ -173,17 +177,22 @@ public class AmapService {
      * @return 高德原始 JSON 响应
      */
     public String poiTextSearch(String keywords, String city) {
-        String url = UriComponentsBuilder.fromHttpUrl(BASE_V5 + "/place/text")
+        String url = buildPoiTextSearchUrl(keywords, city);
+
+        log.debug("POI文本搜索请求: keywords={}, city={}", keywords, city);
+        return callApi(url);
+    }
+
+    String buildPoiTextSearchUrl(String keywords, String city) {
+        return UriComponentsBuilder.fromHttpUrl(BASE_V5 + "/place/text")
                 .queryParam("key", config.getKey())
                 .queryParam("keywords", keywords)
                 .queryParamIfPresent("city", java.util.Optional.ofNullable(city))
                 .queryParam("offset", 10)
                 .queryParam("page", 1)
                 .build()
+                .encode()
                 .toUriString();
-
-        log.debug("POI文本搜索请求: keywords={}, city={}", keywords, city);
-        return callApi(url);
     }
 
     /**
@@ -201,6 +210,7 @@ public class AmapService {
                 .queryParamIfPresent("keywords", java.util.Optional.ofNullable(keywords))
                 .queryParam("radius", radius != null ? radius : 1000)
                 .build()
+                .encode()
                 .toUriString();
 
         log.debug("POI周边搜索请求: location={}, keywords={}, radius={}", location, keywords, radius);
@@ -226,6 +236,7 @@ public class AmapService {
                 .queryParam("extensions", extensions)
                 .queryParam("output", "JSON")
                 .build()
+                .encode()
                 .toUriString();
 
         log.debug("天气查询请求: city={}", city);
@@ -248,6 +259,7 @@ public class AmapService {
                 .queryParamIfPresent("city", java.util.Optional.ofNullable(city))
                 .queryParam("output", "JSON")
                 .build()
+                .encode()
                 .toUriString();
 
         log.debug("地理编码请求: address={}, city={}", address, city);
@@ -266,6 +278,7 @@ public class AmapService {
                 .queryParam("location", location)
                 .queryParam("output", "JSON")
                 .build()
+                .encode()
                 .toUriString();
 
         log.debug("逆地理编码请求: location={}", location);

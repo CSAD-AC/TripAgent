@@ -13,7 +13,8 @@ import java.util.List;
  *
  * 校验分两类:
  * - 静态约束（数值比较）: budget / days / companions
- * - 软约束（LLM 推理）: Constraints.softRequirements
+ * - 明确软约束（LLM 推理）: Constraints.softRequirements
+ * - 泛化偏好: Constraints.preferences 只产生 warning,不阻断流程
  *
  * 软约束失败不一定是错误，可能仅是 warning（不强阻断）。
  * passed=false 时 ManagerAgent 需要重新调度。
