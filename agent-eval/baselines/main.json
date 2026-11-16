@@ -1,0 +1,29 @@
+{
+  "total": 10,
+  "uniqueCases": 10,
+  "passed": 7,
+  "failed": 1,
+  "degraded": 2,
+  "passRate": 70.0,
+  "passAtK": 70.0,
+  "byMode": {
+    "react": {
+      "total": 4,
+      "passed": 3,
+      "passRate": 75.0
+    },
+    "graph": {
+      "total": 4,
+      "passed": 2,
+      "passRate": 50.0
+    },
+    "multi": {
+      "total": 2,
+      "passed": 2,
+      "passRate": 100.0
+    }
+  },
+  "failureCounts": {
+    "process.max_iterations": 1
+  }
+}

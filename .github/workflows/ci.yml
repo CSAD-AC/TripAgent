@@ -91,6 +91,34 @@ jobs:
           retention-days: 7
 
   # ----------------------------------------------------------
+  # 测评集: 只跑无网络的 schema 与 grader 单测
+  # ----------------------------------------------------------
+  eval-dataset:
+    name: 测评集静态校验
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: agent-eval
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
+
+      - name: 安装 Python 3.11
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: 运行 runner 单元测试
+        run: python -m unittest discover -s tests -v
+
+      - name: 校验 smoke 测评集
+        run: python -m runner validate
+
+      - name: 校验 regression 测评集
+        run: python -m runner validate --set regression/cases
+
+  # ----------------------------------------------------------
   # 前端: 依赖安装 + 类型检查 + 生产构建
   # ----------------------------------------------------------
   frontend:
