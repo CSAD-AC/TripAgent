@@ -236,6 +236,33 @@ class PersistentChatMemoryTest {
         verify(compactor).condenseAsync(conversationId);
     }
 
+    @Test
+    void load_whenAtWindowWithSummary_shouldInjectSummaryWithoutCondense() {
+        // 压缩完成后 DB 只剩窗口内消息, 但摘要仍必须参与后续上下文.
+        String conversationId = "test-conv-win-summary";
+        when(compactor.enabled()).thenReturn(true);
+        when(compactor.windowSize()).thenReturn(2);
+        when(messageCache.get(conversationId)).thenReturn(Optional.empty());
+        when(conversationMapper.selectSummary(conversationId)).thenReturn("历史摘要");
+
+        MessageEntity u1 = new MessageEntity();
+        u1.setRole("user");
+        u1.setContent("四");
+        MessageEntity a2 = new MessageEntity();
+        a2.setRole("assistant");
+        a2.setContent("五");
+        when(messageMapper.listByConversation(conversationId)).thenReturn(List.of(u1, a2));
+
+        List<Message> result = persistentChatMemory.load(conversationId);
+
+        assertEquals(3, result.size());
+        assertEquals(MessageType.SYSTEM, result.get(0).getMessageType());
+        assertEquals("历史摘要", result.get(0).getText());
+        assertEquals("四", result.get(1).getText());
+        assertEquals("五", result.get(2).getText());
+        verify(compactor, never()).condenseAsync(conversationId);
+    }
+
     // ============= load =============
 
     @Test

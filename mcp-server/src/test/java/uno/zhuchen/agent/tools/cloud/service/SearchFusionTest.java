@@ -10,6 +10,7 @@ import uno.zhuchen.agent.tools.cloud.model.SearchResult;
 import uno.zhuchen.agent.tools.cloud.service.CloudSearchService.ChannelAttempt;
 
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -234,6 +235,68 @@ class SearchFusionTest {
         assertTrue(outcome.channels().stream().allMatch(c -> "not configured".equals(c.error())),
                 "缺 key 的通道应报 not configured: " + outcome.channels());
         assertTrue(outcome.degraded());
+    }
+
+    @Test
+    @DisplayName("parallel 双主通道均失败后, 自动使用 Tavily 兜底")
+    void parallelFallsBackToTavilyWhenBothPrimaryChannelsFail() {
+        SearchConfig config = new SearchConfig();
+        config.setProvider("parallel");
+        config.setChannelTimeoutSeconds(2);
+
+        SearchClient baidu = (query, limit) -> {
+            throw new SearchChannelException("baidu down");
+        };
+        SearchClient deepseek = (query, limit) -> {
+            throw new SearchChannelException("deepseek down");
+        };
+        SearchClient tavily = (query, limit) -> List.of(
+                hit("Fallback", "https://fallback.example/1", BODY_D));
+
+        CloudSearchService service = new CloudSearchService(
+                config, baidu, deepseek, tavily);
+        try {
+            SearchOutcome outcome = service.searchDetailed("成都景点", 5);
+
+            assertEquals(1, outcome.results().size());
+            assertEquals("https://fallback.example/1", outcome.results().get(0).url());
+            assertEquals("tavily", outcome.contributedChannels());
+            assertEquals(3, outcome.channels().size());
+        } finally {
+            service.shutdown();
+        }
+    }
+
+    @Test
+    @DisplayName("主通道有结果时不调用 Tavily 兜底")
+    void tavilyFallbackSkippedWhenPrimaryChannelContributes() {
+        SearchConfig config = new SearchConfig();
+        config.setProvider("parallel");
+        config.setChannelTimeoutSeconds(2);
+
+        SearchClient baidu = (query, limit) -> List.of(
+                hit("Primary", "https://primary.example/1", BODY_A));
+        SearchClient deepseek = (query, limit) -> {
+            throw new SearchChannelException("deepseek down");
+        };
+        AtomicInteger fallbackCalls = new AtomicInteger();
+        SearchClient tavily = (query, limit) -> {
+            fallbackCalls.incrementAndGet();
+            return List.of(hit("Fallback", "https://fallback.example/1", BODY_D));
+        };
+
+        CloudSearchService service = new CloudSearchService(
+                config, baidu, deepseek, tavily);
+        try {
+            SearchOutcome outcome = service.searchDetailed("西湖景点", 5);
+
+            assertEquals(1, outcome.results().size());
+            assertEquals("baidu", outcome.contributedChannels());
+            assertEquals(0, fallbackCalls.get());
+            assertEquals(2, outcome.channels().size());
+        } finally {
+            service.shutdown();
+        }
     }
 
     @Test

@@ -173,15 +173,24 @@ public class PersistentChatMemory implements ChatMemory {
      * 压缩由 {@link HistoryCompactor} 异步执行, 此处只做读侧裁剪.
      */
     private List<Message> applyWindow(String conversationId, List<Message> messages) {
-        if (!compactor.enabled() || messages.size() <= compactor.windowSize()) {
+        if (!compactor.enabled()) {
             return messages;
+        }
+        String summary = conversationMapper.selectSummary(conversationId);
+        if (messages.size() <= compactor.windowSize()) {
+            if (summary == null || summary.isBlank()) {
+                return messages;
+            }
+            List<Message> withSummary = new ArrayList<>(messages.size() + 1);
+            withSummary.add(new SystemMessage(summary));
+            withSummary.addAll(messages);
+            return withSummary;
         }
         int start = Math.max(0, messages.size() - compactor.windowSize());
         while (start > 0 && messages.get(start) instanceof ToolResponseMessage) {
             start--;
         }
         List<Message> tail = new ArrayList<>(messages.subList(start, messages.size()));
-        String summary = conversationMapper.selectSummary(conversationId);
         if (summary != null && !summary.isBlank()) {
             tail.add(0, new SystemMessage(summary));
         }

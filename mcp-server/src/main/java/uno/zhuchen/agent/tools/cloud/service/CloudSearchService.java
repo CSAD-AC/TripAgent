@@ -97,31 +97,54 @@ public class CloudSearchService {
     private final SearchClient tavilyClient;
 
     public CloudSearchService(SearchConfig config, ObjectMapper objectMapper) {
+        this(config, createClients(config, objectMapper));
+    }
+
+    /**
+     * 测试入口: 注入通道客户端, 不创建真实 WebClient.
+     */
+    CloudSearchService(SearchConfig config, SearchClient baiduClient,
+                       SearchClient deepseekClient, SearchClient tavilyClient) {
+        this(config, new Clients(baiduClient, deepseekClient, tavilyClient,
+                resolveHttpTimeout(config)));
+    }
+
+    private CloudSearchService(SearchConfig config, Clients clients) {
         this.config = config;
+        this.baiduClient = clients.baidu();
+        this.deepseekClient = clients.deepseek();
+        this.tavilyClient = clients.tavily();
+        this.executor = newThreadPool();
+
+        log.info("云端搜索初始化: provider={}, baidu={}, deepseek={}, tavily={}, http超时={}s, 通道守卫={}s",
+                config.getProvider(), enabled(baiduClient), enabled(deepseekClient),
+                enabled(tavilyClient), clients.httpTimeoutSeconds(), resolveChannelTimeout());
+    }
+
+    private static Clients createClients(SearchConfig config, ObjectMapper objectMapper) {
         WebClient webClient = WebClient.builder()
                 .codecs(c -> c.defaultCodecs().maxInMemorySize(2 * 1024 * 1024))
                 .build();
 
-        int httpTimeout = resolveHttpTimeout();
-        this.baiduClient = hasText(config.getBaiduApiKey())
+        int httpTimeout = resolveHttpTimeout(config);
+        SearchClient baidu = hasText(config.getBaiduApiKey())
                 ? new BaiduSearchClient(webClient, objectMapper, config.getBaiduApiKey(), httpTimeout)
                 : null;
-        this.deepseekClient = hasText(config.getDeepseekApiKey())
+        SearchClient deepseek = hasText(config.getDeepseekApiKey())
                 ? new DeepSeekSearchClient(webClient, objectMapper, config.getDeepseekApiKey(),
                         config.getDeepseekBaseUrl(), httpTimeout)
                 : null;
-        this.tavilyClient = hasText(config.getTavilyApiKey())
+        SearchClient tavily = hasText(config.getTavilyApiKey())
                 ? new TavilySearchClient(webClient, objectMapper, config.getTavilyApiKey(), httpTimeout)
                 : null;
+        return new Clients(baidu, deepseek, tavily, httpTimeout);
+    }
 
-        this.executor = new ThreadPoolExecutor(0, MAX_POOL_THREADS, POOL_KEEP_ALIVE_SECONDS,
+    private static ExecutorService newThreadPool() {
+        return new ThreadPoolExecutor(0, MAX_POOL_THREADS, POOL_KEEP_ALIVE_SECONDS,
                 TimeUnit.SECONDS, new SynchronousQueue<>(),
                 new NamedDaemonThreadFactory("cloud-search-"),
                 new ThreadPoolExecutor.CallerRunsPolicy());
-
-        log.info("云端搜索初始化: provider={}, baidu={}, deepseek={}, tavily={}, http超时={}s, 通道守卫={}s",
-                config.getProvider(), enabled(baiduClient), enabled(deepseekClient),
-                enabled(tavilyClient), httpTimeout, resolveChannelTimeout());
     }
 
     /**
@@ -273,7 +296,51 @@ public class CloudSearchService {
                 attempts.add(attempt);
             }
         }
+        if (attempts.stream().noneMatch(ChannelAttempt::contributed)) {
+            ChannelAttempt fallback = runTavilyFallback(query, limit, deadline);
+            if (fallback != null) {
+                attempts.add(fallback);
+            }
+        }
         return combine(attempts, limit);
+    }
+
+    /**
+     * 双主通道均未产出时, 在同一个总截止时间内尝试 Tavily.
+     */
+    private ChannelAttempt runTavilyFallback(String query, int limit, long deadline) {
+        if (tavilyClient == null) {
+            return null;
+        }
+        long remaining = deadline - System.nanoTime();
+        if (remaining <= 0L) {
+            return new ChannelAttempt(CH_TAVILY, List.of(), 0L,
+                    "fallback skipped: deadline exhausted");
+        }
+        long submittedAt = System.nanoTime();
+        Future<ChannelAttempt> future;
+        try {
+            future = executor.submit(() -> runChannel(CH_TAVILY, query, limit));
+        } catch (RejectedExecutionException e) {
+            return new ChannelAttempt(CH_TAVILY, List.of(), 0L,
+                    "rejected: pool saturated");
+        }
+        try {
+            log.info("双主通道无产出, 使用剩余 {}ms 尝试 Tavily 兜底: query={}",
+                    TimeUnit.NANOSECONDS.toMillis(remaining), query);
+            return future.get(remaining, TimeUnit.NANOSECONDS);
+        } catch (TimeoutException e) {
+            future.cancel(true);
+            return new ChannelAttempt(CH_TAVILY, List.of(), elapsedMs(submittedAt),
+                    "fallback timeout");
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause() == null ? e : e.getCause();
+            return new ChannelAttempt(CH_TAVILY, List.of(), elapsedMs(submittedAt), brief(cause));
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            future.cancel(true);
+            return new ChannelAttempt(CH_TAVILY, List.of(), elapsedMs(submittedAt), "interrupted");
+        }
     }
 
     /**
@@ -409,6 +476,10 @@ public class CloudSearchService {
         }
     }
 
+    private record Clients(SearchClient baidu, SearchClient deepseek, SearchClient tavily,
+                           int httpTimeoutSeconds) {
+    }
+
     /**
      * 具名守护线程工厂, 便于线程栈排查。
      */
@@ -450,7 +521,7 @@ public class CloudSearchService {
         return s > 0 ? s : DEFAULT_CHANNEL_TIMEOUT_SECONDS;
     }
 
-    private int resolveHttpTimeout() {
+    private static int resolveHttpTimeout(SearchConfig config) {
         int s = config.getHttpTimeoutSeconds();
         return s > 0 ? s : DEFAULT_HTTP_TIMEOUT_SECONDS;
     }
