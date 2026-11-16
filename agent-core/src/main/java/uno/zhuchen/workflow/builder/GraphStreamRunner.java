@@ -476,7 +476,10 @@ public class GraphStreamRunner {
     // ============ 安全发射 ============
 
     private static void safelyEmit(Sinks.Many<StreamChunk> sink, StreamChunk event) {
-        Sinks.EmitResult result = sink.tryEmitNext(event);
+        Sinks.EmitResult result;
+        synchronized (sink) {
+            result = sink.tryEmitNext(event);
+        }
         if (result != Sinks.EmitResult.OK) {
             log.warn("[GraphStreamRunner] 事件发射失败: type={}, result={}", event.getType(), result);
         }

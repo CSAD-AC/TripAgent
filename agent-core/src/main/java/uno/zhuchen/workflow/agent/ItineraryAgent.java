@@ -131,7 +131,8 @@ public class ItineraryAgent extends BaseAgent {
                 + (retryHint.isEmpty() ? "" : "\n\n=== 上次校验未通过原因（请修复）===\n" + retryHint);
         String llmOutput;
         try {
-            llmOutput = callLLMWithTools(traceId, SYSTEM_PROMPT, context, toolRegistry.getAll(), LLM_MAX_WORKER_ROUNDS);
+            llmOutput = callLLMWithTools(traceId, SYSTEM_PROMPT, context,
+                    toolRegistry.getAllExcept("askUser"), LLM_MAX_WORKER_ROUNDS);
             warnIfNotPureJson(llmOutput);
         } catch (Exception e) {
             log.error("[traceId={}] [ItineraryAgent] LLM 工具循环失败: {}", traceId, e.getMessage());

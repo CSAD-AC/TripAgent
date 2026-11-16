@@ -110,7 +110,7 @@ public class ValidationAgent extends BaseAgent {
         // M5 修复: 用 callLLMWithTools 暴露 calculator 等工具,
         // 让 prompt 中的"可用 calculator 精确计算"真正可行.
         org.springframework.ai.tool.ToolCallback[] tools = toolRegistry != null
-                ? toolRegistry.getAll() : new org.springframework.ai.tool.ToolCallback[0];
+                ? toolRegistry.getAllExcept("askUser") : new org.springframework.ai.tool.ToolCallback[0];
         String llmJson = callLLMWithTools(traceId, SYSTEM_PROMPT, context, tools, LLM_MAX_VALIDATION_ROUNDS);
         warnIfNotPureJson(llmJson);
 

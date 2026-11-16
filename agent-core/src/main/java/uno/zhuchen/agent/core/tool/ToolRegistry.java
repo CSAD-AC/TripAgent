@@ -8,6 +8,7 @@ import org.springframework.stereotype.Component;
 import uno.zhuchen.agent.core.tool.mock.MockWeatherToolCallback;
 
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 @Component
@@ -71,6 +72,19 @@ public class ToolRegistry {
 
     public ToolCallback[] getAll() {
         return toolMap.values().toArray(new ToolCallback[0]);
+    }
+
+    /**
+     * 获取除指定名称外的全部工具.
+     *
+     * <p>Graph Worker 只允许使用领域工具, 不允许直接反问用户.
+     */
+    public ToolCallback[] getAllExcept(String... excludedNames) {
+        Set<String> excluded = Set.of(excludedNames);
+        return toolMap.entrySet().stream()
+                .filter(entry -> !excluded.contains(entry.getKey()))
+                .map(Map.Entry::getValue)
+                .toArray(ToolCallback[]::new);
     }
 
     public ToolCallback getByName(String name) {

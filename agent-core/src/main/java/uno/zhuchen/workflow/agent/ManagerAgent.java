@@ -27,11 +27,13 @@ import java.util.Map;
  * 主管 Agent — Supervisor 层
  *
  * 两种执行模式（通过 iteration_count 区分,#1 M1 修复）:
- * - 首次模式 (iteration == 0): 提取约束 + softRequirements + 调用 AskUserTool 复述确认
+ * - 首次模式 (iteration == 0): 提取约束 + softRequirements; 信息齐全直接进入 worker_group,
+ *   只有必填字段缺失时才调用 AskUserTool
  * - 回退模式 (iteration > 0): 接收 ValidationReport, LLM 决策 retry/ask_user/give_up
  *
  * 状态转移（state[next_node]）:
- * - 首次: next_node = "confirmed" (用户确认后进 worker_group)
+ * - 首次且信息完整: next_node = "worker_group"
+ * - 首次且信息不完整但用户确认兜底值: next_node = "worker_group"
  * - 首次用户否认: next_node = "first" (重新提取)
  * - 回退 retry: next_node = 对应 worker (如 "itinerary" 部分重跑)
  * - 回退 give_up: next_node = "report" (强制通过)
@@ -52,8 +54,9 @@ public class ManagerAgent extends BaseAgent {
             # 硬性约束(必须严格遵守)
             1. 调用 askUser 总次数 ≤ 1 次。缺失字段必须一次问完,禁止拆成多个回合反复追问。
             2. 必填字段缺失时 → 立即调用 askUser(...),提供选项 + 允许自定义输入(allowCustom=true)。
-            3. 所有必填字段都明确后 → 必须直接输出 JSON,不再调用工具。
-            4. 输出禁止:JSON 前后加解释文字、Markdown 代码块(```json)、说明、收尾句。
+            3. preferences 和 softRequirements 不是必填字段, 缺失时输出空数组, 禁止为此调用 askUser。
+            4. 所有必填字段都明确后 → 必须直接输出 JSON,不再调用工具,也不要请求用户确认。
+            5. 输出禁止:JSON 前后加解释文字、Markdown 代码块(```json)、说明、收尾句。
 
             # 字段规范(JSON 输出必须严格遵守)
             - destination: string,目的地城市名(如 "北京"),不要带"市"以外的行政区划
@@ -67,6 +70,7 @@ public class ManagerAgent extends BaseAgent {
             ## Step 1:扫描用户输入,识别缺失字段
             ## Step 2:缺失 ≥ 1 个 → 调用 askUser 一次性问完
             ## Step 3:所有必填字段都有了 → 立即输出 JSON,停止所有工具调用
+            ## Step 4:预算紧张、偏好未知都不是缺失字段,直接输出 JSON 并留给后续 Agent 处理
 
             # 输出示例
             ## 唯一允许的正确格式(纯 JSON,无其他文字):
@@ -244,14 +248,27 @@ public class ManagerAgent extends BaseAgent {
         Map<String, Object> constraintData = objectMapper.convertValue(constraints, new TypeReference<Map<String, Object>>() {});
         emitEvent(StreamChunk.nodeData("manager", "constraints", constraintData, conversationId));
 
+        boolean completeFromUser = constraints.isComplete();
+
         // 3. 兜底: LLM 仍未提取完整时补默认值
-        if (!constraints.isComplete()) {
+        if (!completeFromUser) {
             log.warn("[traceId={}] [ManagerAgent] LLM 最终输出仍不完整: {}, 应用默认值",
                     traceId, constraints.missingRequiredFields());
             applyDefaults(constraints);
         }
 
-        // 4. 生成复述确认问题 + 等待用户确认
+        // 4. 必填字段齐全时直接进入 Worker, 不额外打断用户确认
+        if (completeFromUser) {
+            log.info("[traceId={}] [ManagerAgent] 约束完整, 自动进入 worker_group", traceId);
+            return Map.of(
+                    TripPlanningStateKeys.CONSTRAINTS, constraints,
+                    TripPlanningStateKeys.CONTROL_ITERATION_COUNT, 1,
+                    TripPlanningStateKeys.CONTROL_NEXT_NODE, NextNode.WORKER_GROUP.key(),
+                    TripPlanningStateKeys.OUTPUT_STATUS, "constraints_auto_confirmed"
+            );
+        }
+
+        // 5. 仅在提取结果不完整且未成功反问时, 走一次确认兜底
         String confirmJson = callLLM(traceId, SYSTEM_PROMPT_CONFIRM,
                 "约束:\n" + extractJson);
         QuestionPayload confirm = parseConfirmQuestion(confirmJson);
@@ -276,6 +293,7 @@ public class ManagerAgent extends BaseAgent {
             log.info("[traceId={}] [ManagerAgent] 用户确认约束, 进入 worker_group", traceId);
             return Map.of(
                     TripPlanningStateKeys.CONSTRAINTS, constraints,
+                    TripPlanningStateKeys.CONTROL_ITERATION_COUNT, 1,
                     TripPlanningStateKeys.CONTROL_NEXT_NODE, NextNode.WORKER_GROUP.key(),
                     TripPlanningStateKeys.OUTPUT_STATUS, "constraints_confirmed"
             );
@@ -283,6 +301,7 @@ public class ManagerAgent extends BaseAgent {
             log.info("[traceId={}] [ManagerAgent] 用户需修改约束, 重新提取", traceId);
             return Map.of(
                     TripPlanningStateKeys.CONSTRAINTS, constraints,
+                    TripPlanningStateKeys.CONTROL_ITERATION_COUNT, 0,
                     TripPlanningStateKeys.CONTROL_NEXT_NODE, NextNode.FIRST.key(),
                     TripPlanningStateKeys.OUTPUT_STATUS, "constraints_rejected"
             );

@@ -48,7 +48,8 @@ public class RouteAgent extends BaseAgent {
                - 路线距离、时长、驾车/乘车时长 → 来自 MCP,可靠
                - 机票/火车票价 → 必须标注"参考价",禁止直接写确定价格
             4. 禁止编造:禁止输出"深圳→北京 360 元"这种明显不合理的价格。
-            5. 输出禁止:Markdown 代码块、前后解释文字、收尾句。
+            5. 禁止调用 askUser。用户未提供出发地时,按目的地本地出发或市内交通规划,不得阻断流程。
+            6. 输出禁止:Markdown 代码块、前后解释文字、收尾句。
 
             # 工作流程(早停!)
             ## Step 1:判断用户是否给了具体地名(city 字段)
@@ -124,7 +125,8 @@ public class RouteAgent extends BaseAgent {
                 + (retryHint.isEmpty() ? "" : "\n\n=== 上次校验未通过原因（请修复）===\n" + retryHint);
         String llmOutput;
         try {
-            llmOutput = callLLMWithTools(traceId, SYSTEM_PROMPT, context, toolRegistry.getAll(), LLM_MAX_WORKER_ROUNDS);
+            llmOutput = callLLMWithTools(traceId, SYSTEM_PROMPT, context,
+                    toolRegistry.getAllExcept("askUser"), LLM_MAX_WORKER_ROUNDS);
             warnIfNotPureJson(llmOutput);
         } catch (Exception e) {
             log.error("[traceId={}] [RouteAgent] LLM 工具循环失败: {}", traceId, e.getMessage());
