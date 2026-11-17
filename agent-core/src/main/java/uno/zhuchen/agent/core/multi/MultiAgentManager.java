@@ -97,7 +97,7 @@ public class MultiAgentManager {
      * @param traceId        链路追踪 ID
      * @param modelId        模型业务 ID(null 使用注册表默认)
      */
-    public Flux<StreamChunk> stream(String userInput, String conversationId, String traceId,
+    public Flux<StreamChunk> stream(String userId, String userInput, String conversationId, String traceId,
                                     String modelId) {
         long startMs = System.currentTimeMillis();
 
@@ -112,7 +112,7 @@ public class MultiAgentManager {
 
         Sinks.Many<StreamChunk> sink = Sinks.many().unicast().onBackpressureBuffer();
 
-        Mono.fromRunnable(() -> runLoopAndEmit(userInput, conversationId, traceId, modelId,
+        Mono.fromRunnable(() -> runLoopAndEmit(userId, userInput, conversationId, traceId, modelId,
                         sink, startMs))
                 .subscribeOn(Schedulers.boundedElastic())
                 .subscribe(null,
@@ -153,12 +153,14 @@ public class MultiAgentManager {
     /**
      * 同步 ReAct 调度循环, 边执行边把 SSE 事件推入 sink
      */
-    private void runLoopAndEmit(String userInput, String conversationId, String traceId,
+    private void runLoopAndEmit(String userId, String userInput, String conversationId, String traceId,
                                 String modelId, Sinks.Many<StreamChunk> sink, long startMs) {
-        AgentState state = new AgentState(conversationId, MultiAgentPrompts.MANAGER_SYSTEM_PROMPT, userInput);
+        AgentState state = new AgentState(
+                userId, conversationId, MultiAgentPrompts.MANAGER_SYSTEM_PROMPT, userInput);
+        chatMemory.claim(userId, conversationId, "multi", modelRouter.resolveModelName(modelId));
         try {
             // 加载历史记忆(续聊), 与 ReactAgent 相同语义
-            List<Message> history = chatMemory.load(conversationId);
+            List<Message> history = chatMemory.load(userId, conversationId);
             if (!history.isEmpty()) {
                 history.forEach(msg -> state.getMessages().add(state.getMessages().size() - 1, msg));
             }
@@ -234,7 +236,7 @@ public class MultiAgentManager {
             }
 
             // 收尾: 保存历史 + 发射 final/error; 落模型名与模式 multi(M3)
-            chatMemory.save(conversationId, state.getNewMessages(), traceId, modelName, "multi");
+            chatMemory.save(userId, conversationId, state.getNewMessages(), traceId, modelName, "multi");
             if (finalResponse != null && finalResponse.getText() != null) {
                 sink.tryEmitNext(StreamChunk.final_(conversationId, finalResponse.getText(),
                         System.currentTimeMillis() - startMs));
@@ -247,7 +249,7 @@ public class MultiAgentManager {
             }
         } catch (Exception e) {
             log.error("[traceId={}] [MultiAgent] 执行异常", traceId, e);
-            chatMemory.save(conversationId, state.getNewMessages(), traceId,
+            chatMemory.save(userId, conversationId, state.getNewMessages(), traceId,
                     (modelId == null || modelId.isBlank()) ? null : modelRouter.resolveModelName(modelId), "multi");
             sink.tryEmitNext(StreamChunk.error(conversationId,
                     "Multi-Agent 执行异常: " + e.getMessage(),

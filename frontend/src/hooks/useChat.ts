@@ -10,6 +10,7 @@ import type {
   ConversationDetail,
   ApiResult,
 } from '../types'
+import { apiFetch } from '../lib/apiClient'
 
 export function useChat() {
   const [messages, setMessages] = useState<Message[]>([])
@@ -471,7 +472,7 @@ export function useChat() {
         : '/api/chat/stream'
 
       try {
-        const response = await fetch(endpoint, {
+        const response = await apiFetch(endpoint, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ conversationId, message: content, modelId, superMode: superMode || undefined }),
@@ -574,7 +575,7 @@ export function useChat() {
       return
     }
     try {
-      const res = await fetch('/api/chat/answer', {
+      const res = await apiFetch('/api/chat/answer', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -610,7 +611,7 @@ export function useChat() {
    */
   const loadConversation = useCallback(async (id: string) => {
     try {
-      const res = await fetch(`/api/conversations/${id}`)
+      const res = await apiFetch(`/api/conversations/${id}`)
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const body: ApiResult<ConversationDetail> = await res.json()
       if (body.code !== 200 || !body.data) {

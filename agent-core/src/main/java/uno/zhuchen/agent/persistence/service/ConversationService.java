@@ -56,11 +56,8 @@ public class ConversationService {
     /**
      * 获取单条对话详情（含消息列表）。
      */
-    public ConversationDetailVO getConversation(String conversationId) {
-        ConversationEntity entity = conversationMapper.selectById(conversationId);
-        if (entity == null || "deleted".equals(entity.getStatus())) {
-            throw new NotFoundException("对话不存在");
-        }
+    public ConversationDetailVO getConversation(String userId, String conversationId) {
+        ConversationEntity entity = requireOwned(userId, conversationId, false);
         List<MessageEntity> messages = messageMapper.listByConversation(conversationId);
         List<MessageVO> messageVOs = messages.stream()
                 .map(MessageVO::fromEntity)
@@ -71,11 +68,8 @@ public class ConversationService {
     /**
      * 更新对话标题。
      */
-    public void updateConversation(String conversationId, String title) {
-        ConversationEntity entity = conversationMapper.selectById(conversationId);
-        if (entity == null || "deleted".equals(entity.getStatus())) {
-            throw new NotFoundException("对话不存在");
-        }
+    public void updateConversation(String userId, String conversationId, String title) {
+        requireOwned(userId, conversationId, false);
         conversationMapper.updateTitle(conversationId, title);
         log.info("Updated conversation title: {} -> {}", conversationId, title);
     }
@@ -84,7 +78,8 @@ public class ConversationService {
      * 软删除对话及关联消息，并失效 Redis 会话缓存.
      */
     @Transactional
-    public void deleteConversation(String conversationId) {
+    public void deleteConversation(String userId, String conversationId) {
+        requireOwned(userId, conversationId, true);
         // 物理删除消息
         messageMapper.delete(new QueryWrapper<MessageEntity>()
                 .eq("conversation_id", conversationId));
@@ -93,5 +88,16 @@ public class ConversationService {
         // 失效 Redis 会话缓存: 否则已删会话仍可能命中缓存读到残留消息(M2 修复)
         messageCache.clear(conversationId);
         log.info("Deleted conversation: {}", conversationId);
+    }
+
+    private ConversationEntity requireOwned(String userId, String conversationId,
+                                            boolean allowDeleted) {
+        ConversationEntity entity = conversationMapper.selectById(conversationId);
+        if (entity == null
+                || !userId.equals(entity.getUserId())
+                || (!allowDeleted && "deleted".equals(entity.getStatus()))) {
+            throw new NotFoundException("对话不存在");
+        }
+        return entity;
     }
 }

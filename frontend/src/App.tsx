@@ -8,11 +8,31 @@ import { MultiAgentProgress } from './components/MultiAgentProgress'
 import { useChat } from './hooks/useChat'
 import { useConversations } from './hooks/useConversations'
 import { Knowledge } from './pages/Knowledge'
-import { Menu, MapPin, GitBranch, Zap, Cpu, Rocket, Users, ArrowLeft } from 'lucide-react'
+import { Menu, MapPin, GitBranch, Zap, Cpu, Rocket, Users, ArrowLeft, LogOut } from 'lucide-react'
 import { cn } from './lib/utils'
 import type { ApiMode, ModelInfo } from './types'
+import { LoginPage } from './auth/LoginPage'
+import { useAuth } from './auth/AuthProvider'
+import { apiFetch } from './lib/apiClient'
 
 export default function App() {
+  const { user, loading } = useAuth()
+
+  if (loading) {
+    return (
+      <div className="h-screen bg-warm-white dark:bg-[#1a1a1a] flex items-center justify-center">
+        <div className="w-8 h-8 rounded-full border-2 border-terracotta-500 border-t-transparent animate-spin" />
+      </div>
+    )
+  }
+  if (!user) {
+    return <LoginPage />
+  }
+  return <AuthenticatedApp />
+}
+
+function AuthenticatedApp() {
+  const { user, logout } = useAuth()
   const [sidebarOpen, setSidebarOpen] = useState(false)
   /** 主视图: 'chat' = 聊天, 'knowledge' = 知识库管理 */
   const [view, setView] = useState<'chat' | 'knowledge'>('chat')
@@ -28,7 +48,7 @@ export default function App() {
 
   // 首次挂载拉取模型列表; 失败时静默(不阻塞聊天, 后端会回退默认模型)
   useEffect(() => {
-    fetch('/api/models')
+    apiFetch('/api/models')
       .then((r) => r.json())
       .then((body: { code: number; data?: ModelInfo[] }) => {
         if (body.code === 200 && body.data && body.data.length > 0) {
@@ -338,6 +358,18 @@ export default function App() {
               {conversationId.slice(0, 8)}
             </div>
           )}
+
+          <button
+            type="button"
+            onClick={() => void logout()}
+            title={`退出登录 ${user?.displayName || ''}`}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium text-charcoal-500 dark:text-charcoal-400 hover:bg-warm-white dark:hover:bg-charcoal-800 border border-transparent hover:border-warm-white-200 dark:hover:border-charcoal-700"
+          >
+            <LogOut className="w-3.5 h-3.5" />
+            <span className="hidden lg:inline max-w-24 truncate">
+              {user?.displayName || '退出'}
+            </span>
+          </button>
         </header>
 
         {/* 知识库视图: 渲染管理页 */}

@@ -8,6 +8,9 @@ spring:
   profiles:
     default: deepseek
 
+  session:
+    timeout: 30m
+
   # 始终排除 DashScope starter 的自动配置.
   # 原因: LLMConfig 里已经手动装配了一个名为 dashScopeChatModel 的 ChatModel bean,
   # starter 的 DashScopeChatAutoConfiguration 也会注册同名 bean,
@@ -76,6 +79,9 @@ mcp:
 # 对话消息缓存 TTL(秒),作用在 RedisMessageCache@persistentChatMemory
 # 仅在生产 profile(非 dev/test)下生效,因为 InMemoryChatMemory 不依赖 Redis
 app:
+  auth:
+    # 服务端 Session 必须满足空闲超时和绝对超时双重约束.
+    session-absolute-timeout-seconds: 43200
   cache:
     session-ttl: 1800
   # 对话历史滑动窗口压缩(生产标配): 保留最近 N 条完整消息, 超限时异步把最旧段
@@ -103,6 +109,14 @@ clarify:
 
 server:
   port: ${SERVER_PORT:8080}
+  reactive:
+    session:
+      timeout: 30m
+      cookie:
+        http-only: true
+        same-site: lax
+        secure: ${SESSION_COOKIE_SECURE:false}
+
 
 logging:
   level:
@@ -129,6 +143,17 @@ spring:
   config:
     activate:
       on-profile: dev
+  datasource:
+    url: jdbc:h2:mem:travelpal-dev;MODE=MySQL;DB_CLOSE_DELAY=-1
+    username: sa
+    password:
+    driver-class-name: org.h2.Driver
+  flyway:
+    enabled: false
+  sql:
+    init:
+      mode: always
+      schema-locations: classpath:db/dev/schema.sql
   ai:
     dashscope:
       chat:

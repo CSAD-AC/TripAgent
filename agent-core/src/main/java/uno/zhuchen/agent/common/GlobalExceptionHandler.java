@@ -6,6 +6,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import uno.zhuchen.agent.common.exception.ConflictException;
 import uno.zhuchen.agent.common.exception.NotFoundException;
 
 import java.io.PrintWriter;
@@ -42,6 +43,13 @@ public class GlobalExceptionHandler {
     public Result<Void> handleNotFound(NotFoundException e) {
         log.warn("资源不存在: {}", e.getMessage());
         return Result.error(404, e.getMessage());
+    }
+
+    @ExceptionHandler(ConflictException.class)
+    @ResponseStatus(HttpStatus.CONFLICT)
+    public Result<Void> handleConflict(ConflictException e) {
+        log.warn("资源冲突: {}", e.getMessage());
+        return Result.error(409, e.getMessage());
     }
 
     /**

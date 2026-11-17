@@ -1,4 +1,5 @@
 import { cn } from '../lib/utils'
+import { apiFetch } from '../lib/apiClient'
 import type { Message, ToolCallInfo, StreamIteration } from '../types'
 import { ItineraryCard } from './ItineraryCard'
 import ReactMarkdown from 'react-markdown'
@@ -299,7 +300,7 @@ function SettleButton({
     if (loading || liked) return
     setLoading(true)
     try {
-      const res = await fetch(`/api/messages/${message.id}/like`, {
+      const res = await apiFetch(`/api/messages/${message.id}/like`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

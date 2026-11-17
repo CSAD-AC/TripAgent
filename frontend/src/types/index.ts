@@ -54,6 +54,13 @@ export interface ModelInfo {
   displayName: string
 }
 
+/** 当前登录用户 */
+export interface AuthUser {
+  id: string
+  username: string
+  displayName: string
+}
+
 /** SWV 工作流 6 节点（Graph 模式专用） */
 export type WorkflowNode =
   | 'manager'

@@ -16,6 +16,7 @@ import java.util.UUID;
  */
 public class AgentState {
 
+    private final String userId;
     private final String conversationId;
     private final SystemMessage systemPrompt;
     private final List<Message> messages;
@@ -23,7 +24,8 @@ public class AgentState {
     /** 从持久层加载的历史消息数量，save() 时只保存此偏移量之后的新消息，防止续聊重复插入 */
     private int loadedMessageCount;
 
-    public AgentState(String conversationId, String systemPromptText, String userInput) {
+    public AgentState(String userId, String conversationId, String systemPromptText, String userInput) {
+        this.userId = userId;
         this.conversationId = conversationId != null ? conversationId : UUID.randomUUID().toString().substring(0, 8);
         this.systemPrompt = new SystemMessage(systemPromptText);
         this.messages = new ArrayList<>();
@@ -68,6 +70,10 @@ public class AgentState {
 
     public String getConversationId() {
         return conversationId;
+    }
+
+    public String getUserId() {
+        return userId;
     }
 
     public SystemMessage getSystemPrompt() {

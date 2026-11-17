@@ -7,6 +7,7 @@ import type {
   ReindexResult,
   UploadDocResult,
 } from '../types'
+import { apiFetch } from '../lib/apiClient'
 
 const API_BASE = '/api/knowledge'
 
@@ -50,7 +51,7 @@ export function useKnowledge() {
     setLoading(true)
     try {
       const data = await unwrap<KnowledgeDocPage>(
-        await fetch(`${API_BASE}/documents?page=${page}&size=${size}`)
+        await apiFetch(`${API_BASE}/documents?page=${page}&size=${size}`)
       )
       if (mountedRef.current) {
         setDocs(data.items)
@@ -75,7 +76,7 @@ export function useKnowledge() {
     setStatsLoading(true)
     try {
       const data = await unwrap<KnowledgeStats>(
-        await fetch(`${API_BASE}/documents/stats`)
+        await apiFetch(`${API_BASE}/documents/stats`)
       )
       if (mountedRef.current) setStats(data)
     } catch (err) {
@@ -95,7 +96,7 @@ export function useKnowledge() {
   const upload = useCallback(
     async (payload: { title: string; content: string; destination?: string }): Promise<void> => {
       await unwrap<UploadDocResult>(
-        await fetch(`${API_BASE}/documents`, {
+        await apiFetch(`${API_BASE}/documents`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
@@ -109,19 +110,19 @@ export function useKnowledge() {
 
   // ── 文档详情 ──
   const get = useCallback(async (id: string): Promise<KnowledgeDoc> => {
-    return unwrap<KnowledgeDoc>(await fetch(`${API_BASE}/documents/${id}`))
+    return unwrap<KnowledgeDoc>(await apiFetch(`${API_BASE}/documents/${id}`))
   }, [])
 
   // ── 文档分块(阅读文档内容) ──
   const getChunks = useCallback(async (id: string): Promise<KnowledgeChunk[]> => {
-    return unwrap<KnowledgeChunk[]>(await fetch(`${API_BASE}/documents/${id}/chunks`))
+    return unwrap<KnowledgeChunk[]>(await apiFetch(`${API_BASE}/documents/${id}/chunks`))
   }, [])
 
   // ── 删除文档 ──
   const remove = useCallback(
     async (id: string): Promise<void> => {
       await unwrap<{ success: boolean }>(
-        await fetch(`${API_BASE}/documents/${id}`, { method: 'DELETE' })
+        await apiFetch(`${API_BASE}/documents/${id}`, { method: 'DELETE' })
       )
       setDocs((prev) => prev.filter((d) => d.id !== id))
     },
@@ -131,7 +132,7 @@ export function useKnowledge() {
   // ── 全量重建索引 ──
   const reindex = useCallback(async (): Promise<ReindexResult> => {
     const data = await unwrap<ReindexResult>(
-      await fetch(`${API_BASE}/reindex`, { method: 'POST' })
+      await apiFetch(`${API_BASE}/reindex`, { method: 'POST' })
     )
     // 重建后索引状态可能变化,刷新列表与统计
     await Promise.all([list(), loadStats()])

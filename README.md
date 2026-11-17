@@ -19,6 +19,7 @@ TravelPal 是一个基于大语言模型的 AI 旅游规划系统，具备三种
 | 语言模型 | DeepSeek（默认）/ 通义千问 | global:deepseek-v4.1-flash / qwen3.6-flash |
 | 工具协议 | Model Context Protocol (MCP) | — |
 | 持久化 | MySQL + Redis（MyBatis-Plus + Flyway） | 8.x / 7.x |
+| 认证与会话 | Spring Security + Spring Session Redis（BCrypt / CSRF） | 6.x / 3.x |
 | 向量库 | Milvus（RAG 语义检索，Docker Compose 部署） | - |
 | 前端框架 | React | 19.x |
 | 前端构建 | Vite | 8.x |
@@ -109,7 +110,24 @@ cp mcp-server/src/main/resources/.env.example mcp-server/src/main/resources/.env
 
 > **Profile 说明**：默认 profile 是 `deepseek`（见 application.yml `spring.profiles.default`）。
 > `deepseek` 生产 profile 会启用持久化层，需要**本地 MySQL + Redis**；
-> 改用 `dev` 或 `dashscope` profile 则使用内存记忆（InMemoryChatMemory），无需数据库。
+> 改用 `dev` 或 `dashscope` profile 时，对话记忆和账号仓库使用内存实现，无需数据库。
+
+### 认证与会话
+
+- 首次打开前端进入登录/注册页，账号密码使用 BCrypt 哈希存储。
+- 生产环境登录态由 Redis 服务端 Session 管理，浏览器只持有 `HttpOnly` Cookie。
+- 默认空闲超时 30 分钟、最长登录有效期 12 小时；注销后服务端 Session 立即失效。
+- 所有业务 API 均要求认证，对话、消息和后续长期记忆统一按认证后的 `userId` 隔离。
+- 状态变更请求使用 `XSRF-TOKEN` Cookie + `X-XSRF-TOKEN` Header 双重提交保护。
+- 生产部署必须通过 HTTPS 访问，并设置 `SESSION_COOKIE_SECURE=true`。
+
+账号接口：
+
+- `GET /api/auth/csrf`
+- `POST /api/auth/register`
+- `POST /api/auth/login`
+- `POST /api/auth/logout`
+- `GET /api/auth/me`
 
 ### 3. 启动 Milvus（RAG 需要）
 

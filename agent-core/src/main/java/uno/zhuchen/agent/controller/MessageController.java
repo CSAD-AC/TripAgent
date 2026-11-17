@@ -8,12 +8,16 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.reactive.function.client.WebClient;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 import uno.zhuchen.agent.common.Result;
 import uno.zhuchen.agent.config.McpClientProperties;
+import uno.zhuchen.agent.core.memory.ChatMemory;
 import uno.zhuchen.agent.domain.dto.KnowledgeUploadRequest;
 import uno.zhuchen.agent.domain.dto.MessageLikeRequest;
 import uno.zhuchen.agent.domain.vo.UploadedDocVO;
+import uno.zhuchen.agent.security.UserPrincipal;
 
 import jakarta.validation.Valid;
 
@@ -33,14 +37,16 @@ public class MessageController {
     private static final int MAX_PRECIP_CONTENT = 20_000;
 
     private final WebClient mcpClient;
+    private final ChatMemory chatMemory;
 
     /**
      * 构造注入 mcp-server 连接配置并建立沉淀推送 WebClient.
      *
      * @param mcp mcp-server 连接配置(取 server-url 作为基础地址)
      */
-    public MessageController(McpClientProperties mcp) {
+    public MessageController(McpClientProperties mcp, ChatMemory chatMemory) {
         this.mcpClient = WebClient.builder().baseUrl(mcp.getServerUrl()).build();
+        this.chatMemory = chatMemory;
     }
 
     /**
@@ -54,7 +60,15 @@ public class MessageController {
      */
     @PostMapping("/{id}/like")
     public Mono<Result<UploadedDocVO>> likeAndPrecipitate(@PathVariable("id") String messageId,
-                                                          @Valid @RequestBody MessageLikeRequest req) {
+                                                          @Valid @RequestBody MessageLikeRequest req,
+                                                          @AuthenticationPrincipal UserPrincipal user) {
+        return Mono.fromRunnable(() -> chatMemory.assertOwned(user.userId(), req.getConversationId()))
+                .subscribeOn(Schedulers.boundedElastic())
+                .then(Mono.defer(() -> doLikeAndPrecipitate(messageId, req)));
+    }
+
+    private Mono<Result<UploadedDocVO>> doLikeAndPrecipitate(String messageId,
+                                                             MessageLikeRequest req) {
         String content = req.getContent();
         // 长度保护: 超大内容截断前段入库, 防止异常上传撑爆分块
         if (content.length() > MAX_PRECIP_CONTENT) {

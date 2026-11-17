@@ -19,6 +19,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 import uno.zhuchen.agent.domain.entity.ConversationEntity;
 import uno.zhuchen.agent.domain.entity.MessageEntity;
+import uno.zhuchen.agent.common.exception.NotFoundException;
 import uno.zhuchen.agent.persistence.cache.CacheMessageDto;
 import uno.zhuchen.agent.persistence.cache.RedisMessageCache;
 import uno.zhuchen.agent.persistence.cache.SessionMessageSavedEvent;
@@ -87,13 +88,15 @@ public class PersistentChatMemory implements ChatMemory {
 
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public void save(String conversationId, List<Message> messages, String traceId,
+    public void save(String userId, String conversationId, List<Message> messages, String traceId,
                      String model, String mode) {
+        Objects.requireNonNull(userId, "userId");
         Objects.requireNonNull(conversationId, "conversationId");
         Objects.requireNonNull(messages, "messages");
 
-        // 1. 确保 conversation 存在(幂等), 并落 mode/model 元数据
-        ensureConversationExists(conversationId, messages, mode, model);
+        // 1. 认领/校验会话所有权
+        claim(userId, conversationId, mode, model);
+        populateConversationPreview(userId, conversationId, messages, mode, model);
 
         // 2. 查询当前最大序号作为起始偏移
         int seqOffset = messageMapper.selectMaxSequenceNum(conversationId) + 1;
@@ -122,8 +125,14 @@ public class PersistentChatMemory implements ChatMemory {
     }
 
     @Override
-    public List<Message> load(String conversationId) {
+    public List<Message> load(String userId, String conversationId) {
+        Objects.requireNonNull(userId, "userId");
         Objects.requireNonNull(conversationId, "conversationId");
+        ConversationEntity conversation = conversationMapper.selectById(conversationId);
+        if (conversation == null) {
+            return List.of();
+        }
+        assertOwned(conversation, userId);
 
         // 1. 缓存优先
         List<Message> messages;
@@ -144,23 +153,52 @@ public class PersistentChatMemory implements ChatMemory {
     }
 
     @Override
-    public void clear(String conversationId) {
+    public void clear(String userId, String conversationId) {
+        Objects.requireNonNull(userId, "userId");
         Objects.requireNonNull(conversationId, "conversationId");
 
-        // 物理删除消息
+        ConversationEntity conv = conversationMapper.selectById(conversationId);
+        if (conv == null || "deleted".equals(conv.getStatus())) {
+            return;
+        }
+        assertOwned(conv, userId);
         messageMapper.delete(new QueryWrapper<MessageEntity>()
                 .eq("conversation_id", conversationId));
-
-        // 清缓存
         messageCache.clear(conversationId);
+        conv.setStatus("deleted");
+        conv.setMessageCount(0);
+        conversationMapper.updateById(conv);
+    }
 
-        // 软删除会话(ConversationEntity.updatedAt 由 MyMetaObjectHandler 自动填充)
-        ConversationEntity conv = conversationMapper.selectById(conversationId);
-        if (conv != null) {
-            conv.setStatus("deleted");
-            conv.setMessageCount(0);
-            conversationMapper.updateById(conv);
+    @Override
+    public void claim(String userId, String conversationId, String mode, String model) {
+        Objects.requireNonNull(userId, "userId");
+        Objects.requireNonNull(conversationId, "conversationId");
+        ConversationEntity existing = conversationMapper.selectById(conversationId);
+        if (existing != null) {
+            assertOwned(existing, userId);
+            return;
         }
+        ConversationEntity conversation = new ConversationEntity();
+        conversation.setId(conversationId);
+        conversation.setUserId(userId);
+        conversation.setMode(mode == null ? "react" : mode);
+        conversation.setModel(model);
+        try {
+            conversationMapper.insert(conversation);
+        } catch (DuplicateKeyException e) {
+            ConversationEntity raced = conversationMapper.selectById(conversationId);
+            if (raced == null) {
+                throw new NotFoundException("对话不存在");
+            }
+            assertOwned(raced, userId);
+        }
+    }
+
+    @Override
+    public void assertOwned(String userId, String conversationId) {
+        ConversationEntity conversation = conversationMapper.selectById(conversationId);
+        assertOwned(conversation, userId);
     }
 
     // ============ 会话管理 ============
@@ -198,24 +236,43 @@ public class PersistentChatMemory implements ChatMemory {
         return tail;
     }
 
-    private void ensureConversationExists(String conversationId, List<Message> messages,
-                                          String mode, String model) {
-        ConversationEntity conv = new ConversationEntity();
-        conv.setId(conversationId);
-        conv.setMode(mode == null ? "react" : mode);
-        conv.setModel(model);
-        messages.stream()
-                .filter(m -> m instanceof UserMessage)
-                .findFirst()
-                .ifPresent(m -> {
-                    String text = m.getText();
-                    conv.setTitle(text.length() > 100 ? text.substring(0, 100) + "..." : text);
-                    conv.setFirstMessage(text.length() > 100 ? text.substring(0, 100) : text);
-                });
-        try {
-            conversationMapper.insert(conv);
-        } catch (DuplicateKeyException e) {
-            log.debug("Conversation already exists, skip insert. id={}", conversationId);
+    private void populateConversationPreview(String userId, String conversationId,
+                                             List<Message> messages, String mode, String model) {
+        ConversationEntity conv = conversationMapper.selectById(conversationId);
+        if (conv == null) {
+            throw new NotFoundException("对话不存在");
+        }
+        assertOwned(conv, userId);
+        boolean changed = false;
+        if (conv.getMode() == null || conv.getMode().isBlank()) {
+            conv.setMode(mode == null ? "react" : mode);
+            changed = true;
+        }
+        if (conv.getModel() == null && model != null) {
+            conv.setModel(model);
+            changed = true;
+        }
+        if (conv.getTitle() == null || conv.getTitle().isBlank()) {
+            messages.stream()
+                    .filter(m -> m instanceof UserMessage)
+                    .findFirst()
+                    .ifPresent(m -> {
+                        String text = m.getText();
+                        conv.setTitle(text.length() > 100 ? text.substring(0, 100) + "..." : text);
+                        conv.setFirstMessage(text.length() > 100 ? text.substring(0, 100) : text);
+                    });
+            changed = true;
+        }
+        if (changed) {
+            conversationMapper.updateById(conv);
+        }
+    }
+
+    private static void assertOwned(ConversationEntity conversation, String userId) {
+        if (conversation == null || userId == null
+                || !Objects.equals(userId, conversation.getUserId())
+                || "deleted".equals(conversation.getStatus())) {
+            throw new NotFoundException("对话不存在");
         }
     }
 

@@ -94,14 +94,15 @@ public class ReactAgent {
      * @param modelId 模型业务 ID(前端选择); null/空串 → 注册表默认模型
      * @param superMode 超能模式: true 时迭代轮次无上限(仅 ReAct 路径生效)
      */
-    public ChatDTO call(String userInput, String conversationId, String traceId, String modelId,
+    public ChatDTO call(String userId, String userInput, String conversationId, String traceId, String modelId,
                         boolean superMode) {
         long start = System.currentTimeMillis();
         List<String> reasoningSteps = new ArrayList<>();
 
         try {
             // 1. 初始化状态
-            AgentState state = new AgentState(conversationId, config.getSystemPrompt(), userInput);
+            AgentState state = new AgentState(userId, conversationId, config.getSystemPrompt(), userInput);
+            chatMemory.claim(userId, state.getConversationId(), "react", modelId);
             log.debug("[traceId={}] Agent[{}] 开始 ReAct 循环, model={}, maxIterations={}, superMode={}",
                     traceId, state.getConversationId(), modelId != null ? modelId : "default",
                     superMode ? "unlimited" : config.getMaxIterations(), superMode);
@@ -116,7 +117,7 @@ public class ReactAgent {
                             .collect(java.util.stream.Collectors.toList()));
 
             // 2. 加载历史记忆（续聊）
-            List<Message> history = chatMemory.load(state.getConversationId());
+            List<Message> history = chatMemory.load(userId, state.getConversationId());
             if (!history.isEmpty()) {
                 log.debug("Agent[{}] 加载 {} 条历史消息", state.getConversationId(), history.size());
                 // 将历史消息插入到 system prompt 之后、当前用户消息之前
@@ -217,7 +218,7 @@ public class ReactAgent {
 
             if (finalResponse != null) {
                 // 保存对话历史(traceId 落 message.trace_id 列支撑溯源); 落模型名与模式元数据
-                chatMemory.save(state.getConversationId(), state.getNewMessages(), traceId,
+                chatMemory.save(state.getUserId(), state.getConversationId(), state.getNewMessages(), traceId,
                         inv.modelName(), "react");
                 return ChatDTO.success(
                         state.getConversationId(), userInput,
@@ -229,7 +230,7 @@ public class ReactAgent {
             }
 
             // 达到最大迭代次数仍未得出最终答案
-            chatMemory.save(state.getConversationId(), state.getNewMessages(), traceId,
+            chatMemory.save(state.getUserId(), state.getConversationId(), state.getNewMessages(), traceId,
                     inv.modelName(), "react");
             String lastContent = !state.getMessages().isEmpty()
                     ? state.getMessages().get(state.getMessages().size() - 1).getText()
@@ -272,7 +273,7 @@ public class ReactAgent {
      *
      * @param superMode 超能模式: true 时迭代轮次无上限(仅 ReAct 路径生效)
      */
-    public Flux<StreamChunk> stream(String userInput, String conversationId, boolean superMode) {
+    public Flux<StreamChunk> stream(String userId, String userInput, String conversationId, boolean superMode) {
         long start = System.currentTimeMillis();
 
         // 防止同一 conversationId 被并发请求处理（导致消息历史交叉污染）
@@ -290,10 +291,11 @@ public class ReactAgent {
                             System.currentTimeMillis() - start)));
         }
 
-        AgentState state = new AgentState(conversationId, config.getSystemPrompt(), userInput);
+        AgentState state = new AgentState(userId, conversationId, config.getSystemPrompt(), userInput);
+        chatMemory.claim(userId, state.getConversationId(), "react", null);
 
         // 加载历史记忆（非阻塞操作）
-        List<Message> history = chatMemory.load(state.getConversationId());
+        List<Message> history = chatMemory.load(userId, state.getConversationId());
         if (!history.isEmpty()) {
             history.forEach(msg -> state.getMessages().add(state.getMessages().size() - 1, msg));
         }
@@ -463,7 +465,8 @@ public class ReactAgent {
                     .properties(usageProps(tokenUsage))
                     .build();
             state.addReasoningResult(response);
-            chatMemory.save(state.getConversationId(), state.getNewMessages(), traceId, modelName, "react");
+            chatMemory.save(state.getUserId(), state.getConversationId(), state.getNewMessages(),
+                    traceId, modelName, "react");
             log.debug("[traceId={}] 第 {} 轮无工具调用, 得到最终答案", traceId, iterNum);
             return Flux.just(StreamChunk.final_(state.getConversationId(), thought,
                     System.currentTimeMillis() - start));
@@ -654,7 +657,8 @@ public class ReactAgent {
                                                   Throwable e, long start) {
         log.error("[traceId={}] [{}] ReAct 流式处理异常",
                 traceId, state.getConversationId(), e);
-        chatMemory.save(state.getConversationId(), state.getNewMessages(), traceId, modelName, "react");
+        chatMemory.save(state.getUserId(), state.getConversationId(), state.getNewMessages(),
+                traceId, modelName, "react");
         return Flux.just(StreamChunk.error(state.getConversationId(),
                 "处理异常: " + e.getMessage(), System.currentTimeMillis() - start));
     }

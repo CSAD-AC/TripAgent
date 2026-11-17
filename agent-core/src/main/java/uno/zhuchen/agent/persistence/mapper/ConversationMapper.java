@@ -15,7 +15,8 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
     /**
      * 用户对话列表（分页）。
      */
-    @Select("SELECT * FROM conversation WHERE user_id=#{userId} AND status='active' ORDER BY updated_at DESC")
+    @Select("SELECT * FROM conversation WHERE user_id=#{userId} AND status='active' "
+            + "AND message_count > 0 ORDER BY updated_at DESC")
     IPage<ConversationEntity> listByUserId(@Param("userId") String userId, Page<?> page);
 
     /**

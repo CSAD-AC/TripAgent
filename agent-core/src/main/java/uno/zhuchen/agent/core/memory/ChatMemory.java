@@ -12,8 +12,19 @@ import java.util.List;
 public interface ChatMemory {
 
     /**
+     * 认领会话所有权。新会话创建 owner，已有会话必须由同一用户持有。
+     */
+    void claim(String userId, String conversationId, String mode, String model);
+
+    /**
+     * 校验会话存在且属于当前用户；不存在或跨用户统一抛出 NotFoundException。
+     */
+    void assertOwned(String userId, String conversationId);
+
+    /**
      * 保存指定会话的消息列表
      *
+     * @param userId 已认证用户 ID
      * @param conversationId 会话 ID
      * @param messages       消息列表
      * @param traceId        链路追踪 ID, 落库到 message.trace_id 列支撑溯源;
@@ -21,22 +32,23 @@ public interface ChatMemory {
      * @param model          LLM 模型 API 名, 落库到 message.model 与 conversation.model(可为 null)
      * @param mode           对话模式(react/graph/multi), 落库到 conversation.mode
      */
-    void save(String conversationId, List<Message> messages, String traceId, String model, String mode);
+    void save(String userId, String conversationId, List<Message> messages,
+              String traceId, String model, String mode);
 
     /**
      * 保存指定会话的消息列表(无链路追踪上下文的便捷入口, 模型/模式缺省)
      */
-    default void save(String conversationId, List<Message> messages, String traceId) {
-        save(conversationId, messages, traceId, null, "react");
+    default void save(String userId, String conversationId, List<Message> messages, String traceId) {
+        save(userId, conversationId, messages, traceId, null, "react");
     }
 
     /**
      * 加载指定会话的消息历史
      */
-    List<Message> load(String conversationId);
+    List<Message> load(String userId, String conversationId);
 
     /**
      * 清除指定会话的记忆
      */
-    void clear(String conversationId);
+    void clear(String userId, String conversationId);
 }
