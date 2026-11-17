@@ -18,6 +18,7 @@ import uno.zhuchen.agent.core.llm.impl.DeepSeekChatModel;
 import uno.zhuchen.agent.core.memory.ChatMemory;
 import uno.zhuchen.agent.core.memory.MemoryPromptRenderer;
 import uno.zhuchen.agent.core.memory.HybridMemoryPromptRenderer;
+import uno.zhuchen.agent.core.memory.MemoryTriggerService;
 import uno.zhuchen.agent.core.memory.UserMemoryService;
 import uno.zhuchen.agent.core.memory.InMemoryChatMemory;
 import uno.zhuchen.agent.core.tool.ToolRegistry;
@@ -119,8 +120,9 @@ public class LLMConfig {
                                   AgentConfig agentConfig, ToolRegistry toolRegistry,
                                   UserMemoryService userMemoryService,
                                   MemoryPromptRenderer memoryPromptRenderer,
-                                  HybridMemoryPromptRenderer hybridMemoryPromptRenderer) {
+                                  HybridMemoryPromptRenderer hybridMemoryPromptRenderer,
+                                  MemoryTriggerService memoryTriggerService) {
         return new ReactAgent(modelRouter, chatMemory, agentConfig, toolRegistry,
-                userMemoryService, memoryPromptRenderer, hybridMemoryPromptRenderer);
+                userMemoryService, memoryPromptRenderer, hybridMemoryPromptRenderer, memoryTriggerService);
     }
 }

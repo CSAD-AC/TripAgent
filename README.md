@@ -253,6 +253,8 @@ npm run dev
 
 阶段三/四已加入结构化混合召回、veto 抑制、预算渲染、用户纠错/审计 API 与可配置的定时整理。`app.memory.hybrid.enabled=true` 会启用新的混合记忆提示词链路；当前经历召回仍基于 `memory_item` 的结构化字段排序，向量服务实现为 Noop，没有真实 Milvus 写入或语义检索。MCP Server 已预留独立 `user_memory_episodic_v1` collection 配置，后续接线后即可切换到真实向量召回，不影响聊天主链路。
 
+记忆触发已接入真实聊天的完成路径：ReAct、Graph、Multi-Agent 在回答落库后会调用统一触发服务。触发采用分层策略：先做敏感信息与短消息过滤，再用显式偏好正则（如“记住/我喜欢/我来自/预算/不吃”）或较长旅行上下文决定是否入队；入队事件由后台 worker 用规则抽取器生成候选记忆。当前默认不调用 LLM 做深度抽取，避免每轮聊天都增加模型成本。
+
 当前与长期记忆相关的配置：
 
 - `app.memory.long-term.max-items` / `max-chars`：旧偏好记忆注入上限。
@@ -261,6 +263,8 @@ npm run dev
 - `app.memory.hybrid.recall-top-k` / `final-top-k` / `min-score`：候选召回与过滤参数。
 - `app.memory.consolidation.enabled`：定时整理开关，默认 `false`。
 - `app.memory.retention-days`：过期记忆保留窗口，默认 365 天。
+- `app.memory.ingest-trigger.enabled`：聊天完成后的记忆入队触发开关，默认 `true`。
+- `app.memory.ingest-trigger.min-chars`：触发入队的最小用户消息长度，默认 6。
 
 治理接口：
 

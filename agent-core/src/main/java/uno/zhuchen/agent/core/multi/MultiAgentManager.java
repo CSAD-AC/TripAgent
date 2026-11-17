@@ -17,6 +17,7 @@ import uno.zhuchen.agent.core.llm.ChatModel;
 import uno.zhuchen.agent.core.memory.ChatMemory;
 import uno.zhuchen.agent.core.memory.MemoryPromptRenderer;
 import uno.zhuchen.agent.core.memory.HybridMemoryPromptRenderer;
+import uno.zhuchen.agent.core.memory.MemoryTriggerService;
 import uno.zhuchen.agent.core.memory.UserMemoryService;
 import uno.zhuchen.agent.core.tool.AskUserTool;
 import uno.zhuchen.agent.core.tool.AskUserToolCallback;
@@ -64,6 +65,7 @@ public class MultiAgentManager {
     private final UserMemoryService userMemoryService;
     private final MemoryPromptRenderer memoryPromptRenderer;
     private final HybridMemoryPromptRenderer hybridMemoryPromptRenderer;
+    private final MemoryTriggerService memoryTriggerService;
     private final AgentConfig config;
     private final AskUserToolCallback askUserToolCallback;
     private final CalculatorTool calculatorTool;
@@ -86,13 +88,15 @@ public class MultiAgentManager {
                              TripPlanningTool tripPlanningTool,
                              UserMemoryService userMemoryService,
                              MemoryPromptRenderer memoryPromptRenderer,
-                             HybridMemoryPromptRenderer hybridMemoryPromptRenderer) {
+                             HybridMemoryPromptRenderer hybridMemoryPromptRenderer,
+                             MemoryTriggerService memoryTriggerService) {
         this.modelRouter = modelRouter;
         this.toolRegistry = toolRegistry;
         this.chatMemory = chatMemory;
         this.userMemoryService = userMemoryService;
         this.memoryPromptRenderer = memoryPromptRenderer;
         this.hybridMemoryPromptRenderer = hybridMemoryPromptRenderer;
+        this.memoryTriggerService = memoryTriggerService;
         this.config = config;
         this.askUserToolCallback = askUserToolCallback;
         this.calculatorTool = calculatorTool;
@@ -285,6 +289,7 @@ public class MultiAgentManager {
     private void remember(String userId, String conversationId, String userInput) {
         try {
             userMemoryService.extractAndStore(userId, conversationId, userInput);
+            memoryTriggerService.onConversationFinished(userId, conversationId, userInput);
         } catch (Exception e) {
             log.warn("[MultiAgent] 保存长期记忆失败: userId={}, conversationId={}, error={}",
                     userId, conversationId, e.getMessage());

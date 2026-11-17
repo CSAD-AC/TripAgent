@@ -98,6 +98,9 @@ app:
         recall-top-k: 20
         final-top-k: 6
         min-score: 0.62
+      ingest-trigger:
+        enabled: true
+        min-chars: 6
       consolidation:
         enabled: false
         initial-delay-ms: 60000

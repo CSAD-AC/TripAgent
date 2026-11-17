@@ -19,6 +19,7 @@ import uno.zhuchen.agent.core.llm.ChatModel;
 import uno.zhuchen.agent.core.memory.ChatMemory;
 import uno.zhuchen.agent.core.memory.MemoryPromptRenderer;
 import uno.zhuchen.agent.core.memory.HybridMemoryPromptRenderer;
+import uno.zhuchen.agent.core.memory.MemoryTriggerService;
 import uno.zhuchen.agent.core.memory.MemorySummary;
 import uno.zhuchen.agent.core.memory.UserMemoryService;
 import uno.zhuchen.agent.core.tool.AskUserTool;
@@ -77,6 +78,7 @@ public class ReactAgent {
     private final UserMemoryService userMemoryService;
     private final MemoryPromptRenderer memoryPromptRenderer;
     private final HybridMemoryPromptRenderer hybridMemoryPromptRenderer;
+    private final MemoryTriggerService memoryTriggerService;
 
     /** 每会话并发控制，拒绝同一 conversationId 的并行请求 */
     private final ConcurrentHashMap<String, AtomicBoolean> conversationLocks = new ConcurrentHashMap<>();
@@ -84,7 +86,8 @@ public class ReactAgent {
     public ReactAgent(ModelRouter modelRouter, ChatMemory chatMemory, AgentConfig config,
                       ToolRegistry toolRegistry, UserMemoryService userMemoryService,
                       MemoryPromptRenderer memoryPromptRenderer,
-                      HybridMemoryPromptRenderer hybridMemoryPromptRenderer) {
+                      HybridMemoryPromptRenderer hybridMemoryPromptRenderer,
+                      MemoryTriggerService memoryTriggerService) {
         this.modelRouter = modelRouter;
         this.chatMemory = chatMemory;
         this.config = config;
@@ -92,6 +95,7 @@ public class ReactAgent {
         this.userMemoryService = userMemoryService;
         this.memoryPromptRenderer = memoryPromptRenderer;
         this.hybridMemoryPromptRenderer = hybridMemoryPromptRenderer;
+        this.memoryTriggerService = memoryTriggerService;
     }
 
     private String systemPromptFor(String userId) {
@@ -115,6 +119,7 @@ public class ReactAgent {
     private void remember(String userId, String conversationId, String userInput) {
         try {
             userMemoryService.extractAndStore(userId, conversationId, userInput);
+            memoryTriggerService.onConversationFinished(userId, conversationId, userInput);
         } catch (Exception e) {
             log.warn("保存长期记忆失败: userId={}, conversationId={}, error={}",
                     userId, conversationId, e.getMessage());

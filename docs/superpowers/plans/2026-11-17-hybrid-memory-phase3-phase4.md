@@ -13,6 +13,7 @@
 ### 实际实施与计划差异
 
 - 已实施：结构化混合召回、veto 抑制、预算渲染、三条 Agent 路径切换、用户纠错/veto/审计 API、管理 health/process/reindex API、定时整理与保留策略。
+- 已实施：聊天完成后的分层触发服务，过滤敏感/短消息后，用显式偏好正则或较长旅行上下文决定是否写入 `memory_ingest_event`。
 - 未实施：MCP Server 的用户记忆向量 HTTP 服务、`RemoteMemoryVectorService`、真实 Milvus 语义召回与删除传播。当前 `MemoryVectorService` 仍是 `NoopMemoryVectorService`。
 - `app.memory.hybrid.enabled=true` 的含义是启用混合记忆提示词链路和结构化经历排序，不代表真实向量检索已启用。
 - 经历记忆当前由规则和兼容写入产生，未接入 LLM 深度抽取。
