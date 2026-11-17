@@ -91,6 +91,8 @@ app:
     long-term:
       max-items: 10
       max-chars: 800
+      hybrid:
+        enabled: false
       max-value-chars: 120
   # 模型注册表: 列表顺序即前端展示顺序, 第一项为默认模型(未指定 modelId 时回退)
   # provider 与 ChatModel 实现的 bean 路由键对应(见 ModelRouter)

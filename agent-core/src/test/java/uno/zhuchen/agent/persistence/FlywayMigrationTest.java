@@ -27,7 +27,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Flyway 迁移实跑测试: 在容器化的干净 MySQL 8.4 上执行 db/migration 的 V1~V10.
+ * Flyway 迁移实跑测试: 在容器化的干净 MySQL 8.4 上执行 db/migration 的 V1~V13.
  *
  * <p>目的: 迁移脚本此前从未在"空库"上验证过, 一旦脚本含语法错误或隐含依赖,
  * 只会在生产首次启动时才炸. 本测试把这一步前移到 CI.
@@ -39,7 +39,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * {@code -DexcludedGroups=integration} 跑, 加了 tag 就会被排除, 等于没测.
  */
 @Testcontainers(disabledWithoutDocker = true)
-@DisplayName("agent-core Flyway 迁移: 在干净 MySQL 8.4 上从零跑通 V1~V10")
+@DisplayName("agent-core Flyway 迁移: 在干净 MySQL 8.4 上从零跑通 V1~V13")
 class FlywayMigrationTest {
 
     /** 与生产同版本镜像: mysql:8.4 */
@@ -164,17 +164,17 @@ class FlywayMigrationTest {
     // ==================== 测试 ====================
 
     @Test
-    @DisplayName("空库执行 migrate: V1~V10 全部执行且无异常")
+    @DisplayName("空库执行 migrate: V1~V13 全部执行且无异常")
     void migrate_cleanDatabase_appliesAllMigrations() throws Exception {
         assertNotNull(firstMigrate, "migrate 应已执行");
 
         assertAll(
                 () -> assertTrue(firstMigrate.success, "migrate 结果应为 success"),
-                () -> assertEquals(10, firstMigrate.migrationsExecuted,
-                        "应恰好执行 10 个版本化迁移(V1~V10)"),
-                () -> assertEquals(List.of("1", "2", "3", "4", "5", "6", "7", "8", "9", "10"),
+                () -> assertEquals(13, firstMigrate.migrationsExecuted,
+                        "应恰好执行 13 个版本化迁移(V1~V13)"),
+                () -> assertEquals(List.of("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13"),
                         appliedVersions(),
-                        "flyway_schema_history 中 success=1 的版本应恰好是 V1..V10")
+                        "flyway_schema_history 中 success=1 的版本应恰好是 V1..V13")
         );
     }
 
@@ -207,13 +207,16 @@ class FlywayMigrationTest {
     }
 
     @Test
-    @DisplayName("V1/V2/V9/V10 建出 conversation、message、user_account 与 user_memory 表")
+    @DisplayName("V1/V2/V9/V10/V11/V12/V13 建出核心表与记忆基础设施表")
     void migrate_createsCoreTables() throws Exception {
         assertAll(
                 () -> assertTrue(tableExists("conversation"), "conversation 表应存在"),
                 () -> assertTrue(tableExists("message"), "message 表应存在"),
                 () -> assertTrue(tableExists("user_account"), "user_account 表应存在"),
-                () -> assertTrue(tableExists("user_memory"), "user_memory 表应存在")
+                () -> assertTrue(tableExists("user_memory"), "user_memory 表应存在"),
+                () -> assertTrue(tableExists("memory_item"), "memory_item 表应存在"),
+                () -> assertTrue(tableExists("memory_ingest_event"), "memory_ingest_event 表应存在"),
+                () -> assertTrue(tableExists("memory_revision"), "memory_revision 表应存在")
         );
     }
 
@@ -258,7 +261,7 @@ class FlywayMigrationTest {
         assertAll(
                 () -> assertEquals(0, second.migrationsExecuted,
                         "第二次 migrate 不应执行任何迁移(幂等)"),
-                () -> assertEquals(10, applied.length, "flyway info 应显示 10 个已应用迁移"),
+                () -> assertEquals(13, applied.length, "flyway info 应显示 13 个已应用迁移"),
                 () -> assertEquals(0, flyway.info().pending().length, "不应残留 pending 迁移"),
                 () -> assertEquals(before, after, "重复迁移不应改变已应用版本集合")
         );

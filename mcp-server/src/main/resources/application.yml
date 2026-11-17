@@ -42,6 +42,12 @@ spring:
         metric-type: COSINE
         initialize-schema: true
 
+# 用户长期记忆的独立向量 collection 配置。当前仅登记配置，不参与知识库 RAG。
+app:
+  memory-vector:
+    collection-name: ${USER_MEMORY_COLLECTION:user_memory_episodic_v1}
+    embedding-dimension: ${USER_MEMORY_EMBEDDING_DIMENSION:1024}
+
   # RAG: 知识库源数据 (MySQL 为源, Milvus 为可重建索引)
   datasource:
     url: jdbc:mysql://${MYSQL_HOST:localhost}:${MYSQL_PORT:3306}/${MYSQL_DB:TripAgent}?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai

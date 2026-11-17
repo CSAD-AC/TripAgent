@@ -24,15 +24,18 @@ public class UserMemoryService {
 
     private final UserMemoryMapper mapper;
     private final MemoryExtractor extractor;
+    private final MemoryItemService memoryItemService;
     private final int maxItems;
     private final int maxValueChars;
 
     public UserMemoryService(UserMemoryMapper mapper,
                              MemoryExtractor extractor,
+                             MemoryItemService memoryItemService,
                              @Value("${app.memory.long-term.max-items:10}") int maxItems,
                              @Value("${app.memory.long-term.max-value-chars:120}") int maxValueChars) {
         this.mapper = mapper;
         this.extractor = extractor;
+        this.memoryItemService = memoryItemService;
         this.maxItems = Math.max(1, maxItems);
         this.maxValueChars = Math.max(20, maxValueChars);
     }
@@ -44,6 +47,7 @@ public class UserMemoryService {
         try {
             for (MemoryCandidate candidate : extractor.extract(userMessage)) {
                 upsert(userId, conversationId, candidate);
+                mirrorToMemoryItem(userId, conversationId, candidate);
             }
         } catch (Exception e) {
             log.warn("[long-term-memory] 提取或保存失败: userId={}, conversationId={}, error={}",
@@ -155,6 +159,32 @@ public class UserMemoryService {
                 .set("source_conversation_id", conversationId)
                 .set("status", "active")
                 .set("updated_at", now));
+    }
+
+    private void mirrorToMemoryItem(String userId, String conversationId, MemoryCandidate candidate) {
+        try {
+            MemoryItemType type = switch (candidate.type()) {
+                case "profile" -> MemoryItemType.PROFILE;
+                case "default" -> MemoryItemType.PREFERENCE;
+                default -> MemoryItemType.PREFERENCE;
+            };
+            memoryItemService.upsert(
+                    "default",
+                    userId,
+                    null,
+                    type,
+                    candidate.key(),
+                    normalizeStoredValue(candidate.value()),
+                    "user_message",
+                    conversationId,
+                    null,
+                    new BigDecimal("0.800"),
+                    new BigDecimal("0.600"),
+                    "rule-v1");
+        } catch (Exception e) {
+            log.warn("[long-term-memory] 写入 memory_item 失败: userId={}, key={}, error={}",
+                    userId, candidate.key(), e.getMessage());
+        }
     }
 
     private String normalizeStoredValue(String value) {

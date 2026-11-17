@@ -10,6 +10,7 @@ import uno.zhuchen.agent.common.exception.NotFoundException;
 import uno.zhuchen.agent.domain.entity.UserMemoryEntity;
 import uno.zhuchen.agent.persistence.mapper.UserMemoryMapper;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -29,11 +30,14 @@ class UserMemoryServiceTest {
     @Mock
     private UserMemoryMapper mapper;
 
+    @Mock
+    private MemoryItemService memoryItemService;
+
     private UserMemoryService service;
 
     @BeforeEach
     void setUp() {
-        service = new UserMemoryService(mapper, new MemoryExtractor(), 10, 120);
+        service = new UserMemoryService(mapper, new MemoryExtractor(), memoryItemService, 10, 120);
     }
 
     @Test
@@ -48,6 +52,19 @@ class UserMemoryServiceTest {
         assertEquals("travel.preference.food", captor.getValue().getMemoryKey());
         assertEquals("user-a", captor.getValue().getUserId());
         assertEquals("conv-1", captor.getValue().getSourceConversationId());
+        verify(memoryItemService).upsert(
+                org.mockito.ArgumentMatchers.eq("default"),
+                org.mockito.ArgumentMatchers.eq("user-a"),
+                org.mockito.ArgumentMatchers.isNull(),
+                org.mockito.ArgumentMatchers.eq(MemoryItemType.PREFERENCE),
+                org.mockito.ArgumentMatchers.eq("travel.preference.food"),
+                org.mockito.ArgumentMatchers.eq("true"),
+                org.mockito.ArgumentMatchers.eq("user_message"),
+                org.mockito.ArgumentMatchers.eq("conv-1"),
+                org.mockito.ArgumentMatchers.isNull(),
+                org.mockito.ArgumentMatchers.any(BigDecimal.class),
+                org.mockito.ArgumentMatchers.any(BigDecimal.class),
+                org.mockito.ArgumentMatchers.eq("rule-v1"));
     }
 
     @Test

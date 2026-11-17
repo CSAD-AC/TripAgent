@@ -249,6 +249,8 @@ npm run dev
 - `DELETE /api/memory/{id}`
 - `DELETE /api/memory`
 
+混合式长期记忆阶段一/二基础设施已落地：新增通用 `memory_item`、抽取事件表和修订审计表；旧的偏好记忆读取与注入路径保持不变，新表先作为兼容写入与后续混合召回的基础设施。真实向量写入默认关闭，用户记忆向量 collection 与知识库 RAG 分离配置。
+
 ## 接口说明
 
 ### REST API
