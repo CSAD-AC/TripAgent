@@ -10,12 +10,19 @@
 
 ---
 
-### 范围边界
+### 实际实施与计划差异
+
+- 已实施：结构化混合召回、veto 抑制、预算渲染、三条 Agent 路径切换、用户纠错/veto/审计 API、管理 health/process/reindex API、定时整理与保留策略。
+- 未实施：MCP Server 的用户记忆向量 HTTP 服务、`RemoteMemoryVectorService`、真实 Milvus 语义召回与删除传播。当前 `MemoryVectorService` 仍是 `NoopMemoryVectorService`。
+- `app.memory.hybrid.enabled=true` 的含义是启用混合记忆提示词链路和结构化经历排序，不代表真实向量检索已启用。
+- 经历记忆当前由规则和兼容写入产生，未接入 LLM 深度抽取。
+
+### 原计划范围边界
 
 - 不实现图记忆。
 - 不在 `agent-core` 直接引入 Spring AI Milvus 依赖，避免双套配置漂移。
 - 用户记忆向量集合与知识库 `knowledge_chunk` 完全隔离。
-- 真实向量链路通过配置 `app.memory.hybrid.enabled=true` 开启；默认 dev/test 可保持 false。
+- 真实向量链路原计划通过配置 `app.memory.hybrid.enabled=true` 开启；实际当前只启用结构化混合链路，真实向量实现仍待接线。
 - 不修改前端布局，只扩展后端 API 与既有偏好记忆面板数据结构兼容。
 
 ### 文件结构

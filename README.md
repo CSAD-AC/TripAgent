@@ -251,7 +251,25 @@ npm run dev
 
 混合式长期记忆阶段一/二基础设施已落地：新增通用 `memory_item`、抽取事件表和修订审计表；旧的偏好记忆读取与注入路径保持不变，新表先作为兼容写入与后续混合召回的基础设施。真实向量写入默认关闭，用户记忆向量 collection 与知识库 RAG 分离配置。
 
-阶段三/四已加入结构化混合召回、veto 抑制、预算渲染、用户纠错/审计 API 与可配置的定时整理。真实 Milvus 写入仍默认关闭，可通过配置启用远程实现；在关闭或向量服务不可用时，系统自动退回结构化记忆，不影响聊天主链路。
+阶段三/四已加入结构化混合召回、veto 抑制、预算渲染、用户纠错/审计 API 与可配置的定时整理。`app.memory.hybrid.enabled=true` 会启用新的混合记忆提示词链路；当前经历召回仍基于 `memory_item` 的结构化字段排序，向量服务实现为 Noop，没有真实 Milvus 写入或语义检索。MCP Server 已预留独立 `user_memory_episodic_v1` collection 配置，后续接线后即可切换到真实向量召回，不影响聊天主链路。
+
+当前与长期记忆相关的配置：
+
+- `app.memory.long-term.max-items` / `max-chars`：旧偏好记忆注入上限。
+- `app.memory.hybrid.enabled`：是否启用混合记忆注入，默认 `false`。
+- `app.memory.hybrid.max-chars` / `max-items`：混合提示词预算，默认 1000 字符、8 条。
+- `app.memory.hybrid.recall-top-k` / `final-top-k` / `min-score`：候选召回与过滤参数。
+- `app.memory.consolidation.enabled`：定时整理开关，默认 `false`。
+- `app.memory.retention-days`：过期记忆保留窗口，默认 365 天。
+
+治理接口：
+
+- `PATCH /api/memory/{id}`：纠正一条记忆。
+- `POST /api/memory/veto`：创建“不要再记住/提及”规则。
+- `GET /api/memory/revisions/{id}`：查看单条记忆的修订历史。
+- `GET /api/admin/memory/health`：查看记忆与事件健康统计。
+- `POST /api/admin/memory/process?limit=20`：处理待抽取事件。
+- `POST /api/admin/memory/reindex?userId=...`：触发用户级索引重建任务入口（当前向量实现为 Noop）。
 
 ## 接口说明
 
