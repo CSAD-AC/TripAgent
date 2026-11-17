@@ -17,6 +17,7 @@ import uno.zhuchen.agent.core.llm.impl.DashScopeChatModel;
 import uno.zhuchen.agent.core.llm.impl.DeepSeekChatModel;
 import uno.zhuchen.agent.core.memory.ChatMemory;
 import uno.zhuchen.agent.core.memory.MemoryPromptRenderer;
+import uno.zhuchen.agent.core.memory.HybridMemoryPromptRenderer;
 import uno.zhuchen.agent.core.memory.UserMemoryService;
 import uno.zhuchen.agent.core.memory.InMemoryChatMemory;
 import uno.zhuchen.agent.core.tool.ToolRegistry;
@@ -117,8 +118,9 @@ public class LLMConfig {
     public ReactAgent reactAgent(ModelRouter modelRouter, ChatMemory chatMemory,
                                   AgentConfig agentConfig, ToolRegistry toolRegistry,
                                   UserMemoryService userMemoryService,
-                                  MemoryPromptRenderer memoryPromptRenderer) {
+                                  MemoryPromptRenderer memoryPromptRenderer,
+                                  HybridMemoryPromptRenderer hybridMemoryPromptRenderer) {
         return new ReactAgent(modelRouter, chatMemory, agentConfig, toolRegistry,
-                userMemoryService, memoryPromptRenderer);
+                userMemoryService, memoryPromptRenderer, hybridMemoryPromptRenderer);
     }
 }

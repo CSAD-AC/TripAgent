@@ -16,6 +16,7 @@ import uno.zhuchen.agent.core.agent.AgentState;
 import uno.zhuchen.agent.core.llm.ChatModel;
 import uno.zhuchen.agent.core.memory.ChatMemory;
 import uno.zhuchen.agent.core.memory.MemoryPromptRenderer;
+import uno.zhuchen.agent.core.memory.HybridMemoryPromptRenderer;
 import uno.zhuchen.agent.core.memory.UserMemoryService;
 import uno.zhuchen.agent.core.tool.AskUserTool;
 import uno.zhuchen.agent.core.tool.AskUserToolCallback;
@@ -62,6 +63,7 @@ public class MultiAgentManager {
     private final ChatMemory chatMemory;
     private final UserMemoryService userMemoryService;
     private final MemoryPromptRenderer memoryPromptRenderer;
+    private final HybridMemoryPromptRenderer hybridMemoryPromptRenderer;
     private final AgentConfig config;
     private final AskUserToolCallback askUserToolCallback;
     private final CalculatorTool calculatorTool;
@@ -83,12 +85,14 @@ public class MultiAgentManager {
                              KnowledgeSubAgent knowledgeSubAgent,
                              TripPlanningTool tripPlanningTool,
                              UserMemoryService userMemoryService,
-                             MemoryPromptRenderer memoryPromptRenderer) {
+                             MemoryPromptRenderer memoryPromptRenderer,
+                             HybridMemoryPromptRenderer hybridMemoryPromptRenderer) {
         this.modelRouter = modelRouter;
         this.toolRegistry = toolRegistry;
         this.chatMemory = chatMemory;
         this.userMemoryService = userMemoryService;
         this.memoryPromptRenderer = memoryPromptRenderer;
+        this.hybridMemoryPromptRenderer = hybridMemoryPromptRenderer;
         this.config = config;
         this.askUserToolCallback = askUserToolCallback;
         this.calculatorTool = calculatorTool;
@@ -165,7 +169,10 @@ public class MultiAgentManager {
                                 String modelId, Sinks.Many<StreamChunk> sink, long startMs) {
         StringBuilder prompt = new StringBuilder(MultiAgentPrompts.MANAGER_SYSTEM_PROMPT);
         try {
-            memoryPromptRenderer.appendToPrompt(prompt, userMemoryService.loadSummary(userId));
+            hybridMemoryPromptRenderer.appendTo(prompt, "default", userId, null, userInput);
+            if (prompt.length() == MultiAgentPrompts.MANAGER_SYSTEM_PROMPT.length()) {
+                memoryPromptRenderer.appendToPrompt(prompt, userMemoryService.loadSummary(userId));
+            }
         } catch (Exception e) {
             log.warn("[traceId={}] [MultiAgent] 加载长期记忆失败: {}", traceId, e.getMessage());
         }

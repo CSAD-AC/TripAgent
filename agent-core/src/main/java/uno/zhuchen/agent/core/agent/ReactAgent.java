@@ -18,6 +18,7 @@ import uno.zhuchen.agent.domain.dto.StreamChunk;
 import uno.zhuchen.agent.core.llm.ChatModel;
 import uno.zhuchen.agent.core.memory.ChatMemory;
 import uno.zhuchen.agent.core.memory.MemoryPromptRenderer;
+import uno.zhuchen.agent.core.memory.HybridMemoryPromptRenderer;
 import uno.zhuchen.agent.core.memory.MemorySummary;
 import uno.zhuchen.agent.core.memory.UserMemoryService;
 import uno.zhuchen.agent.core.tool.AskUserTool;
@@ -75,24 +76,30 @@ public class ReactAgent {
     private final ToolRegistry toolRegistry;
     private final UserMemoryService userMemoryService;
     private final MemoryPromptRenderer memoryPromptRenderer;
+    private final HybridMemoryPromptRenderer hybridMemoryPromptRenderer;
 
     /** 每会话并发控制，拒绝同一 conversationId 的并行请求 */
     private final ConcurrentHashMap<String, AtomicBoolean> conversationLocks = new ConcurrentHashMap<>();
 
     public ReactAgent(ModelRouter modelRouter, ChatMemory chatMemory, AgentConfig config,
                       ToolRegistry toolRegistry, UserMemoryService userMemoryService,
-                      MemoryPromptRenderer memoryPromptRenderer) {
+                      MemoryPromptRenderer memoryPromptRenderer,
+                      HybridMemoryPromptRenderer hybridMemoryPromptRenderer) {
         this.modelRouter = modelRouter;
         this.chatMemory = chatMemory;
         this.config = config;
         this.toolRegistry = toolRegistry;
         this.userMemoryService = userMemoryService;
         this.memoryPromptRenderer = memoryPromptRenderer;
+        this.hybridMemoryPromptRenderer = hybridMemoryPromptRenderer;
     }
 
     private String systemPromptFor(String userId) {
         StringBuilder prompt = new StringBuilder(config.getSystemPrompt());
-        memoryPromptRenderer.appendToPrompt(prompt, memorySummary(userId));
+        hybridMemoryPromptRenderer.appendTo(prompt, "default", userId, null, null);
+        if (prompt.length() == config.getSystemPrompt().length()) {
+            memoryPromptRenderer.appendToPrompt(prompt, memorySummary(userId));
+        }
         return prompt.toString();
     }
 

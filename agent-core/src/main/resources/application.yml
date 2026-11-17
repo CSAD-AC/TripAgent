@@ -93,6 +93,16 @@ app:
       max-chars: 800
       hybrid:
         enabled: false
+        max-chars: 1000
+        max-items: 8
+        recall-top-k: 20
+        final-top-k: 6
+        min-score: 0.62
+      consolidation:
+        enabled: false
+        initial-delay-ms: 60000
+        interval-ms: 3600000
+      retention-days: 365
       max-value-chars: 120
   # 模型注册表: 列表顺序即前端展示顺序, 第一项为默认模型(未指定 modelId 时回退)
   # provider 与 ChatModel 实现的 bean 路由键对应(见 ModelRouter)
