@@ -18,6 +18,7 @@ public class AgentState {
 
     private final String userId;
     private final String conversationId;
+    private final String userInput;
     private final SystemMessage systemPrompt;
     private final List<Message> messages;
     private int iterationCount;
@@ -27,6 +28,7 @@ public class AgentState {
     public AgentState(String userId, String conversationId, String systemPromptText, String userInput) {
         this.userId = userId;
         this.conversationId = conversationId != null ? conversationId : UUID.randomUUID().toString().substring(0, 8);
+        this.userInput = userInput;
         this.systemPrompt = new SystemMessage(systemPromptText);
         this.messages = new ArrayList<>();
         this.messages.add(new UserMessage(userInput));
@@ -74,6 +76,10 @@ public class AgentState {
 
     public String getUserId() {
         return userId;
+    }
+
+    public String getUserInput() {
+        return userInput;
     }
 
     public SystemMessage getSystemPrompt() {

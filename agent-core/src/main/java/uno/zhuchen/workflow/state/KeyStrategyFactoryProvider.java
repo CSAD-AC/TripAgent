@@ -44,6 +44,7 @@ public final class KeyStrategyFactoryProvider {
             strategies.put(TripPlanningStateKeys.INPUT_RAW_REQUEST, new ReplaceStrategy());
             strategies.put(TripPlanningStateKeys.INPUT_CONVERSATION_ID, new ReplaceStrategy());
             strategies.put(TripPlanningStateKeys.INPUT_TRACE_ID, new ReplaceStrategy());
+            strategies.put(TripPlanningStateKeys.INPUT_USER_MEMORY, new ReplaceStrategy());
 
             // CONSTRAINTS — 主管输出
             strategies.put(TripPlanningStateKeys.CONSTRAINTS, new ReplaceStrategy());

@@ -15,6 +15,8 @@ import uno.zhuchen.agent.config.ModelRouter;
 import uno.zhuchen.agent.core.agent.AgentState;
 import uno.zhuchen.agent.core.llm.ChatModel;
 import uno.zhuchen.agent.core.memory.ChatMemory;
+import uno.zhuchen.agent.core.memory.MemoryPromptRenderer;
+import uno.zhuchen.agent.core.memory.UserMemoryService;
 import uno.zhuchen.agent.core.tool.AskUserTool;
 import uno.zhuchen.agent.core.tool.AskUserToolCallback;
 import uno.zhuchen.agent.core.tool.CalculatorTool;
@@ -58,6 +60,8 @@ public class MultiAgentManager {
     private final ModelRouter modelRouter;
     private final ToolRegistry toolRegistry;
     private final ChatMemory chatMemory;
+    private final UserMemoryService userMemoryService;
+    private final MemoryPromptRenderer memoryPromptRenderer;
     private final AgentConfig config;
     private final AskUserToolCallback askUserToolCallback;
     private final CalculatorTool calculatorTool;
@@ -77,10 +81,14 @@ public class MultiAgentManager {
                              CalculatorTool calculatorTool,
                              WeatherSubAgent weatherSubAgent,
                              KnowledgeSubAgent knowledgeSubAgent,
-                             TripPlanningTool tripPlanningTool) {
+                             TripPlanningTool tripPlanningTool,
+                             UserMemoryService userMemoryService,
+                             MemoryPromptRenderer memoryPromptRenderer) {
         this.modelRouter = modelRouter;
         this.toolRegistry = toolRegistry;
         this.chatMemory = chatMemory;
+        this.userMemoryService = userMemoryService;
+        this.memoryPromptRenderer = memoryPromptRenderer;
         this.config = config;
         this.askUserToolCallback = askUserToolCallback;
         this.calculatorTool = calculatorTool;
@@ -155,8 +163,14 @@ public class MultiAgentManager {
      */
     private void runLoopAndEmit(String userId, String userInput, String conversationId, String traceId,
                                 String modelId, Sinks.Many<StreamChunk> sink, long startMs) {
+        StringBuilder prompt = new StringBuilder(MultiAgentPrompts.MANAGER_SYSTEM_PROMPT);
+        try {
+            memoryPromptRenderer.appendToPrompt(prompt, userMemoryService.loadSummary(userId));
+        } catch (Exception e) {
+            log.warn("[traceId={}] [MultiAgent] 加载长期记忆失败: {}", traceId, e.getMessage());
+        }
         AgentState state = new AgentState(
-                userId, conversationId, MultiAgentPrompts.MANAGER_SYSTEM_PROMPT, userInput);
+                userId, conversationId, prompt.toString(), userInput);
         chatMemory.claim(userId, conversationId, "multi", modelRouter.resolveModelName(modelId));
         try {
             // 加载历史记忆(续聊), 与 ReactAgent 相同语义
@@ -237,6 +251,7 @@ public class MultiAgentManager {
 
             // 收尾: 保存历史 + 发射 final/error; 落模型名与模式 multi(M3)
             chatMemory.save(userId, conversationId, state.getNewMessages(), traceId, modelName, "multi");
+            remember(userId, conversationId, userInput);
             if (finalResponse != null && finalResponse.getText() != null) {
                 sink.tryEmitNext(StreamChunk.final_(conversationId, finalResponse.getText(),
                         System.currentTimeMillis() - startMs));
@@ -251,11 +266,21 @@ public class MultiAgentManager {
             log.error("[traceId={}] [MultiAgent] 执行异常", traceId, e);
             chatMemory.save(userId, conversationId, state.getNewMessages(), traceId,
                     (modelId == null || modelId.isBlank()) ? null : modelRouter.resolveModelName(modelId), "multi");
+            remember(userId, conversationId, userInput);
             sink.tryEmitNext(StreamChunk.error(conversationId,
                     "Multi-Agent 执行异常: " + e.getMessage(),
                     System.currentTimeMillis() - startMs));
         } finally {
             sink.tryEmitComplete();
+        }
+    }
+
+    private void remember(String userId, String conversationId, String userInput) {
+        try {
+            userMemoryService.extractAndStore(userId, conversationId, userInput);
+        } catch (Exception e) {
+            log.warn("[MultiAgent] 保存长期记忆失败: userId={}, conversationId={}, error={}",
+                    userId, conversationId, e.getMessage());
         }
     }
 

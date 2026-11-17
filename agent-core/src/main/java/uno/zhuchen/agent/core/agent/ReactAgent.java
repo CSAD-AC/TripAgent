@@ -17,6 +17,9 @@ import uno.zhuchen.agent.domain.dto.ChatDTO;
 import uno.zhuchen.agent.domain.dto.StreamChunk;
 import uno.zhuchen.agent.core.llm.ChatModel;
 import uno.zhuchen.agent.core.memory.ChatMemory;
+import uno.zhuchen.agent.core.memory.MemoryPromptRenderer;
+import uno.zhuchen.agent.core.memory.MemorySummary;
+import uno.zhuchen.agent.core.memory.UserMemoryService;
 import uno.zhuchen.agent.core.tool.AskUserTool;
 import uno.zhuchen.agent.core.tool.ToolRegistry;
 
@@ -70,15 +73,45 @@ public class ReactAgent {
     private final ChatMemory chatMemory;
     private final AgentConfig config;
     private final ToolRegistry toolRegistry;
+    private final UserMemoryService userMemoryService;
+    private final MemoryPromptRenderer memoryPromptRenderer;
 
     /** 每会话并发控制，拒绝同一 conversationId 的并行请求 */
     private final ConcurrentHashMap<String, AtomicBoolean> conversationLocks = new ConcurrentHashMap<>();
 
-    public ReactAgent(ModelRouter modelRouter, ChatMemory chatMemory, AgentConfig config, ToolRegistry toolRegistry) {
+    public ReactAgent(ModelRouter modelRouter, ChatMemory chatMemory, AgentConfig config,
+                      ToolRegistry toolRegistry, UserMemoryService userMemoryService,
+                      MemoryPromptRenderer memoryPromptRenderer) {
         this.modelRouter = modelRouter;
         this.chatMemory = chatMemory;
         this.config = config;
         this.toolRegistry = toolRegistry;
+        this.userMemoryService = userMemoryService;
+        this.memoryPromptRenderer = memoryPromptRenderer;
+    }
+
+    private String systemPromptFor(String userId) {
+        StringBuilder prompt = new StringBuilder(config.getSystemPrompt());
+        memoryPromptRenderer.appendToPrompt(prompt, memorySummary(userId));
+        return prompt.toString();
+    }
+
+    private MemorySummary memorySummary(String userId) {
+        try {
+            return userMemoryService.loadSummary(userId);
+        } catch (Exception e) {
+            log.warn("加载长期记忆失败: userId={}, error={}", userId, e.getMessage());
+            return new MemorySummary(java.util.List.of());
+        }
+    }
+
+    private void remember(String userId, String conversationId, String userInput) {
+        try {
+            userMemoryService.extractAndStore(userId, conversationId, userInput);
+        } catch (Exception e) {
+            log.warn("保存长期记忆失败: userId={}, conversationId={}, error={}",
+                    userId, conversationId, e.getMessage());
+        }
     }
 
     /** modelId(可为 null) → LLM 实现 + API 模型名; null 解析为注册表默认项 */
@@ -101,7 +134,7 @@ public class ReactAgent {
 
         try {
             // 1. 初始化状态
-            AgentState state = new AgentState(userId, conversationId, config.getSystemPrompt(), userInput);
+            AgentState state = new AgentState(userId, conversationId, systemPromptFor(userId), userInput);
             chatMemory.claim(userId, state.getConversationId(), "react", modelId);
             log.debug("[traceId={}] Agent[{}] 开始 ReAct 循环, model={}, maxIterations={}, superMode={}",
                     traceId, state.getConversationId(), modelId != null ? modelId : "default",
@@ -220,6 +253,7 @@ public class ReactAgent {
                 // 保存对话历史(traceId 落 message.trace_id 列支撑溯源); 落模型名与模式元数据
                 chatMemory.save(state.getUserId(), state.getConversationId(), state.getNewMessages(), traceId,
                         inv.modelName(), "react");
+                remember(userId, state.getConversationId(), userInput);
                 return ChatDTO.success(
                         state.getConversationId(), userInput,
                         finalResponse.getText(),
@@ -232,6 +266,7 @@ public class ReactAgent {
             // 达到最大迭代次数仍未得出最终答案
             chatMemory.save(state.getUserId(), state.getConversationId(), state.getNewMessages(), traceId,
                     inv.modelName(), "react");
+            remember(userId, state.getConversationId(), userInput);
             String lastContent = !state.getMessages().isEmpty()
                     ? state.getMessages().get(state.getMessages().size() - 1).getText()
                     : "";
@@ -291,7 +326,7 @@ public class ReactAgent {
                             System.currentTimeMillis() - start)));
         }
 
-        AgentState state = new AgentState(userId, conversationId, config.getSystemPrompt(), userInput);
+        AgentState state = new AgentState(userId, conversationId, systemPromptFor(userId), userInput);
         chatMemory.claim(userId, state.getConversationId(), "react", null);
 
         // 加载历史记忆（非阻塞操作）
@@ -467,6 +502,7 @@ public class ReactAgent {
             state.addReasoningResult(response);
             chatMemory.save(state.getUserId(), state.getConversationId(), state.getNewMessages(),
                     traceId, modelName, "react");
+            remember(state.getUserId(), state.getConversationId(), state.getUserInput());
             log.debug("[traceId={}] 第 {} 轮无工具调用, 得到最终答案", traceId, iterNum);
             return Flux.just(StreamChunk.final_(state.getConversationId(), thought,
                     System.currentTimeMillis() - start));

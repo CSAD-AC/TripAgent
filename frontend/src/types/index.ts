@@ -61,6 +61,16 @@ export interface AuthUser {
   displayName: string
 }
 
+/** 用户长期记忆 */
+export interface UserMemory {
+  id: string
+  memoryType: string
+  label: string
+  value: string
+  sourceConversationId: string
+  updatedAt: string
+}
+
 /** SWV 工作流 6 节点（Graph 模式专用） */
 export type WorkflowNode =
   | 'manager'

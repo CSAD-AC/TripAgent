@@ -8,6 +8,7 @@ import { MultiAgentProgress } from './components/MultiAgentProgress'
 import { useChat } from './hooks/useChat'
 import { useConversations } from './hooks/useConversations'
 import { Knowledge } from './pages/Knowledge'
+import { MemoryPanel } from './components/MemoryPanel'
 import { Menu, MapPin, GitBranch, Zap, Cpu, Rocket, Users, ArrowLeft, LogOut } from 'lucide-react'
 import { cn } from './lib/utils'
 import type { ApiMode, ModelInfo } from './types'
@@ -35,7 +36,7 @@ function AuthenticatedApp() {
   const { user, logout } = useAuth()
   const [sidebarOpen, setSidebarOpen] = useState(false)
   /** 主视图: 'chat' = 聊天, 'knowledge' = 知识库管理 */
-  const [view, setView] = useState<'chat' | 'knowledge'>('chat')
+  const [view, setView] = useState<'chat' | 'knowledge' | 'memory'>('chat')
   /** API 模式: 'react' = ReAct 工具调用, 'graph' = Graph 工作流 */
   const [apiMode, setApiMode] = useState<ApiMode>('react')
   /** 模型列表(来自 GET /api/models, 顺序即后端配置, 第一项 deepseek 为默认) */
@@ -172,6 +173,11 @@ function AuthenticatedApp() {
     setSidebarOpen(false)
   }, [])
 
+  const toggleMemoryView = useCallback(() => {
+    setView((v) => (v === 'memory' ? 'chat' : 'memory'))
+    setSidebarOpen(false)
+  }, [])
+
   // 自动滚动到底部(尊重 prefers-reduced-motion)
   useEffect(() => {
     const prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
@@ -196,6 +202,7 @@ function AuthenticatedApp() {
         onToggle={() => setSidebarOpen(!sidebarOpen)}
         view={view}
         onToggleView={toggleView}
+        onToggleMemoryView={toggleMemoryView}
       />
 
       {/* 主区域 */}
@@ -222,7 +229,7 @@ function AuthenticatedApp() {
           </div>
 
           {/* 知识库视图下的返回聊天按钮 */}
-          {view === 'knowledge' && (
+          {(view === 'knowledge' || view === 'memory') && (
             <button
               onClick={toggleView}
               className="ml-auto flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium text-warm-white bg-charcoal-900 dark:bg-charcoal-700 hover:bg-charcoal-700 dark:hover:bg-charcoal-600 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-terracotta-500"
@@ -236,7 +243,7 @@ function AuthenticatedApp() {
           <div
             className={cn(
               'ml-auto flex items-center gap-1 p-1 rounded-lg bg-warm-white dark:bg-charcoal-800 border border-warm-white-200 dark:border-charcoal-700',
-              view === 'knowledge' && 'hidden' /* 知识库视图隐藏模式切换, 避免拥挤 */
+              (view === 'knowledge' || view === 'memory') && 'hidden'
             )}
             role="tablist"
             aria-label="API 模式"
@@ -373,7 +380,9 @@ function AuthenticatedApp() {
         </header>
 
         {/* 知识库视图: 渲染管理页 */}
-        {view === 'knowledge' ? (
+        {view === 'memory' ? (
+          <MemoryPanel onBack={toggleMemoryView} />
+        ) : view === 'knowledge' ? (
           <Knowledge />
         ) : (
           <>

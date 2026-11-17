@@ -224,6 +224,13 @@ public class ManagerAgent extends BaseAgent {
                 .map(Object::toString)
                 .orElseThrow(() -> new IllegalStateException("raw_request missing"));
 
+        String memorySection = state.value(TripPlanningStateKeys.INPUT_USER_MEMORY)
+                .map(Object::toString)
+                .orElse("");
+        if (!memorySection.isBlank()) {
+            rawRequest = rawRequest + "\n\n" + memorySection;
+        }
+
         String conversationId = state.value(TripPlanningStateKeys.INPUT_CONVERSATION_ID)
                 .map(Object::toString)
                 .orElseThrow(() -> new IllegalStateException("conversation_id missing"));

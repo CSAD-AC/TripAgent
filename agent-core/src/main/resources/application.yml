@@ -88,6 +88,10 @@ app:
   # LLM 摘要写入 conversation.summary 并在加载时前缀注入. 0 = 关闭(默认, 不压缩)
   memory:
     window-size: 0
+    long-term:
+      max-items: 10
+      max-chars: 800
+      max-value-chars: 120
   # 模型注册表: 列表顺序即前端展示顺序, 第一项为默认模型(未指定 modelId 时回退)
   # provider 与 ChatModel 实现的 bean 路由键对应(见 ModelRouter)
   models:

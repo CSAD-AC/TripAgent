@@ -19,6 +19,8 @@ import reactor.core.scheduler.Schedulers;
 import uno.zhuchen.agent.config.McpClientProperties;
 import uno.zhuchen.agent.config.ModelRouter;
 import uno.zhuchen.agent.core.memory.ChatMemory;
+import uno.zhuchen.agent.core.memory.MemoryPromptRenderer;
+import uno.zhuchen.agent.core.memory.UserMemoryService;
 import uno.zhuchen.agent.domain.dto.StreamChunk;
 import uno.zhuchen.workflow.agent.BaseAgent;
 import uno.zhuchen.workflow.state.TripPlanningStateKeys;
@@ -69,6 +71,8 @@ public class GraphStreamRunner {
     private final GraphEventRouter graphEventRouter;
     private final ChatMemory chatMemory;
     private final ModelRouter modelRouter;
+    private final UserMemoryService userMemoryService;
+    private final MemoryPromptRenderer memoryPromptRenderer;
     /** 指向 mcp-server, 用于 Graph 报告自动沉淀进知识库(graph_report) */
     private final WebClient mcpClient;
 
@@ -76,11 +80,15 @@ public class GraphStreamRunner {
                              GraphEventRouter graphEventRouter,
                              ChatMemory chatMemory,
                              ModelRouter modelRouter,
-                             McpClientProperties mcp) {
+                             McpClientProperties mcp,
+                             UserMemoryService userMemoryService,
+                             MemoryPromptRenderer memoryPromptRenderer) {
         this.graphBuilder = graphBuilder;
         this.graphEventRouter = graphEventRouter;
         this.chatMemory = chatMemory;
         this.modelRouter = modelRouter;
+        this.userMemoryService = userMemoryService;
+        this.memoryPromptRenderer = memoryPromptRenderer;
         this.mcpClient = WebClient.builder().baseUrl(mcp.getServerUrl()).build();
     }
 
@@ -151,6 +159,14 @@ public class GraphStreamRunner {
             input.put(TripPlanningStateKeys.INPUT_CONVERSATION_ID, conversationId);
             // 写入 state 供 BaseAgent.apply (同步 NodeAction 入口) 读取并拼到 log 中
             input.put(TripPlanningStateKeys.INPUT_TRACE_ID, traceId);
+            try {
+                String memorySection = memoryPromptRenderer.render(userMemoryService.loadSummary(userId));
+                if (!memorySection.isEmpty()) {
+                    input.put(TripPlanningStateKeys.INPUT_USER_MEMORY, memorySection);
+                }
+            } catch (Exception e) {
+                log.warn("[traceId={}] [GraphStreamRunner] 加载长期记忆失败: {}", traceId, e.getMessage());
+            }
 
             RunnableConfig config = RunnableConfig.builder()
                     .threadId(conversationId)
@@ -176,6 +192,7 @@ public class GraphStreamRunner {
             // Graph 正常结束: 先落库(可回看/续聊), 再沉淀到知识库, 最后发射最终报告事件(M1)
             String finalReport = extractReport(graph, config, traceId);
             persistGraph(userId, conversationId, rawRequest, finalReport, traceId);
+            remember(userId, conversationId, rawRequest);
             precipitateReport(conversationId, finalReport);
             safelyEmit(sink, StreamChunk.final_(conversationId, finalReport,
                     System.currentTimeMillis() - startMs));
@@ -190,6 +207,15 @@ public class GraphStreamRunner {
         } finally {
             graphEventRouter.unregister(conversationId, sinkEmitter);
             sink.tryEmitComplete();
+        }
+    }
+
+    private void remember(String userId, String conversationId, String rawRequest) {
+        try {
+            userMemoryService.extractAndStore(userId, conversationId, rawRequest);
+        } catch (Exception e) {
+            log.warn("[GraphStreamRunner] 保存长期记忆失败: userId={}, conversationId={}, error={}",
+                    userId, conversationId, e.getMessage());
         }
     }
 
