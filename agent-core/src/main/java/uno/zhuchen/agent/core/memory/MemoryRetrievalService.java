@@ -7,8 +7,10 @@ import org.springframework.stereotype.Service;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 @Slf4j
 @Service
@@ -59,10 +61,12 @@ public class MemoryRetrievalService {
             return new MemoryPromptContext(pinned, List.of(), suppressions);
         }
 
+        Map<String, Double> vectorScores = vectorScores(tenantId, userId, projectId, query);
+
         List<MemoryItemRecord> episodic = all.stream()
                 .filter(item -> item.type() == MemoryItemType.EPISODIC)
                 .filter(item -> !suppressed(item, suppressions))
-                .map(item -> new ScoredItem(item, score(item, query)))
+                .map(item -> new ScoredItem(item, score(item, query, vectorScores.get(item.id()))))
                 .filter(scored -> scored.score >= minScore)
                 .sorted(Comparator.comparingDouble(ScoredItem::score).reversed())
                 .limit(recallTopK)
@@ -76,16 +80,42 @@ public class MemoryRetrievalService {
         return new MemoryPromptContext(pinned, episodicLines, suppressions);
     }
 
-    private double score(MemoryItemRecord item, String query) {
-        String haystack = (item.key() + " " + item.value() + " " + item.content())
-                .toLowerCase(Locale.ROOT);
-        String needle = query.toLowerCase(Locale.ROOT);
-        double lexical = haystack.contains(needle) ? 1.0 : 0.0;
-        double recency = item.updatedAt() == null ? 0.0 : 0.8;
+    /**
+     * 语义召回: 向量通道可用时按用户维度取回相关经历, 失败返回空表由词面打分兜底。
+     */
+    private Map<String, Double> vectorScores(String tenantId, String userId, String projectId, String query) {
+        if (!vectorService.available()) {
+            return Map.of();
+        }
+        try {
+            List<MemoryVectorHit> hits = vectorService.search(
+                    tenantId, userId, projectId, query, recallTopK, minScore);
+            if (hits.isEmpty()) {
+                return Map.of();
+            }
+            Map<String, Double> scores = new HashMap<>();
+            hits.forEach(hit -> scores.merge(hit.id(), hit.score(), Math::max));
+            return scores;
+        } catch (Exception e) {
+            log.warn("[memory] 语义召回失败, 回退词面打分: error={}", e.getMessage());
+            return Map.of();
+        }
+    }
+
+    private double score(MemoryItemRecord item, String query, Double vectorScore) {
         double confidence = item.confidence() == null
                 ? DEFAULT_CONFIDENCE.doubleValue() : item.confidence().doubleValue();
         double importance = item.importance() == null
                 ? DEFAULT_IMPORTANCE.doubleValue() : item.importance().doubleValue();
+        double recency = item.updatedAt() == null ? 0.0 : 0.8;
+        if (vectorScore != null) {
+            // 有语义分时以语义分主, 重要度/置信度/新鲜度做微调
+            return 0.65 * vectorScore + 0.15 * importance + 0.10 * confidence + 0.10 * recency;
+        }
+        String haystack = (item.key() + " " + item.value() + " " + item.content())
+                .toLowerCase(Locale.ROOT);
+        String needle = query.toLowerCase(Locale.ROOT);
+        double lexical = haystack.contains(needle) ? 1.0 : 0.0;
         return 0.55 * lexical + 0.20 * recency + 0.15 * confidence + 0.10 * importance;
     }
 

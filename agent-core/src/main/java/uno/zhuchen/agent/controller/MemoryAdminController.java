@@ -38,10 +38,10 @@ public class MemoryAdminController {
     }
 
     @PostMapping("/reindex")
-    public Mono<Result<Void>> reindex(@RequestParam(defaultValue = "default") String tenantId,
-                                      @RequestParam String userId) {
-        return Mono.fromRunnable(() -> adminService.rebuildUser(tenantId, userId))
+    public Mono<Result<Integer>> reindex(@RequestParam(defaultValue = "default") String tenantId,
+                                         @RequestParam String userId) {
+        return Mono.fromCallable(() -> adminService.rebuildUser(tenantId, userId))
                 .subscribeOn(Schedulers.boundedElastic())
-                .thenReturn(Result.success(null));
+                .map(Result::success);
     }
 }

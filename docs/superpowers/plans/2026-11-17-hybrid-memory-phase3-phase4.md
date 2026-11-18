@@ -111,3 +111,13 @@
 - 更新 README 与设计文档状态。
 - 后端全量测试、前端构建、diff check。
 - 提交：`feat: add hybrid memory recall and governance`。
+
+### 任务 8：显性化收口（本轮补齐）
+
+- [x] 前端记忆面板：veto 规则录入、单条纠正、修订历史、删除、清空全部。
+- [x] `GET /api/memory` 返回 `MemoryItemVO`，前端可见 `profile/preference/constraint/veto/episodic`。
+- [x] 删除接口按 `memory_item.id` 走治理删除并留审计，旧 `user_memory` id 自动回落兼容。
+- [x] LLM 深度抽取 `LlmMemoryCandidateExtractor`：固定 JSON schema、类型白名单、敏感信息拦截、失败回退规则抽取，默认关闭。
+- [x] 真实 Milvus 语义召回：mcp-server 独立 collection + `/api/memory-vectors/*`，agent-core `RemoteMemoryVectorService`，检索按语义分主、词面分兜底，两侧开关默认关闭。
+- [x] `MemoryVectorIndexer`：EPISODIC 入库后自动索引并回写 `embedding_status`（PENDING -> INDEXED/FAILED），`/api/admin/memory/reindex` 返回重建条数。
+- [x] 验证：`mvn -o -DexcludedGroups=integration test`（agent-core 75、mcp-server 75，Docker 用例按既有机制跳过）、`npm run build` 通过。

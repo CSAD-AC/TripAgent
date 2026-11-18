@@ -2,7 +2,15 @@
 
 ## 状态
 
-本设计已完成方案确认。阶段一至阶段四主体能力已实施：通用记忆表、治理字段、事件骨架、结构化混合召回、veto 抑制、预算注入、用户/管理接口与聊天完成后的分层触发均已落地。真实 Milvus 语义召回尚未接线，当前向量服务为 Noop；LLM 深度抽取尚未默认启用；图记忆仍为后续可选项。
+本设计已完成方案确认。阶段一至阶段四主体能力已实施：通用记忆表、治理字段、事件骨架、结构化混合召回、veto 抑制、预算注入、用户/管理接口与聊天完成后的分层触发均已落地。
+
+本轮补齐了三条此前未显性化的能力：
+
+1. 前端记忆面板已覆盖 veto 规则录入、单条记忆纠正、修订历史查看与删除（`MemoryPanel.tsx` + `useMemory.ts`）。
+2. LLM 深度抽取已实现（`LlmMemoryCandidateExtractor`），输出固定 JSON schema，解析失败或模型异常自动回退规则抽取；默认关闭，由 `app.memory.extraction.llm-enabled` 控制。
+3. 真实 Milvus 语义召回已接线：mcp-server 侧新增 `user_memory_episodic_v1` 独立 collection 与 `/api/memory-vectors/{upsert,search,status}` 内部接口，agent-core 侧新增 `RemoteMemoryVectorService`，检索时以语义分为主、词面打分为兜底。两侧开关默认关闭（`app.memory.hybrid.vector-enabled` / `app.memory-vector.enabled`），关闭时行为与纯结构化排序完全一致。
+
+仍未交付：图记忆（后续可选项）、记忆质量指标的线上看板。
 
 ## 问题陈述
 

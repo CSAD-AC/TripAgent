@@ -241,7 +241,7 @@ npm run dev
 - 不记录：身份、地址、健康、财务等敏感信息；不根据单次模糊表述做隐式推断。
 - 同一用户同一 key 重复出现时覆盖旧值；用户删除后再次表达同一偏好会重新写入。
 - ReAct、Graph、Multi-Agent 三种模式都会读取记忆，且只按认证后的 `userId` 访问。
-- 前端侧边栏“偏好记忆”可以查看、单条删除和清空全部；删除是软删除，列表和提示词只包含 active 记忆。
+- 前端侧边栏“偏好记忆”可以查看、纠正、查看修订历史、单条删除和清空全部，也可以直接录入“不要再记住/不要再提”规则；删除是软删除，列表和提示词只包含 active 记忆。
 
 记忆接口：
 
@@ -251,9 +251,13 @@ npm run dev
 
 混合式长期记忆阶段一/二基础设施已落地：新增通用 `memory_item`、抽取事件表和修订审计表；旧的偏好记忆读取与注入路径保持不变，新表先作为兼容写入与后续混合召回的基础设施。真实向量写入默认关闭，用户记忆向量 collection 与知识库 RAG 分离配置。
 
-阶段三/四已加入结构化混合召回、veto 抑制、预算渲染、用户纠错/审计 API 与可配置的定时整理。`app.memory.hybrid.enabled=true` 会启用新的混合记忆提示词链路；当前经历召回仍基于 `memory_item` 的结构化字段排序，向量服务实现为 Noop，没有真实 Milvus 写入或语义检索。MCP Server 已预留独立 `user_memory_episodic_v1` collection 配置，后续接线后即可切换到真实向量召回，不影响聊天主链路。
+阶段三/四已加入结构化混合召回、veto 抑制、预算渲染、用户纠错/审计 API 与可配置的定时整理。`app.memory.hybrid.enabled=true` 会启用新的混合记忆提示词链路。
 
-记忆触发已接入真实聊天的完成路径：ReAct、Graph、Multi-Agent 在回答落库后会调用统一触发服务。触发采用分层策略：先做敏感信息与短消息过滤，再用显式偏好正则（如“记住/我喜欢/我来自/预算/不吃”）或较长旅行上下文决定是否入队；入队事件由后台 worker 用规则抽取器生成候选记忆。当前默认不调用 LLM 做深度抽取，避免每轮聊天都增加模型成本。
+语义召回已接线但默认关闭：MCP Server 侧维护独立 `user_memory_episodic_v1` collection，并提供内部接口 `POST /api/memory-vectors/upsert`、`POST /api/memory-vectors/search`、`DELETE /api/memory-vectors/{id}`、`GET /api/memory-vectors/status`；agent-core 侧通过 `RemoteMemoryVectorService` 访问。两侧同时打开（`app.memory.hybrid.vector-enabled=true` + `app.memory-vector.enabled=true`）时，经历召回按语义分排序、重要度/置信度/新鲜度微调，远程失败自动回退词面打分。向量检索的服务端过滤强制带 `tenant_id` + `user_id` + `status='active'`，缺失用户维度直接拒绝，避免跨用户召回。
+
+记忆触发已接入真实聊天的完成路径：ReAct、Graph、Multi-Agent 在回答落库后会调用统一触发服务。触发采用分层策略：先做敏感信息与短消息过滤，再用显式偏好正则（如“记住/我喜欢/我来自/预算/不吃”）或较长旅行上下文决定是否入队；入队事件由后台 worker 抽取候选记忆。
+
+抽取器有两种实现，由 `app.memory.extraction.llm-enabled` 选择：默认关闭时为纯规则抽取（零成本、零延迟）；打开后使用 LLM 深度抽取，输出固定 JSON（类型只能是 `PROFILE/PREFERENCE/CONSTRAINT/VETO/EPISODIC`），JSON 解析失败、模型报错或返回空候选时自动回退规则抽取，结果写 `extractor_version`（`rule-v1` / `llm-v1`）便于事后归因。EPISODIC 记忆入库后由 `MemoryVectorIndexer` 异步写入向量库并把 `embedding_status` 从 `PENDING` 推进到 `INDEXED`/`FAILED`。
 
 当前与长期记忆相关的配置：
 
@@ -261,6 +265,8 @@ npm run dev
 - `app.memory.hybrid.enabled`：是否启用混合记忆注入，默认 `false`。
 - `app.memory.hybrid.max-chars` / `max-items`：混合提示词预算，默认 1000 字符、8 条。
 - `app.memory.hybrid.recall-top-k` / `final-top-k` / `min-score`：候选召回与过滤参数。
+- `app.memory.hybrid.vector-enabled`：语义召回开关，默认 `false`；需同时打开 MCP Server 的 `app.memory-vector.enabled`。
+- `app.memory.extraction.llm-enabled` / `model` / `max-candidates` / `max-value-chars`：LLM 深度抽取开关、模型、条数与值长度上限，默认关闭。
 - `app.memory.consolidation.enabled`：定时整理开关，默认 `false`。
 - `app.memory.retention-days`：过期记忆保留窗口，默认 365 天。
 - `app.memory.ingest-trigger.enabled`：聊天完成后的记忆入队触发开关，默认 `true`。
@@ -273,7 +279,7 @@ npm run dev
 - `GET /api/memory/revisions/{id}`：查看单条记忆的修订历史。
 - `GET /api/admin/memory/health`：查看记忆与事件健康统计。
 - `POST /api/admin/memory/process?limit=20`：处理待抽取事件。
-- `POST /api/admin/memory/reindex?userId=...`：触发用户级索引重建任务入口（当前向量实现为 Noop）。
+- `POST /api/admin/memory/reindex?userId=...`：按用户重建记忆向量索引，返回重建条数。
 
 ## 接口说明
 

@@ -15,15 +15,18 @@ public class MemoryExtractionWorker {
     private final MemoryIngestService ingestService;
     private final MemoryCandidateExtractor extractor;
     private final MemoryItemService memoryItemService;
+    private final MemoryVectorIndexer vectorIndexer;
     private final ObjectMapper objectMapper;
 
     public MemoryExtractionWorker(MemoryIngestService ingestService,
                                   MemoryCandidateExtractor extractor,
                                   MemoryItemService memoryItemService,
+                                  MemoryVectorIndexer vectorIndexer,
                                   ObjectMapper objectMapper) {
         this.ingestService = ingestService;
         this.extractor = extractor;
         this.memoryItemService = memoryItemService;
+        this.vectorIndexer = vectorIndexer;
         this.objectMapper = objectMapper;
     }
 
@@ -38,7 +41,7 @@ public class MemoryExtractionWorker {
                     continue;
                 }
                 for (MemoryExtractionResult candidate : candidates) {
-                    memoryItemService.upsert(
+                    MemoryItemRecord saved = memoryItemService.upsert(
                             event.getTenantId(),
                             event.getUserId(),
                             readProjectId(event.getPayloadJson()),
@@ -50,7 +53,9 @@ public class MemoryExtractionWorker {
                             null,
                             candidate.confidence(),
                             candidate.importance(),
-                            "rule-v1");
+                            extractor.version());
+                    // EPISODIC 需要语义召回, 入库后立刻尝试向量索引(失败只改状态)
+                    vectorIndexer.index(saved);
                 }
                 ingestService.markDone(event.getId());
                 processed++;

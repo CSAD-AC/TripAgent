@@ -20,16 +20,16 @@ public class MemoryAdminService {
     private final MemoryItemMapper itemMapper;
     private final MemoryIngestEventMapper eventMapper;
     private final MemoryExtractionWorker extractionWorker;
-    private final MemoryVectorService vectorService;
+    private final MemoryVectorIndexer vectorIndexer;
 
     public MemoryAdminService(MemoryItemMapper itemMapper,
                               MemoryIngestEventMapper eventMapper,
                               MemoryExtractionWorker extractionWorker,
-                              MemoryVectorService vectorService) {
+                              MemoryVectorIndexer vectorIndexer) {
         this.itemMapper = itemMapper;
         this.eventMapper = eventMapper;
         this.extractionWorker = extractionWorker;
-        this.vectorService = vectorService;
+        this.vectorIndexer = vectorIndexer;
     }
 
     public Map<String, Object> health() {
@@ -48,8 +48,8 @@ public class MemoryAdminService {
         return extractionWorker.processPendingBatch(limit);
     }
 
-    public void rebuildUser(String tenantId, String userId) {
-        vectorService.rebuild(tenantId, userId);
+    public int rebuildUser(String tenantId, String userId) {
+        return vectorIndexer.reindexUser(tenantId, userId);
     }
 
     public int expireStaleItems(int retentionDays) {

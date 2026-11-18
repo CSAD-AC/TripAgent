@@ -93,11 +93,20 @@ app:
       max-chars: 800
       hybrid:
         enabled: false
+        # 语义召回开关: 打开后经 mcp-server 的 /api/memory-vectors 访问 Milvus,
+        # 需同时设置 mcp-server 侧 app.memory-vector.enabled=true。默认关闭, 只用词面打分。
+        vector-enabled: ${MEMORY_VECTOR_ENABLED:false}
         max-chars: 1000
         max-items: 8
         recall-top-k: 20
         final-top-k: 6
         min-score: 0.62
+      # LLM 深度抽取: 默认关闭(每轮多一次模型调用). 打开后失败自动回退规则抽取
+      extraction:
+        llm-enabled: ${MEMORY_LLM_EXTRACTION_ENABLED:false}
+        model: ${MEMORY_LLM_EXTRACTION_MODEL:}
+        max-candidates: 5
+        max-value-chars: 40
       ingest-trigger:
         enabled: true
         min-chars: 6

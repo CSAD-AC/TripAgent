@@ -65,10 +65,27 @@ export interface AuthUser {
 export interface UserMemory {
   id: string
   memoryType: string
+  key?: string
   label: string
   value: string
-  sourceConversationId: string
+  content?: string
+  confidence?: number
+  importance?: number
+  status?: string
+  sourceConversationId?: string
+  extractorVersion?: string
   updatedAt: string
+}
+
+/** 单条记忆修订记录 */
+export interface MemoryRevision {
+  id: string
+  memoryItemId: string
+  operation: string
+  previousValue?: string | null
+  newValue?: string | null
+  reason?: string | null
+  createdAt: string
 }
 
 /** SWV 工作流 6 节点（Graph 模式专用） */

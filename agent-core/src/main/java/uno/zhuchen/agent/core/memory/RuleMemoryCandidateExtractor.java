@@ -3,14 +3,12 @@ package uno.zhuchen.agent.core.memory;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
 
 @Slf4j
-@Component
 public class RuleMemoryCandidateExtractor implements MemoryCandidateExtractor {
 
     private static final BigDecimal DEFAULT_CONFIDENCE = new BigDecimal("0.800");

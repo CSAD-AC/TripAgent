@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { apiFetch } from '../lib/apiClient'
-import type { ApiResult, PageResult, UserMemory } from '../types'
+import type { ApiResult, MemoryRevision, PageResult, UserMemory } from '../types'
 
 export function useMemory() {
   const [memories, setMemories] = useState<UserMemory[]>([])
@@ -55,5 +55,40 @@ export function useMemory() {
     setMemories([])
   }, [])
 
-  return { memories, loading, error, load, remove, clear }
+  const correct = useCallback(async (id: string, value: string) => {
+    const response = await apiFetch(`/api/memory/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value }),
+    })
+    if (!response.ok) {
+      const body: ApiResult<unknown> = await response.json()
+      throw new Error(body.message || `HTTP ${response.status}`)
+    }
+    await load()
+  }, [load])
+
+  const veto = useCallback(async (rule: string) => {
+    const response = await apiFetch('/api/memory/veto', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rule }),
+    })
+    if (!response.ok) {
+      const body: ApiResult<unknown> = await response.json()
+      throw new Error(body.message || `HTTP ${response.status}`)
+    }
+    await load()
+  }, [load])
+
+  const revisions = useCallback(async (id: string): Promise<MemoryRevision[]> => {
+    const response = await apiFetch(`/api/memory/revisions/${id}`)
+    const body: ApiResult<MemoryRevision[]> = await response.json()
+    if (!response.ok || body.code !== 200) {
+      throw new Error(body.message || `HTTP ${response.status}`)
+    }
+    return body.data
+  }, [])
+
+  return { memories, loading, error, load, remove, clear, correct, veto, revisions }
 }

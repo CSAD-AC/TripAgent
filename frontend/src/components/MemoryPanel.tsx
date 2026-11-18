@@ -1,6 +1,7 @@
-import { useEffect } from 'react'
-import { ArrowLeft, Brain, Loader2, Trash2 } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { ArrowLeft, Brain, History, Loader2, ShieldOff, Trash2 } from 'lucide-react'
 import { useMemory } from '../hooks/useMemory'
+import type { MemoryRevision } from '../types'
 import { cn } from '../lib/utils'
 
 interface MemoryPanelProps {
@@ -20,11 +21,31 @@ function formatTime(value?: string): string {
 }
 
 export function MemoryPanel({ onBack }: MemoryPanelProps) {
-  const { memories, loading, error, load, remove, clear } = useMemory()
+  const { memories, loading, error, load, remove, clear, correct, veto, revisions } = useMemory()
+  const [vetoRule, setVetoRule] = useState('')
+  const [actionError, setActionError] = useState('')
+  const [revisionsFor, setRevisionsFor] = useState<string | null>(null)
+  const [revisionList, setRevisionList] = useState<MemoryRevision[]>([])
 
   useEffect(() => {
     void load()
   }, [load])
+
+  const runAction = async (action: () => Promise<void>) => {
+    setActionError('')
+    try {
+      await action()
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : '操作失败')
+    }
+  }
+
+  const openRevisions = async (id: string) => {
+    await runAction(async () => {
+      setRevisionList(await revisions(id))
+      setRevisionsFor(id)
+    })
+  }
 
   return (
     <div className="h-full overflow-y-auto bg-warm-white dark:bg-[#1a1a1a]">
@@ -47,6 +68,41 @@ export function MemoryPanel({ onBack }: MemoryPanelProps) {
             </p>
           </div>
         </div>
+
+        <div className="border border-warm-white-200 dark:border-charcoal-700 bg-white dark:bg-charcoal-900 rounded-lg p-4 mb-4">
+          <div className="flex items-center gap-2 mb-2">
+            <ShieldOff className="w-4 h-4 text-terracotta-500" />
+            <p className="text-sm font-medium text-charcoal-900 dark:text-warm-white">不要再记住</p>
+          </div>
+          <div className="flex gap-2">
+            <input
+              value={vetoRule}
+              onChange={(event) => setVetoRule(event.target.value)}
+              placeholder="例如：不要再提美食相关偏好"
+              className="flex-1 rounded-md border border-warm-white-200 dark:border-charcoal-700 bg-transparent px-3 py-2 text-sm"
+            />
+            <button
+              type="button"
+              onClick={() => {
+                if (!vetoRule.trim()) return
+                void runAction(async () => {
+                  await veto(vetoRule.trim())
+                  setVetoRule('')
+                })
+              }}
+              className="px-3 py-2 rounded-md text-sm bg-terracotta-500 text-white hover:bg-terracotta-600"
+            >
+              添加规则
+            </button>
+          </div>
+          <p className="text-[11px] text-charcoal-400 dark:text-charcoal-500 mt-2">
+            命中规则的记忆不会进入后续提示词；原始对话不会被删除。
+          </p>
+        </div>
+
+        {actionError && (
+          <p role="alert" className="text-sm text-red-600 dark:text-red-400 mb-4">{actionError}</p>
+        )}
 
         {memories.length > 0 && (
           <div className="flex justify-end mb-4">
@@ -87,7 +143,7 @@ export function MemoryPanel({ onBack }: MemoryPanelProps) {
                 </div>
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-medium text-charcoal-900 dark:text-warm-white">
-                    {memory.label}
+                    {memory.label} <span className="text-[11px] text-charcoal-400">({memory.memoryType})</span>
                   </p>
                   <p className="text-sm text-charcoal-500 dark:text-charcoal-400 truncate">
                     {memory.value}
@@ -98,9 +154,29 @@ export function MemoryPanel({ onBack }: MemoryPanelProps) {
                 </div>
                 <button
                   type="button"
+                  onClick={() => void openRevisions(memory.id)}
+                  className="p-2 rounded-md text-charcoal-400 hover:text-terracotta-500 hover:bg-terracotta-50 dark:hover:bg-terracotta-900/20"
+                  aria-label={`查看 ${memory.label} 的修订历史`}
+                >
+                  <History className="w-4 h-4" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const next = window.prompt(`纠正记忆值：${memory.label}`, memory.value)
+                    if (next !== null && next.trim() && next !== memory.value) {
+                      void runAction(() => correct(memory.id, next.trim()))
+                    }
+                  }}
+                  className="px-2 py-1 rounded-md text-xs border border-warm-white-200 dark:border-charcoal-700 text-charcoal-500"
+                >
+                  纠正
+                </button>
+                <button
+                  type="button"
                   onClick={() => {
                     if (window.confirm(`删除这条记忆？\n${memory.label}：${memory.value}`)) {
-                      void remove(memory.id)
+                      void runAction(() => remove(memory.id))
                     }
                   }}
                   className={cn(
@@ -113,6 +189,29 @@ export function MemoryPanel({ onBack }: MemoryPanelProps) {
                 </button>
               </div>
             ))}
+          </div>
+        )}
+
+        {revisionsFor && (
+          <div className="border border-warm-white-200 dark:border-charcoal-700 bg-white dark:bg-charcoal-900 rounded-lg p-4 mt-4">
+            <div className="flex items-center justify-between mb-3">
+              <p className="text-sm font-medium">修订历史</p>
+              <button type="button" onClick={() => setRevisionsFor(null)} className="text-xs text-charcoal-400">关闭</button>
+            </div>
+            {revisionList.length === 0 ? (
+              <p className="text-sm text-charcoal-400">暂无修订记录</p>
+            ) : (
+              <ul className="space-y-2 text-sm">
+                {revisionList.map((revision) => (
+                  <li key={revision.id} className="border-b border-warm-white-200 dark:border-charcoal-700 pb-2">
+                    <p className="text-charcoal-700 dark:text-charcoal-300">
+                      {revision.operation}: {revision.previousValue || '空'} → {revision.newValue || '空'}
+                    </p>
+                    <p className="text-[11px] text-charcoal-400">{revision.reason} · {formatTime(revision.createdAt)}</p>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
         )}
       </div>

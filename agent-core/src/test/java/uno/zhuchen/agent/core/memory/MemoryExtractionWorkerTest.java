@@ -26,6 +26,9 @@ class MemoryExtractionWorkerTest {
     @Mock
     private MemoryItemService memoryItemService;
 
+    @Mock
+    private MemoryVectorIndexer vectorIndexer;
+
     private MemoryExtractionWorker worker;
 
     @BeforeEach
@@ -33,7 +36,7 @@ class MemoryExtractionWorkerTest {
         RuleMemoryCandidateExtractor extractor =
                 new RuleMemoryCandidateExtractor(new MemoryExtractor(), new ObjectMapper());
         worker = new MemoryExtractionWorker(
-                ingestService, extractor, memoryItemService, new ObjectMapper());
+                ingestService, extractor, memoryItemService, vectorIndexer, new ObjectMapper());
     }
 
     @Test

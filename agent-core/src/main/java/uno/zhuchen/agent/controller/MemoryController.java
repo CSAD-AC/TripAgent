@@ -1,6 +1,7 @@
 package uno.zhuchen.agent.controller;
 
 import jakarta.validation.Valid;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -15,34 +16,41 @@ import reactor.core.scheduler.Schedulers;
 import uno.zhuchen.agent.common.PageResult;
 import uno.zhuchen.agent.common.Result;
 import uno.zhuchen.agent.core.memory.MemoryGovernanceService;
+import uno.zhuchen.agent.core.memory.MemoryItemService;
 import uno.zhuchen.agent.core.memory.UserMemoryService;
 import uno.zhuchen.agent.domain.dto.MemoryCorrectRequest;
 import uno.zhuchen.agent.domain.dto.MemoryVetoRequest;
 import uno.zhuchen.agent.domain.entity.MemoryRevisionEntity;
 import uno.zhuchen.agent.domain.vo.MemoryRevisionVO;
-import uno.zhuchen.agent.domain.vo.UserMemoryVO;
+import uno.zhuchen.agent.domain.vo.MemoryItemVO;
 import uno.zhuchen.agent.security.UserPrincipal;
 
 import java.util.List;
 
 @RestController
 @RequestMapping("/api/memory")
+@Slf4j
 public class MemoryController {
 
     private final UserMemoryService userMemoryService;
     private final MemoryGovernanceService governanceService;
+    private final MemoryItemService memoryItemService;
 
     public MemoryController(UserMemoryService userMemoryService,
-                            MemoryGovernanceService governanceService) {
+                            MemoryGovernanceService governanceService,
+                            MemoryItemService memoryItemService) {
         this.userMemoryService = userMemoryService;
         this.governanceService = governanceService;
+        this.memoryItemService = memoryItemService;
     }
 
     @GetMapping
-    public Mono<Result<PageResult<UserMemoryVO>>> list(
+    public Mono<Result<PageResult<MemoryItemVO>>> list(
             @AuthenticationPrincipal UserPrincipal user) {
         return Mono.fromCallable(() -> {
-            List<UserMemoryVO> items = userMemoryService.list(user.userId());
+            List<MemoryItemVO> items = memoryItemService.list("default", user.userId(), null).stream()
+                    .map(MemoryItemVO::from)
+                    .toList();
             return Result.success(PageResult.of(items, items.size(), 0, items.size()));
         }).subscribeOn(Schedulers.boundedElastic());
     }
@@ -50,16 +58,34 @@ public class MemoryController {
     @DeleteMapping("/{id}")
     public Mono<Result<Void>> delete(@PathVariable String id,
                                      @AuthenticationPrincipal UserPrincipal user) {
-        return Mono.fromRunnable(() -> userMemoryService.delete(user.userId(), id))
+        return Mono.fromRunnable(() -> deleteOne(user.userId(), id))
                 .subscribeOn(Schedulers.boundedElastic())
                 .thenReturn(Result.success(null));
     }
 
     @DeleteMapping
     public Mono<Result<Void>> deleteAll(@AuthenticationPrincipal UserPrincipal user) {
-        return Mono.fromRunnable(() -> userMemoryService.deleteAll(user.userId()))
+        return Mono.fromRunnable(() -> {
+            // 新表(memory_item)是记忆主存储, 旧表(user_memory)为历史兼容, 两侧都要清
+            memoryItemService.deleteAll("default", user.userId());
+            userMemoryService.deleteAll(user.userId());
+        })
                 .subscribeOn(Schedulers.boundedElastic())
                 .thenReturn(Result.success(null));
+    }
+
+    /**
+     * 删除单条记忆: 先按 memory_item 主键删除并留审计; 若该 id 不在新表中
+     * (历史客户端仍持有旧 user_memory id), 回落到旧表删除, 保证兼容。
+     */
+    private void deleteOne(String userId, String id) {
+        try {
+            governanceService.deleteWithAudit("default", userId, id);
+            return;
+        } catch (Exception e) {
+            log.debug("[memory] memory_item 删除未命中, 尝试旧表: id={}, reason={}", id, e.getMessage());
+        }
+        userMemoryService.delete(userId, id);
     }
 
     @PatchMapping("/{id}")
