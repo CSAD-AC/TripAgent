@@ -90,10 +90,15 @@ function AuthenticatedApp() {
     loadConversation,
   } = useChat()
 
+  /** 已载入消息区的会话 ID：避免重复请求，也用于判断是否需要重新载入 */
+  const loadedConversationRef = useRef<string | undefined>(undefined)
+
   // 把后端下发的 session_init.conversationId 写回 URL hash
   // 新对话创建后刷新列表，使其出现在侧边栏
   const handleSessionInit = useCallback(
     (id: string) => {
+      // 本轮消息已由流式渲染写进消息区，标记为"已载入"，避免流结束后再回库覆盖
+      loadedConversationRef.current = id
       if (id !== conversationId) {
         setConversationId(id)
         // 新 conversationId 说明是新创建的对话，刷新列表使其出现在侧边栏
@@ -103,16 +108,35 @@ function AuthenticatedApp() {
     [conversationId, setConversationId, fetchConversations]
   )
 
-  // 首次挂载时，如果 URL hash 中有 conversationId，自动恢复历史消息
-  const initialLoadDoneRef = useRef(false)
+  /**
+   * 打开一个会话：必须先切回聊天视图，否则在知识库/记忆视图下点了历史对话
+   * 只会改 hash 与侧栏高亮，消息区不可见（表现为"点了没反应/加载不出来"）。
+   */
+  const openConversation = useCallback(
+    async (id: string) => {
+      setView('chat')
+      if (id === loadedConversationRef.current) return
+      clearMessages()
+      const ok = await loadConversation(id)
+      loadedConversationRef.current = ok ? id : undefined
+    },
+    [clearMessages, loadConversation]
+  )
+
+  /**
+   * conversationId 的权威变化入口：刷新页面(hash 恢复)、点击历史对话、
+   * 浏览器前进/后退(hashchange) 都走这里统一载入消息。
+   */
   useEffect(() => {
-    if (initialLoadDoneRef.current) return
-    initialLoadDoneRef.current = true
-    if (conversationId) {
-      loadConversation(conversationId)
+    if (!conversationId) {
+      loadedConversationRef.current = undefined
+      return
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+    // 流式生成中(含新会话的 session_init)不覆盖正在渲染的消息
+    if (isLoading) return
+    if (conversationId === loadedConversationRef.current) return
+    void openConversation(conversationId)
+  }, [conversationId, isLoading, openConversation])
 
   const handleSend = useCallback(
     (content: string) => {
@@ -132,18 +156,30 @@ function AuthenticatedApp() {
   // ── 从侧边栏选择对话 ──
   const handleSelectConversation = useCallback(
     (id: string) => {
-      if (id === conversationId) return
-      selectConversation(id)
-      clearMessages()
-      loadConversation(id)
+      // 无论当前在哪个视图，点历史对话都应回到聊天
+      setView('chat')
       setSidebarOpen(false)
+      // 生成过程中不打断，避免流式内容被清空
+      if (isLoading) return
+      if (id !== conversationId) {
+        // 交给 conversationId 的监听 effect 统一载入
+        selectConversation(id)
+        return
+      }
+      // 同一会话但消息区是空的(例如刚从记忆/知识库视图回来)，补载一次
+      if (loadedConversationRef.current !== id) {
+        loadedConversationRef.current = undefined
+        void openConversation(id)
+      }
     },
-    [conversationId, selectConversation, clearMessages, loadConversation]
+    [conversationId, isLoading, selectConversation, openConversation]
   )
 
   // ── 新建对话 ──
   const handleNewConversation = useCallback(() => {
+    setView('chat')
     newConversation()
+    loadedConversationRef.current = undefined
     clearMessages()
     setSidebarOpen(false)
   }, [newConversation, clearMessages])
@@ -153,6 +189,7 @@ function AuthenticatedApp() {
     async (id: string) => {
       await deleteConversation(id)
       if (id === conversationId) {
+        loadedConversationRef.current = undefined
         clearMessages()
       }
     },

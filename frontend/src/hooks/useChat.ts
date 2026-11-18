@@ -29,6 +29,8 @@ export function useChat() {
   const [graphTrace, setGraphTrace] = useState<GraphTrace | null>(null)
 
   const abortRef = useRef<AbortController | null>(null)
+  /** 历史载入请求序号：用于丢弃过期结果(快速切换会话时的竞态) */
+  const loadTokenRef = useRef(0)
   /** 当前正在流式写入的 assistant 消息 ID(error 事件需要标记这条消息) */
   const currentAssistantIdRef = useRef<string | null>(null)
 
@@ -600,6 +602,8 @@ export function useChat() {
   }, [])
 
   const clearMessages = useCallback(() => {
+    // 作废仍在路上的历史载入请求，避免旧会话结果覆盖新会话
+    loadTokenRef.current += 1
     setMessages([])
     setPendingClarification(null)
     setGraphTrace(null)
@@ -608,8 +612,11 @@ export function useChat() {
   /**
    * 加载已有对话的历史消息。
    * 当用户从侧边栏选择对话时调用,替代 sendMessage 的初始化流程。
+   *
+   * @returns 是否成功载入（失败时不覆盖当前消息区）
    */
-  const loadConversation = useCallback(async (id: string) => {
+  const loadConversation = useCallback(async (id: string): Promise<boolean> => {
+    const token = ++loadTokenRef.current
     try {
       const res = await apiFetch(`/api/conversations/${id}`)
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
@@ -618,6 +625,8 @@ export function useChat() {
         throw new Error(body.message || '加载失败')
       }
       const detail = body.data
+      // 期间用户又切换了会话/新建了对话,丢弃本次结果
+      if (loadTokenRef.current !== token) return false
 
       // 对后端消息流进行分组：user / assistant → (tool)*, 把 tool 消息合并到前一条 assistant 的 toolCalls 中
       const grouped: Message[] = []
@@ -719,8 +728,10 @@ export function useChat() {
       setMessages(grouped)
       setPendingClarification(null)
       setGraphTrace(null)
+      return true
     } catch (err) {
       console.error('[useChat] loadConversation error:', err)
+      return false
     }
   }, [])
 
