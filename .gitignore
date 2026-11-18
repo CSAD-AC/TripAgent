@@ -68,6 +68,7 @@ Desktop.ini
 ### Logs ###
 *.log
 log/
+logs/
 
 ### Environment ###
 .env

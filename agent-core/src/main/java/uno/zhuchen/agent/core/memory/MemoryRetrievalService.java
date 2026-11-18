@@ -38,6 +38,9 @@ public class MemoryRetrievalService {
         this.recallTopK = Math.max(1, recallTopK);
         this.finalTopK = Math.max(1, finalTopK);
         this.minScore = minScore;
+        log.info("[memory-recall] 初始化: hybridEnabled={}, vectorService={}, recallTopK={}, finalTopK={}, minScore={}",
+                hybridEnabled, vectorService.getClass().getSimpleName(),
+                this.recallTopK, this.finalTopK, this.minScore);
     }
 
     public MemoryPromptContext load(String tenantId, String userId, String projectId, String query) {
@@ -77,6 +80,8 @@ public class MemoryRetrievalService {
         List<String> episodicLines = episodic.stream()
                 .map(item -> "经历：" + item.value())
                 .toList();
+        log.debug("[memory-recall] userId={}, query={}, pinned={}, episodic={}, suppressions={}",
+                userId, query, pinned.size(), episodicLines.size(), suppressions.size());
         return new MemoryPromptContext(pinned, episodicLines, suppressions);
     }
 

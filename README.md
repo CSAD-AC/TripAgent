@@ -271,6 +271,9 @@ npm run dev
 - `app.memory.retention-days`：过期记忆保留窗口，默认 365 天。
 - `app.memory.ingest-trigger.enabled`：聊天完成后的记忆入队触发开关，默认 `true`。
 - `app.memory.ingest-trigger.min-chars`：触发入队的最小用户消息长度，默认 6。
+- `app.memory.ingest-trigger.process-interval-ms` / `initial-delay-ms` / `batch-size`：事件消费 worker 的轮询间隔、首次延迟与单轮批量，默认 5000 / 15000 / 20。
+
+> 注意：`app.memory.hybrid` / `extraction` / `ingest-trigger` / `consolidation` / `retention-days` 必须直接挂在 `app.memory` 下；缩进到 `app.memory.long-term` 下会静默失效（代码读不到，只走默认值）。
 
 治理接口：
 

@@ -98,9 +98,15 @@ public class ReactAgent {
         this.memoryTriggerService = memoryTriggerService;
     }
 
-    private String systemPromptFor(String userId) {
+    /**
+     * 组装系统提示词。
+     *
+     * <p>注意: 必须把本轮用户输入作为 query 传给混合记忆渲染器, 否则经历记忆的语义召回
+     * 永远拿不到检索词, 只会注入结构化偏好(earlier 版本这里传 null, 导致向量召回形同虚设)。
+     */
+    private String systemPromptFor(String userId, String userInput) {
         StringBuilder prompt = new StringBuilder(config.getSystemPrompt());
-        hybridMemoryPromptRenderer.appendTo(prompt, "default", userId, null, null);
+        hybridMemoryPromptRenderer.appendTo(prompt, "default", userId, null, userInput);
         if (prompt.length() == config.getSystemPrompt().length()) {
             memoryPromptRenderer.appendToPrompt(prompt, memorySummary(userId));
         }
@@ -146,7 +152,8 @@ public class ReactAgent {
 
         try {
             // 1. 初始化状态
-            AgentState state = new AgentState(userId, conversationId, systemPromptFor(userId), userInput);
+            AgentState state = new AgentState(userId, conversationId,
+                    systemPromptFor(userId, userInput), userInput);
             chatMemory.claim(userId, state.getConversationId(), "react", modelId);
             log.debug("[traceId={}] Agent[{}] 开始 ReAct 循环, model={}, maxIterations={}, superMode={}",
                     traceId, state.getConversationId(), modelId != null ? modelId : "default",
@@ -338,7 +345,8 @@ public class ReactAgent {
                             System.currentTimeMillis() - start)));
         }
 
-        AgentState state = new AgentState(userId, conversationId, systemPromptFor(userId), userInput);
+        AgentState state = new AgentState(userId, conversationId,
+                systemPromptFor(userId, userInput), userInput);
         chatMemory.claim(userId, state.getConversationId(), "react", null);
 
         // 加载历史记忆（非阻塞操作）

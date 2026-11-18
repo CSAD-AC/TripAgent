@@ -121,7 +121,7 @@ public class AgentController {
                 superMode,
                 request.getMessage() != null ? request.getMessage().length() : 0);
 
-        return Mono.fromCallable(() -> {
+        return Mono.<Result<ChatVO>>fromCallable(() -> {
             ChatDTO chatDTO = reactAgent.call(user.userId(), request.getMessage(),
                     conversationId, traceId, modelId,
                     superMode);
@@ -136,7 +136,11 @@ public class AgentController {
                 return Result.error(500, chatDTO.getErrorMessage());
             }
             return Result.success(vo);
-        });
+        })
+                // ReAct 内部是阻塞式调用(LLM + MCP 工具 + 记忆检索), 必须离开 Netty event loop,
+                // 否则 SyncMcpToolCallback / WebClient 的 block() 会直接抛
+                // "block() ... not supported in thread reactor-http-nio"
+                .subscribeOn(Schedulers.boundedElastic());
     }
 
     /**
