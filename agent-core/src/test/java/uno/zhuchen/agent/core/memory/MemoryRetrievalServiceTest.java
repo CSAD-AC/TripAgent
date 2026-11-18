@@ -65,6 +65,59 @@ class MemoryRetrievalServiceTest {
         assertEquals("经历：规划过成都行程", context.episodicLines().get(0));
     }
 
+    /**
+     * 真实提问不会是记忆原文的子串: 早前用 "整句包含" 判分, 这里恒为 0 分导致记忆永远召回不到。
+     */
+    @Test
+    void episodicRecallMatchesNaturalQuestionViaBigrams() {
+        MemoryItemService itemService = mock(MemoryItemService.class);
+        MemoryVectorService vectorService = mock(MemoryVectorService.class);
+        when(itemService.list(any(), any(), any())).thenReturn(List.of(
+                item("e1", MemoryItemType.EPISODIC,
+                        "上次规划过京都五日游, 住四条河原町, 不想走太远", "travel.episode.kyoto"),
+                item("e2", MemoryItemType.EPISODIC,
+                        "规划过成都三日游, 预算 5000 元", "travel.episode.chengdu")));
+        MemoryRetrievalService service = new MemoryRetrievalService(
+                itemService, vectorService, true, 20, 6, 0.55);
+
+        MemoryPromptContext context = service.load("default", "u1", null, "京都五日游你还记得吗");
+
+        assertEquals(1, context.episodicLines().size());
+        assertTrue(context.episodicLines().get(0).contains("京都五日游"));
+    }
+
+    /** "你记得什么"属于元问题, 应直接按时间列出经历, 不按相关性阈值过滤 */
+    @Test
+    void metaQuestionListsRecentEpisodesWithoutScoreFilter() {
+        MemoryItemService itemService = mock(MemoryItemService.class);
+        MemoryVectorService vectorService = mock(MemoryVectorService.class);
+        when(itemService.list(any(), any(), any())).thenReturn(List.of(
+                item("e1", MemoryItemType.EPISODIC, "上次规划过京都五日游", "travel.episode.kyoto")));
+        // 阈值调到 0.99: 走打分路径必然召回不到
+        MemoryRetrievalService service = new MemoryRetrievalService(
+                itemService, vectorService, true, 20, 6, 0.99);
+
+        MemoryPromptContext context = service.load("default", "u1", null, "你记得什么");
+
+        assertEquals(List.of("经历：上次规划过京都五日游"), context.episodicLines());
+    }
+
+    /** 占位值(true/false)注入提示词毫无信息量, 必须被过滤 */
+    @Test
+    void placeholderValueIsNotInjected() {
+        MemoryItemService itemService = mock(MemoryItemService.class);
+        MemoryVectorService vectorService = mock(MemoryVectorService.class);
+        when(itemService.list(any(), any(), any())).thenReturn(List.of(
+                item("p1", MemoryItemType.PREFERENCE, "true", "travel.preference.food"),
+                item("p2", MemoryItemType.PREFERENCE, "喜欢川菜", "travel.preference.cuisine")));
+        MemoryRetrievalService service = new MemoryRetrievalService(
+                itemService, vectorService, true, 20, 6, 0.55);
+
+        MemoryPromptContext context = service.load("default", "u1", null, "吃什么");
+
+        assertEquals(List.of("偏好：喜欢川菜"), context.pinnedLines());
+    }
+
     private static MemoryItemRecord item(String id, MemoryItemType type, String value, String key) {
         return new MemoryItemRecord(id, "default", "u1", "", type, key, value, key + "=" + value,
                 null, "user_message", "conv", "msg", new BigDecimal("0.8"),

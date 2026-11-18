@@ -21,4 +21,10 @@ public class UploadedDocVO {
 
     /** 处理状态(pending 等), 可轮询详情查看最终状态 */
     private String status;
+
+    /**
+     * 文档标题(仅点赞沉淀返回:
+     * 上游 mcp-server 不返回该字段, 由 agent-core 在整理后回填, 便于前端提示)
+     */
+    private String title;
 }

@@ -171,17 +171,21 @@ public class MultiAgentManager {
      */
     private void runLoopAndEmit(String userId, String userInput, String conversationId, String traceId,
                                 String modelId, Sinks.Many<StreamChunk> sink, long startMs) {
-        StringBuilder prompt = new StringBuilder(MultiAgentPrompts.MANAGER_SYSTEM_PROMPT);
+        String memorySection = "";
         try {
-            hybridMemoryPromptRenderer.appendTo(prompt, "default", userId, null, userInput);
-            if (prompt.length() == MultiAgentPrompts.MANAGER_SYSTEM_PROMPT.length()) {
-                memoryPromptRenderer.appendToPrompt(prompt, userMemoryService.loadSummary(userId));
+            memorySection = hybridMemoryPromptRenderer.render("default", userId, null, userInput);
+            if (memorySection.isBlank()) {
+                memorySection = memoryPromptRenderer.render(userMemoryService.loadSummary(userId));
             }
         } catch (Exception e) {
             log.warn("[traceId={}] [MultiAgent] 加载长期记忆失败: {}", traceId, e.getMessage());
         }
         AgentState state = new AgentState(
-                userId, conversationId, prompt.toString(), userInput);
+                userId, conversationId, MultiAgentPrompts.MANAGER_SYSTEM_PROMPT, userInput);
+        // 记忆走 user 角色的背景上下文: 当前模型网关会丢弃 system 角色消息
+        if (!memorySection.isBlank()) {
+            state.setContextBlock(memorySection);
+        }
         chatMemory.claim(userId, conversationId, "multi", modelRouter.resolveModelName(modelId));
         try {
             // 加载历史记忆(续聊), 与 ReactAgent 相同语义

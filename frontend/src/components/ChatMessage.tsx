@@ -294,8 +294,13 @@ function SettleButton({
 }) {
   const [liked, setLiked] = useState(false)
   const [loading, setLoading] = useState(false)
+  /** 后端整理后的知识文档标题(用于提示沉淀结果) */
+  const [settledTitle, setSettledTitle] = useState<string>('')
 
-  /** 点击点赞: 调 POST /api/messages/{id}/like 沉淀最终正文(不含思考/工具调用) */
+  /**
+   * 点击点赞: 调 POST /api/messages/{id}/like
+   * 后端会把这条回答交给模型整理成结构化知识文档后再入库, 返回整理后的标题
+   */
   const handleLike = async () => {
     if (loading || liked) return
     setLoading(true)
@@ -309,6 +314,11 @@ function SettleButton({
         }),
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const body = await res.json().catch(() => null)
+      const title = body?.data?.title
+      if (typeof title === 'string' && title.trim()) {
+        setSettledTitle(title.trim())
+      }
       setLiked(true)
       // 轻提示: 3 秒后淡化高亮, 保持已沉淀状态
       setTimeout(() => setLiked(false), 3000)
@@ -323,7 +333,11 @@ function SettleButton({
     <button
       onClick={handleLike}
       disabled={loading}
-      title={liked ? '已沉淀到知识库' : '点赞并沉淀到知识库'}
+      title={
+        liked
+          ? (settledTitle ? `已沉淀到知识库：${settledTitle}` : '已沉淀到知识库')
+          : '点赞并沉淀到知识库（自动整理成知识文档）'
+      }
       className={cn(
         'inline-flex items-center gap-1 text-[11px] px-1.5 py-1 rounded-md transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-terracotta-500',
         liked

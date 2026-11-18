@@ -45,6 +45,10 @@ public class LlmMemoryCandidateExtractor implements MemoryCandidateExtractor {
     private static final Pattern SENSITIVE = Pattern.compile(
             "(?i)(api[ _-]?key|password|passwd|身份证|银行卡|cvv|验证码|密钥)");
 
+    /** value 只写占位符等于没写(典型坏例: 偏好写成 "true"), 直接丢弃 */
+    private static final Set<String> PLACEHOLDER_VALUES = Set.of(
+            "true", "false", "yes", "no", "1", "0", "是", "否", "有", "无", "null", "none");
+
     private static final String SYSTEM_PROMPT = """
             你是旅行助手的长期记忆抽取器。从用户这句话里抽取值得长期记住的信息。
 
@@ -55,7 +59,10 @@ public class LlmMemoryCandidateExtractor implements MemoryCandidateExtractor {
             字段规则:
             - type 只能是 PROFILE(用户信息: 常住城市/同行人)/PREFERENCE(偏好)/CONSTRAINT(规划约束: 预算上限、时间限制、无障碍要求)/VETO(明确要求不要记住或不要再提的内容)/EPISODIC(一次具体经历, 如"上次规划过京都 5 天行程")
             - key 用英文小写点号命名: profile.*, travel.preference.*, travel.constraint.*, veto.*, travel.episode.*
-            - value 用简洁中文, 不超过 40 字, 不要包含句末标点
+            - value 必须是能独立读懂的中文短语, 不超过 40 字, 不要包含句末标点
+            - value 禁止写 true/false/是/否/数字等占位值, key 只是标识不能代替 value;
+              例: key=travel.preference.food 时 value 应写成"喜欢美食, 尤其川菜"而不是"true"
+            - value 里要带上主体信息: 时间、地点、金额、人数等具体事实优先保留
             - confidence 0~1, 用户明确陈述取 0.9 以上, 推断取 0.6 左右
             - importance 0~1, 影响后续规划取 0.6 以上
             - 没有值得记住的信息时输出 {"memories":[]}
@@ -152,6 +159,10 @@ public class LlmMemoryCandidateExtractor implements MemoryCandidateExtractor {
         String key = node.path("key").asText("").trim();
         String value = node.path("value").asText("").trim();
         if (key.isEmpty() || value.isEmpty() || SENSITIVE.matcher(key + value).find()) {
+            return null;
+        }
+        if (PLACEHOLDER_VALUES.contains(value.toLowerCase(Locale.ROOT))) {
+            log.debug("[memory-llm] 丢弃占位值候选: key={}, value={}", key, value);
             return null;
         }
         if (value.length() > maxValueChars) {

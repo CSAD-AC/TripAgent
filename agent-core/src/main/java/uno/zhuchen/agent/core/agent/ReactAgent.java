@@ -101,16 +101,30 @@ public class ReactAgent {
     /**
      * 组装系统提示词。
      *
-     * <p>注意: 必须把本轮用户输入作为 query 传给混合记忆渲染器, 否则经历记忆的语义召回
-     * 永远拿不到检索词, 只会注入结构化偏好(earlier 版本这里传 null, 导致向量召回形同虚设)。
+     * <p>只返回基础提示词。记忆不再拼进 system: 当前模型网关会丢弃 system 角色消息
+     * (见 {@link #memoryContextBlock}), 记忆统一走 user 角色的背景上下文注入。
      */
     private String systemPromptFor(String userId, String userInput) {
-        StringBuilder prompt = new StringBuilder(config.getSystemPrompt());
-        hybridMemoryPromptRenderer.appendTo(prompt, "default", userId, null, userInput);
-        if (prompt.length() == config.getSystemPrompt().length()) {
-            memoryPromptRenderer.appendToPrompt(prompt, memorySummary(userId));
+        return config.getSystemPrompt();
+    }
+
+    /**
+     * 组装跨会话记忆上下文块(以 user 角色注入)。
+     *
+     * <p>必须把本轮用户输入作为 query 传给混合记忆渲染器, 否则经历记忆的语义召回
+     * 永远拿不到检索词(earlier 版本这里传 null, 向量召回形同虚设)。
+     *
+     * @return 记忆块文本; 无可用记忆时返回 null
+     */
+    private String memoryContextBlock(String userId, String userInput) {
+        String section = hybridMemoryPromptRenderer.render("default", userId, null, userInput);
+        if (section == null || section.isBlank()) {
+            section = memoryPromptRenderer.render(memorySummary(userId));
         }
-        return prompt.toString();
+        // 便于线上排查"记忆是否真的进了请求": 只打标志位与长度, 不打印隐私内容
+        log.debug("[memory-inject] userId={}, 记忆块长度={}, 命中={}",
+                userId, section == null ? 0 : section.length(), section != null && !section.isBlank());
+        return section == null || section.isBlank() ? null : section;
     }
 
     private MemorySummary memorySummary(String userId) {
@@ -154,6 +168,7 @@ public class ReactAgent {
             // 1. 初始化状态
             AgentState state = new AgentState(userId, conversationId,
                     systemPromptFor(userId, userInput), userInput);
+            state.setContextBlock(memoryContextBlock(userId, userInput));
             chatMemory.claim(userId, state.getConversationId(), "react", modelId);
             log.debug("[traceId={}] Agent[{}] 开始 ReAct 循环, model={}, maxIterations={}, superMode={}",
                     traceId, state.getConversationId(), modelId != null ? modelId : "default",
@@ -347,6 +362,7 @@ public class ReactAgent {
 
         AgentState state = new AgentState(userId, conversationId,
                 systemPromptFor(userId, userInput), userInput);
+        state.setContextBlock(memoryContextBlock(userId, userInput));
         chatMemory.claim(userId, state.getConversationId(), "react", null);
 
         // 加载历史记忆（非阻塞操作）

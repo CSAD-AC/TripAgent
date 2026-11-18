@@ -13,6 +13,7 @@ import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 import uno.zhuchen.agent.common.Result;
 import uno.zhuchen.agent.config.McpClientProperties;
+import uno.zhuchen.agent.core.knowledge.KnowledgeDistillService;
 import uno.zhuchen.agent.core.memory.ChatMemory;
 import uno.zhuchen.agent.domain.dto.KnowledgeUploadRequest;
 import uno.zhuchen.agent.domain.dto.MessageLikeRequest;
@@ -38,15 +39,18 @@ public class MessageController {
 
     private final WebClient mcpClient;
     private final ChatMemory chatMemory;
+    private final KnowledgeDistillService knowledgeDistillService;
 
     /**
      * 构造注入 mcp-server 连接配置并建立沉淀推送 WebClient.
      *
      * @param mcp mcp-server 连接配置(取 server-url 作为基础地址)
      */
-    public MessageController(McpClientProperties mcp, ChatMemory chatMemory) {
+    public MessageController(McpClientProperties mcp, ChatMemory chatMemory,
+                             KnowledgeDistillService knowledgeDistillService) {
         this.mcpClient = WebClient.builder().baseUrl(mcp.getServerUrl()).build();
         this.chatMemory = chatMemory;
+        this.knowledgeDistillService = knowledgeDistillService;
     }
 
     /**
@@ -69,27 +73,35 @@ public class MessageController {
 
     private Mono<Result<UploadedDocVO>> doLikeAndPrecipitate(String messageId,
                                                              MessageLikeRequest req) {
-        String content = req.getContent();
+        // 先交给模型整理成知识文档(去寒暄/反问/过程叙述, 留事实与数字),
+        // 模型失败时内部回退原文, 不会阻断沉淀链路
+        KnowledgeDistillService.Draft draft =
+                knowledgeDistillService.distill(req.getContent(), req.getDestination());
+        String content = draft.content();
         // 长度保护: 超大内容截断前段入库, 防止异常上传撑爆分块
         if (content.length() > MAX_PRECIP_CONTENT) {
             log.warn("点赞沉淀内容超长, 截断入库: messageId={}, len={}, cap={}",
                     messageId, content.length(), MAX_PRECIP_CONTENT);
             content = content.substring(0, MAX_PRECIP_CONTENT) + "…";
         }
-        log.info("消息点赞沉淀: messageId={}, conversationId={}, len={}", messageId,
-                req.getConversationId(), content.length());
+        log.info("消息点赞沉淀: messageId={}, conversationId={}, distilled={}, title={}, len={}",
+                messageId, req.getConversationId(), draft.distilled(), draft.title(), content.length());
 
-        // 标题取回答前若干字符
-        String title = content.length() > 60 ? content.substring(0, 60) + "…" : content;
         KnowledgeUploadRequest uploadReq = KnowledgeUploadRequest.builder()
-                .title(title).content(content)
+                .title(draft.title()).content(content)
                 .sourceType("self_precip").sourceRef(messageId)
                 .destination(req.getDestination()).build();
 
         return mcpClient.post().uri("/api/knowledge/documents")
                 .contentType(MediaType.APPLICATION_JSON).bodyValue(uploadReq)
                 .retrieve().bodyToMono(UploadedDocVO.class)
-                .map(Result::success)
+                .map(vo -> {
+                    // 回执带上整理后的标题, 前端可直接提示"已沉淀: xxx"
+                    if (vo != null) {
+                        vo.setTitle(draft.title());
+                    }
+                    return Result.success(vo);
+                })
                 .onErrorResume(e -> {
                     log.warn("点赞沉淀下游失败: messageId={}, error={}", messageId, e.getMessage());
                     return Mono.just(Result.error(502, "知识库服务暂不可用, 请稍后重试"));
