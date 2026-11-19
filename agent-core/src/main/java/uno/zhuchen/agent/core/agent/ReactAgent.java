@@ -138,7 +138,10 @@ public class ReactAgent {
 
     private void remember(String userId, String conversationId, String userInput) {
         try {
-            userMemoryService.extractAndStore(userId, conversationId, userInput);
+            // 混合记忆链路开启时, 记忆只由异步 worker 抽取, 避免与旧规则链路双写同一张表
+            if (!memoryTriggerService.isHybridPipelineEnabled()) {
+                userMemoryService.extractAndStore(userId, conversationId, userInput);
+            }
             memoryTriggerService.onConversationFinished(userId, conversationId, userInput);
         } catch (Exception e) {
             log.warn("保存长期记忆失败: userId={}, conversationId={}, error={}",

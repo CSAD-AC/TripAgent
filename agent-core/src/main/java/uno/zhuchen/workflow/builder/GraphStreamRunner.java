@@ -223,7 +223,9 @@ public class GraphStreamRunner {
 
     private void remember(String userId, String conversationId, String rawRequest) {
         try {
-            userMemoryService.extractAndStore(userId, conversationId, rawRequest);
+            if (!memoryTriggerService.isHybridPipelineEnabled()) {
+                userMemoryService.extractAndStore(userId, conversationId, rawRequest);
+            }
             memoryTriggerService.onConversationFinished(userId, conversationId, rawRequest);
         } catch (Exception e) {
             log.warn("[GraphStreamRunner] 保存长期记忆失败: userId={}, conversationId={}, error={}",

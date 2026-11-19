@@ -85,4 +85,26 @@ class LlmMemoryCandidateExtractorTest {
     void sensitiveMessageIsRejectedBeforeCallingModel() {
         assertTrue(extractor.extract("{\"message\":\"我的身份证号是 110101\"}").isEmpty());
     }
+
+    /** 同一件事被拆成大小两条时必须合并, 只留信息量最大的一条 */
+    @Test
+    void mergesOverlappingCandidatesAcrossTypes() {
+        when(modelRouter.route(any())).thenReturn(chatModel);
+        when(modelRouter.resolveModelName(any())).thenReturn("global:deepseek-v4.1-flash");
+        when(chatModel.call(anyList(), (String) any())).thenReturn(new AssistantMessage("""
+                {"memories":[
+                  {"type":"PROFILE","key":"profile.diet","value":"不吃辣","confidence":0.9,"importance":0.6},
+                  {"type":"PREFERENCE","key":"travel.preference.food","value":"喜欢美食但完全不吃辣",
+                   "confidence":0.9,"importance":0.7},
+                  {"type":"CONSTRAINT","key":"travel.constraint.hotel","value":"酒店要一楼房间",
+                   "confidence":0.9,"importance":0.8}
+                ]}
+                """));
+
+        List<MemoryExtractionResult> results = extractor.extract("{\"message\":\"我喜欢美食但不吃辣, 带老人住一楼\"}");
+
+        assertEquals(2, results.size(), "重复的\"不吃辣\"必须被合并");
+        assertTrue(results.stream().anyMatch(r -> r.value().equals("喜欢美食但完全不吃辣")));
+        assertTrue(results.stream().noneMatch(r -> r.value().equals("不吃辣")));
+    }
 }

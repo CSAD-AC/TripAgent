@@ -58,6 +58,20 @@ public class LlmMemoryCandidateExtractor implements MemoryCandidateExtractor {
 
             字段规则:
             - type 只能是 PROFILE(用户信息: 常住城市/同行人)/PREFERENCE(偏好)/CONSTRAINT(规划约束: 预算上限、时间限制、无障碍要求)/VETO(明确要求不要记住或不要再提的内容)/EPISODIC(一次具体经历, 如"上次规划过京都 5 天行程")
+
+            类型判定必须按下面顺序, 同一条信息只能归入一类:
+            1) 用户明确要求"不要记住/不要再提" → VETO
+            2) 硬性要求, 不满足就算方案失败(无障碍、一楼房间、禁烟、必须高铁) → CONSTRAINT
+            3) 只在本次/这次/近期出行成立的信息(这次带老人, 本次预算 5000) → CONSTRAINT
+            4) 长期稳定的个人属性(常住城市、出发城市、长期同行人构成) → PROFILE
+            5) 长期稳定的喜好或厌恶(爱吃辣、不喜欢人多) → PREFERENCE
+            6) 具体的一次经历(上次去过京都、上次住四条河原町) → EPISODIC
+
+            去重要求(常见错误, 必须避免):
+            - 同一件事不要同时输出 PROFILE 和 PREFERENCE, 例如"不吃辣"只输出一条 PREFERENCE
+            - 不要输出包含关系的大小两条, 例如"不吃辣"与"喜欢美食但完全不吃辣"只能留一条更具体的
+            - 一条记忆里已经包含的信息, 不要拆成第二条重复表达
+
             - key 用英文小写点号命名: profile.*, travel.preference.*, travel.constraint.*, veto.*, travel.episode.*
             - value 必须是能独立读懂的中文短语, 不超过 40 字, 不要包含句末标点
             - value 禁止写 true/false/是/否/数字等占位值, key 只是标识不能代替 value;
@@ -148,7 +162,70 @@ public class LlmMemoryCandidateExtractor implements MemoryCandidateExtractor {
                 break;
             }
         }
-        return results;
+        return dedupe(results);
+    }
+
+    /**
+     * 同一轮抽取内的去重。
+     *
+     * <p>模型经常把同一件事拆成大小两条("不吃辣" + "喜欢美食但完全不吃辣"),
+     * 或者同一件事给两个类型(PROFILE + PREFERENCE)。入库前按"值包含关系 + 类型优先级"
+     * 合并, 只保留信息量最大的一条。
+     */
+    private static List<MemoryExtractionResult> dedupe(List<MemoryExtractionResult> candidates) {
+        if (candidates.size() <= 1) {
+            return candidates;
+        }
+        List<MemoryExtractionResult> kept = new ArrayList<>();
+        for (MemoryExtractionResult candidate : candidates) {
+            String value = normalizeValue(candidate.value());
+            boolean dropNew = false;
+            List<MemoryExtractionResult> survivors = new ArrayList<>();
+            for (MemoryExtractionResult existing : kept) {
+                String existingValue = normalizeValue(existing.value());
+                if (value.equals(existingValue)) {
+                    if (typePriority(candidate.type()) > typePriority(existing.type())) {
+                        // 新的一条类型更"硬", 用新的替换旧的
+                        continue;
+                    }
+                    dropNew = true;
+                    survivors.add(existing);
+                    continue;
+                }
+                if (value.length() > existingValue.length() && value.contains(existingValue)
+                        && existingValue.length() >= 3) {
+                    // 旧的是新的子串, 丢掉旧的
+                    continue;
+                }
+                if (existingValue.length() > value.length() && existingValue.contains(value)
+                        && value.length() >= 3) {
+                    dropNew = true;
+                    survivors.add(existing);
+                    continue;
+                }
+                survivors.add(existing);
+            }
+            kept = survivors;
+            if (!dropNew) {
+                kept.add(candidate);
+            }
+        }
+        return kept;
+    }
+
+    private static String normalizeValue(String value) {
+        return value == null ? "" : value.replaceAll(
+                "[\\s\\p{Punct}，。！？、；：“”‘’（）《》·…]", "");
+    }
+
+    /** 类型优先级: 硬约束/禁令 > 偏好 > 属性 > 经历 */
+    private static int typePriority(MemoryItemType type) {
+        return switch (type) {
+            case CONSTRAINT, VETO -> 5;
+            case PREFERENCE -> 3;
+            case PROFILE -> 2;
+            case EPISODIC -> 1;
+        };
     }
 
     private MemoryExtractionResult convert(JsonNode node) {

@@ -292,7 +292,9 @@ public class MultiAgentManager {
 
     private void remember(String userId, String conversationId, String userInput) {
         try {
-            userMemoryService.extractAndStore(userId, conversationId, userInput);
+            if (!memoryTriggerService.isHybridPipelineEnabled()) {
+                userMemoryService.extractAndStore(userId, conversationId, userInput);
+            }
             memoryTriggerService.onConversationFinished(userId, conversationId, userInput);
         } catch (Exception e) {
             log.warn("[MultiAgent] 保存长期记忆失败: userId={}, conversationId={}, error={}",

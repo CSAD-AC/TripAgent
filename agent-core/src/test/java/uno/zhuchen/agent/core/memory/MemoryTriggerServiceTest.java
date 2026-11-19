@@ -24,7 +24,7 @@ class MemoryTriggerServiceTest {
 
     @BeforeEach
     void setUp() {
-        service = new MemoryTriggerService(ingestService, new ObjectMapper(), true, 6);
+        service = new MemoryTriggerService(ingestService, new ObjectMapper(), true, false, 6);
     }
 
     @Test

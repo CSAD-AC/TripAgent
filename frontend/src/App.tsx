@@ -9,7 +9,7 @@ import { useChat } from './hooks/useChat'
 import { useConversations } from './hooks/useConversations'
 import { Knowledge } from './pages/Knowledge'
 import { MemoryPanel } from './components/MemoryPanel'
-import { Menu, MapPin, GitBranch, Zap, Cpu, Rocket, Users, ArrowLeft, LogOut } from 'lucide-react'
+import { Menu, MapPin, GitBranch, Zap, Cpu, Rocket, Users, ArrowLeft, LogOut, Brain, X } from 'lucide-react'
 import { cn } from './lib/utils'
 import type { ApiMode, ModelInfo } from './types'
 import { LoginPage } from './auth/LoginPage'
@@ -93,6 +93,58 @@ function AuthenticatedApp() {
   /** 已载入消息区的会话 ID：避免重复请求，也用于判断是否需要重新载入 */
   const loadedConversationRef = useRef<string | undefined>(undefined)
 
+  // ── 记忆抽取反馈：抽取是异步的(worker 5 秒一轮), 所以用轮询 diff 的方式提示 ──
+  const [memoryToast, setMemoryToast] = useState<string | null>(null)
+  const knownMemoryIdsRef = useRef<Set<string>>(new Set())
+  const memoryToastTimerRef = useRef<number | null>(null)
+  const memoryPollTimersRef = useRef<number[]>([])
+
+  const fetchMemoryIds = useCallback(async (): Promise<Array<{ id: string; value: string }>> => {
+    try {
+      const res = await apiFetch('/api/memory')
+      if (!res.ok) return []
+      const body = await res.json()
+      const items = body?.data?.data
+      return Array.isArray(items) ? items : []
+    } catch {
+      return []
+    }
+  }, [])
+
+  /** 记住当前已有记忆 id，避免把历史记忆误判成"刚刚新增" */
+  useEffect(() => {
+    void fetchMemoryIds().then((items) => {
+      knownMemoryIdsRef.current = new Set(items.map((m) => m.id))
+    })
+  }, [fetchMemoryIds])
+
+  const checkNewMemories = useCallback(async () => {
+    const items = await fetchMemoryIds()
+    if (items.length === 0) return
+    const fresh = items.filter((m) => !knownMemoryIdsRef.current.has(m.id))
+    if (fresh.length === 0) return
+    fresh.forEach((m) => knownMemoryIdsRef.current.add(m.id))
+    const preview = fresh.slice(0, 3).map((m) => m.value).join('、')
+    setMemoryToast(`已记住 ${fresh.length} 条：${preview}${fresh.length > 3 ? '…' : ''}`)
+    if (memoryToastTimerRef.current) window.clearTimeout(memoryToastTimerRef.current)
+    memoryToastTimerRef.current = window.setTimeout(() => setMemoryToast(null), 8000)
+  }, [fetchMemoryIds])
+
+  /** 一轮对话结束后分几次检查，覆盖 worker 的延迟窗口 */
+  const scheduleMemoryCheck = useCallback(() => {
+    memoryPollTimersRef.current.forEach((id) => window.clearTimeout(id))
+    memoryPollTimersRef.current = [6000, 12000, 20000].map((delay) =>
+      window.setTimeout(() => void checkNewMemories(), delay)
+    )
+  }, [checkNewMemories])
+
+  useEffect(() => {
+    return () => {
+      memoryPollTimersRef.current.forEach((id) => window.clearTimeout(id))
+      if (memoryToastTimerRef.current) window.clearTimeout(memoryToastTimerRef.current)
+    }
+  }, [])
+
   // 把后端下发的 session_init.conversationId 写回 URL hash
   // 新对话创建后刷新列表，使其出现在侧边栏
   const handleSessionInit = useCallback(
@@ -138,6 +190,12 @@ function AuthenticatedApp() {
     void openConversation(conversationId)
   }, [conversationId, isLoading, openConversation])
 
+  /** 一轮结束: 刷新侧栏 + 检查是否有新记忆被抽取出来 */
+  const handleTurnComplete = useCallback(() => {
+    fetchConversations()
+    scheduleMemoryCheck()
+  }, [fetchConversations, scheduleMemoryCheck])
+
   const handleSend = useCallback(
     (content: string) => {
       sendMessage(
@@ -147,10 +205,10 @@ function AuthenticatedApp() {
         selectedModelId || undefined,
         apiMode === 'react' ? superMode : false,
         handleSessionInit,
-        fetchConversations // 流结束后刷新列表, 让新对话/消息数出现在侧边栏
+        handleTurnComplete
       )
     },
-    [apiMode, conversationId, selectedModelId, superMode, handleSessionInit, fetchConversations, sendMessage]
+    [apiMode, conversationId, selectedModelId, superMode, handleSessionInit, handleTurnComplete, sendMessage]
   )
 
   // ── 从侧边栏选择对话 ──
@@ -508,6 +566,35 @@ function AuthenticatedApp() {
           </>
         )}
       </div>
+
+      {/* 记忆抽取反馈: 异步抽取完成后提示新记住了什么 */}
+      {memoryToast && (
+        <div
+          role="status"
+          className="fixed bottom-24 left-1/2 -translate-x-1/2 z-40 flex items-center gap-3 max-w-[92vw] px-4 py-3 rounded-xl bg-charcoal-900 dark:bg-charcoal-700 text-warm-white shadow-lg border border-charcoal-700 dark:border-charcoal-600"
+        >
+          <Brain className="w-4 h-4 flex-shrink-0 text-terracotta-400" />
+          <span className="text-sm truncate">{memoryToast}</span>
+          <button
+            type="button"
+            onClick={() => {
+              setView('memory')
+              setMemoryToast(null)
+            }}
+            className="flex-shrink-0 text-sm font-medium text-terracotta-300 hover:text-terracotta-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-terracotta-400 rounded"
+          >
+            查看
+          </button>
+          <button
+            type="button"
+            onClick={() => setMemoryToast(null)}
+            aria-label="关闭提示"
+            className="flex-shrink-0 p-1 rounded hover:bg-white/10 text-warm-white/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-terracotta-400"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
     </div>
   )
 }

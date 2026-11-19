@@ -25,16 +25,30 @@ public class MemoryTriggerService {
     private final MemoryIngestService ingestService;
     private final ObjectMapper objectMapper;
     private final boolean enabled;
+    private final boolean hybridEnabled;
     private final int minChars;
 
     public MemoryTriggerService(MemoryIngestService ingestService,
                                 ObjectMapper objectMapper,
                                 @Value("${app.memory.ingest-trigger.enabled:true}") boolean enabled,
+                                @Value("${app.memory.hybrid.enabled:false}") boolean hybridEnabled,
                                 @Value("${app.memory.ingest-trigger.min-chars:6}") int minChars) {
         this.ingestService = ingestService;
         this.objectMapper = objectMapper;
         this.enabled = enabled;
+        this.hybridEnabled = hybridEnabled;
         this.minChars = Math.max(2, minChars);
+    }
+
+    /**
+     * 混合记忆链路是否在跑。
+     *
+     * <p>混合链路开着时, 记忆应只由异步事件 worker 写入 memory_item;
+     * 旧的规则链路({@code UserMemoryService.extractAndStore})必须让位,
+     * 否则同一条用户消息会被抽两遍("不吃辣"就会被写成 PROFILE + PREFERENCE 两份)。
+     */
+    public boolean isHybridPipelineEnabled() {
+        return hybridEnabled;
     }
 
     /**
