@@ -19,10 +19,9 @@ import reactor.core.scheduler.Schedulers;
 import uno.zhuchen.agent.config.McpClientProperties;
 import uno.zhuchen.agent.config.ModelRouter;
 import uno.zhuchen.agent.core.memory.ChatMemory;
-import uno.zhuchen.agent.core.memory.MemoryPromptRenderer;
-import uno.zhuchen.agent.core.memory.HybridMemoryPromptRenderer;
-import uno.zhuchen.agent.core.memory.MemoryTriggerService;
-import uno.zhuchen.agent.core.memory.UserMemoryService;
+import uno.zhuchen.agent.core.memory.block.LongTermMemoryContextBuilder;
+import uno.zhuchen.agent.core.memory.block.MemoryKeywordTrigger;
+import uno.zhuchen.agent.core.memory.block.MemoryRawEventService;
 import uno.zhuchen.agent.domain.dto.StreamChunk;
 import uno.zhuchen.workflow.agent.BaseAgent;
 import uno.zhuchen.workflow.state.TripPlanningStateKeys;
@@ -73,10 +72,8 @@ public class GraphStreamRunner {
     private final GraphEventRouter graphEventRouter;
     private final ChatMemory chatMemory;
     private final ModelRouter modelRouter;
-    private final UserMemoryService userMemoryService;
-    private final MemoryPromptRenderer memoryPromptRenderer;
-    private final HybridMemoryPromptRenderer hybridMemoryPromptRenderer;
-    private final MemoryTriggerService memoryTriggerService;
+    private final LongTermMemoryContextBuilder memoryContextBuilder;
+    private final MemoryRawEventService rawEventService;
     /** 指向 mcp-server, 用于 Graph 报告自动沉淀进知识库(graph_report) */
     private final WebClient mcpClient;
 
@@ -85,18 +82,14 @@ public class GraphStreamRunner {
                              ChatMemory chatMemory,
                              ModelRouter modelRouter,
                              McpClientProperties mcp,
-                             UserMemoryService userMemoryService,
-                             MemoryPromptRenderer memoryPromptRenderer,
-                             HybridMemoryPromptRenderer hybridMemoryPromptRenderer,
-                             MemoryTriggerService memoryTriggerService) {
+                             LongTermMemoryContextBuilder memoryContextBuilder,
+                             MemoryRawEventService rawEventService) {
         this.graphBuilder = graphBuilder;
         this.graphEventRouter = graphEventRouter;
         this.chatMemory = chatMemory;
         this.modelRouter = modelRouter;
-        this.userMemoryService = userMemoryService;
-        this.memoryPromptRenderer = memoryPromptRenderer;
-        this.hybridMemoryPromptRenderer = hybridMemoryPromptRenderer;
-        this.memoryTriggerService = memoryTriggerService;
+        this.memoryContextBuilder = memoryContextBuilder;
+        this.rawEventService = rawEventService;
         this.mcpClient = WebClient.builder().baseUrl(mcp.getServerUrl()).build();
     }
 
@@ -168,11 +161,8 @@ public class GraphStreamRunner {
             // 写入 state 供 BaseAgent.apply (同步 NodeAction 入口) 读取并拼到 log 中
             input.put(TripPlanningStateKeys.INPUT_TRACE_ID, traceId);
             try {
-                String memorySection = hybridMemoryPromptRenderer.render("default", userId, null, rawRequest);
-                if (memorySection.isEmpty()) {
-                    memorySection = memoryPromptRenderer.render(userMemoryService.loadSummary(userId));
-                }
-                if (!memorySection.isEmpty()) {
+                String memorySection = memoryContextBuilder.render(userId);
+                if (memorySection != null && !memorySection.isBlank()) {
                     input.put(TripPlanningStateKeys.INPUT_USER_MEMORY, memorySection);
                 }
             } catch (Exception e) {
@@ -223,12 +213,11 @@ public class GraphStreamRunner {
 
     private void remember(String userId, String conversationId, String rawRequest) {
         try {
-            if (!memoryTriggerService.isHybridPipelineEnabled()) {
-                userMemoryService.extractAndStore(userId, conversationId, rawRequest);
+            if (MemoryKeywordTrigger.matches(rawRequest)) {
+                rawEventService.appendKeyword(userId, conversationId, rawRequest);
             }
-            memoryTriggerService.onConversationFinished(userId, conversationId, rawRequest);
         } catch (Exception e) {
-            log.warn("[GraphStreamRunner] 保存长期记忆失败: userId={}, conversationId={}, error={}",
+            log.warn("[GraphStreamRunner] 长期记忆入队失败: userId={}, conversationId={}, error={}",
                     userId, conversationId, e.getMessage());
         }
     }

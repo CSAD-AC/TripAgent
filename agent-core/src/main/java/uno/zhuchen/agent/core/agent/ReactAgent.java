@@ -17,11 +17,9 @@ import uno.zhuchen.agent.domain.dto.ChatDTO;
 import uno.zhuchen.agent.domain.dto.StreamChunk;
 import uno.zhuchen.agent.core.llm.ChatModel;
 import uno.zhuchen.agent.core.memory.ChatMemory;
-import uno.zhuchen.agent.core.memory.MemoryPromptRenderer;
-import uno.zhuchen.agent.core.memory.HybridMemoryPromptRenderer;
-import uno.zhuchen.agent.core.memory.MemoryTriggerService;
-import uno.zhuchen.agent.core.memory.MemorySummary;
-import uno.zhuchen.agent.core.memory.UserMemoryService;
+import uno.zhuchen.agent.core.memory.block.LongTermMemoryContextBuilder;
+import uno.zhuchen.agent.core.memory.block.MemoryKeywordTrigger;
+import uno.zhuchen.agent.core.memory.block.MemoryRawEventService;
 import uno.zhuchen.agent.core.tool.AskUserTool;
 import uno.zhuchen.agent.core.tool.ToolRegistry;
 
@@ -75,76 +73,48 @@ public class ReactAgent {
     private final ChatMemory chatMemory;
     private final AgentConfig config;
     private final ToolRegistry toolRegistry;
-    private final UserMemoryService userMemoryService;
-    private final MemoryPromptRenderer memoryPromptRenderer;
-    private final HybridMemoryPromptRenderer hybridMemoryPromptRenderer;
-    private final MemoryTriggerService memoryTriggerService;
+    private final MemoryRawEventService rawEventService;
+    private final LongTermMemoryContextBuilder memoryContextBuilder;
 
     /** 每会话并发控制，拒绝同一 conversationId 的并行请求 */
     private final ConcurrentHashMap<String, AtomicBoolean> conversationLocks = new ConcurrentHashMap<>();
 
     public ReactAgent(ModelRouter modelRouter, ChatMemory chatMemory, AgentConfig config,
-                      ToolRegistry toolRegistry, UserMemoryService userMemoryService,
-                      MemoryPromptRenderer memoryPromptRenderer,
-                      HybridMemoryPromptRenderer hybridMemoryPromptRenderer,
-                      MemoryTriggerService memoryTriggerService) {
+                      ToolRegistry toolRegistry,
+                      MemoryRawEventService rawEventService,
+                      LongTermMemoryContextBuilder memoryContextBuilder) {
         this.modelRouter = modelRouter;
         this.chatMemory = chatMemory;
         this.config = config;
         this.toolRegistry = toolRegistry;
-        this.userMemoryService = userMemoryService;
-        this.memoryPromptRenderer = memoryPromptRenderer;
-        this.hybridMemoryPromptRenderer = hybridMemoryPromptRenderer;
-        this.memoryTriggerService = memoryTriggerService;
+        this.rawEventService = rawEventService;
+        this.memoryContextBuilder = memoryContextBuilder;
     }
 
-    /**
-     * 组装系统提示词。
-     *
-     * <p>只返回基础提示词。记忆不再拼进 system: 当前模型网关会丢弃 system 角色消息
-     * (见 {@link #memoryContextBlock}), 记忆统一走 user 角色的背景上下文注入。
-     */
     private String systemPromptFor(String userId, String userInput) {
         return config.getSystemPrompt();
     }
 
-    /**
-     * 组装跨会话记忆上下文块(以 user 角色注入)。
-     *
-     * <p>必须把本轮用户输入作为 query 传给混合记忆渲染器, 否则经历记忆的语义召回
-     * 永远拿不到检索词(earlier 版本这里传 null, 向量召回形同虚设)。
-     *
-     * @return 记忆块文本; 无可用记忆时返回 null
-     */
-    private String memoryContextBlock(String userId, String userInput) {
-        String section = hybridMemoryPromptRenderer.render("default", userId, null, userInput);
-        if (section == null || section.isBlank()) {
-            section = memoryPromptRenderer.render(memorySummary(userId));
-        }
-        // 便于线上排查"记忆是否真的进了请求": 只打标志位与长度, 不打印隐私内容
-        log.debug("[memory-inject] userId={}, 记忆块长度={}, 命中={}",
-                userId, section == null ? 0 : section.length(), section != null && !section.isBlank());
-        return section == null || section.isBlank() ? null : section;
-    }
-
-    private MemorySummary memorySummary(String userId) {
+    private void injectLongTermMemory(AgentState state, String userId) {
         try {
-            return userMemoryService.loadSummary(userId);
+            String section = memoryContextBuilder.render(userId);
+            if (section != null && !section.isBlank()) {
+                state.setSystemContext(section);
+            }
+            log.debug("[memory-inject] userId={}, systemContextChars={}",
+                    userId, section == null ? 0 : section.length());
         } catch (Exception e) {
-            log.warn("加载长期记忆失败: userId={}, error={}", userId, e.getMessage());
-            return new MemorySummary(java.util.List.of());
+            log.warn("[memory-inject] 加载长期记忆失败: userId={}, error={}", userId, e.getMessage());
         }
     }
 
     private void remember(String userId, String conversationId, String userInput) {
         try {
-            // 混合记忆链路开启时, 记忆只由异步 worker 抽取, 避免与旧规则链路双写同一张表
-            if (!memoryTriggerService.isHybridPipelineEnabled()) {
-                userMemoryService.extractAndStore(userId, conversationId, userInput);
+            if (MemoryKeywordTrigger.matches(userInput)) {
+                rawEventService.appendKeyword(userId, conversationId, userInput);
             }
-            memoryTriggerService.onConversationFinished(userId, conversationId, userInput);
         } catch (Exception e) {
-            log.warn("保存长期记忆失败: userId={}, conversationId={}, error={}",
+            log.warn("长期记忆入队失败: userId={}, conversationId={}, error={}",
                     userId, conversationId, e.getMessage());
         }
     }
@@ -171,7 +141,7 @@ public class ReactAgent {
             // 1. 初始化状态
             AgentState state = new AgentState(userId, conversationId,
                     systemPromptFor(userId, userInput), userInput);
-            state.setContextBlock(memoryContextBlock(userId, userInput));
+            injectLongTermMemory(state, userId);
             chatMemory.claim(userId, state.getConversationId(), "react", modelId);
             log.debug("[traceId={}] Agent[{}] 开始 ReAct 循环, model={}, maxIterations={}, superMode={}",
                     traceId, state.getConversationId(), modelId != null ? modelId : "default",
@@ -365,7 +335,7 @@ public class ReactAgent {
 
         AgentState state = new AgentState(userId, conversationId,
                 systemPromptFor(userId, userInput), userInput);
-        state.setContextBlock(memoryContextBlock(userId, userInput));
+        injectLongTermMemory(state, userId);
         chatMemory.claim(userId, state.getConversationId(), "react", null);
 
         // 加载历史记忆（非阻塞操作）

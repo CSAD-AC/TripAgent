@@ -233,56 +233,42 @@ npm run dev
 - conversationId 双向绑定到 URL hash：刷新页面后自动恢复当前会话与历史消息
 - 会话 ID 由后端权威生成（UUID），续聊必须传合法 UUID，否则返回 400
 
-### 长期记忆（偏好记忆）
+### 长期记忆
 
-系统会在聊天后自动抽取少量明确、低风险的用户偏好，并在后续请求中作为建议注入模型提示词；用户当前消息中的显式要求始终优先于长期记忆。
+长期记忆采用三层文本模型，并在 ReAct、Graph、Multi-Agent 三种模式中合并进同一条 system 提示词：
 
-- 记录类别：偏好的目的地类型（美食、自然、文化、历史、购物、户外、亲子）、常用出发城市、常用预算、常用人数、不吃辣。
-- 不记录：身份、地址、健康、财务等敏感信息；不根据单次模糊表述做隐式推断。
-- 同一用户同一 key 重复出现时覆盖旧值；用户删除后再次表达同一偏好会重新写入。
-- ReAct、Graph、Multi-Agent 三种模式都会读取记忆，且只按认证后的 `userId` 访问。
-- 前端侧边栏“偏好记忆”可以查看、纠正、查看修订历史、单条删除和清空全部，也可以直接录入“不要再记住/不要再提”规则；删除是软删除，列表和提示词只包含 active 记忆。
+1. **用户固定提示词**：由用户独占维护，worker 永远不修改。适合放硬性规则、称呼和长期稳定偏好。
+2. **自动用户信息块**：最多 600 字，记录稳定的全局事实。用户可以直接编辑，后续整理会在容量允许时尽量保留，但不承诺永久不重建。
+3. **自动事件记忆块**：最多 1000 字，记录已发生或明确计划的长期事件。用户同样可以编辑和回滚。
 
-记忆接口：
+写入采用两阶段模型调用：先由 `MemoryCandidateExtractor` 从原始消息中抽取全局稳定事实，丢弃本次行程、临时状态和敏感信息；再由 `MemoryBlockUpdater` 基于完整旧记忆和候选事实重写自动块，冲突时以最新候选为准。普通对话不会触发长期记忆写入，只有显式关键词（如“记住”“记一下”“请记住”）和每日增量任务会入队。
 
-- `GET /api/memory`
-- `DELETE /api/memory/{id}`
-- `DELETE /api/memory`
+幂等由 `memory_raw_event.event_key` 保证：显式事件使用用户、会话、来源和规范化文本计算 SHA-256，每日事件使用 `message:<id>`；唯一键为 `(user_id, event_key)`，重复入队由 `INSERT IGNORE` 跳过。事件状态为 `PENDING / PROCESSING / DONE / FAILED`，失败最多重试 3 次。
 
-混合式长期记忆阶段一/二基础设施已落地：新增通用 `memory_item`、抽取事件表和修订审计表；旧的偏好记忆读取与注入路径保持不变，新表先作为兼容写入与后续混合召回的基础设施。真实向量写入默认关闭，用户记忆向量 collection 与知识库 RAG 分离配置。
+V15 为每个事件记录抽取候选、最终结果和真实状态：`UPDATED / NO_CHANGE / FAILED`。前端会先提示“正在整理”，处理完成后再根据真实结果提示成功、无变化或失败，不再把 async worker 的 `DONE` 误当成一定发生了更新。
 
-阶段三/四已加入结构化混合召回、veto 抑制、预算渲染、用户纠错/审计 API 与可配置的定时整理。`app.memory.hybrid.enabled=true` 会启用新的混合记忆提示词链路。
+开发环境不兼容旧记忆数据。V14 迁移会删除旧的 `user_memory`、`memory_item`、`memory_ingest_event`、`memory_revision`，并建立 `memory_user_prompt`、`memory_block`、`memory_raw_event`、`memory_block_revision`、`memory_consolidation_watermark`；V15 增加事件结果审计列。
 
-语义召回已接线但默认关闭：MCP Server 侧维护独立 `user_memory_episodic_v1` collection，并提供内部接口 `POST /api/memory-vectors/upsert`、`POST /api/memory-vectors/search`、`DELETE /api/memory-vectors/{id}`、`GET /api/memory-vectors/status`；agent-core 侧通过 `RemoteMemoryVectorService` 访问。两侧同时打开（`app.memory.hybrid.vector-enabled=true` + `app.memory-vector.enabled=true`）时，经历召回按语义分排序、重要度/置信度/新鲜度微调，远程失败自动回退词面打分。向量检索的服务端过滤强制带 `tenant_id` + `user_id` + `status='active'`，缺失用户维度直接拒绝，避免跨用户召回。
+长期记忆接口：
 
-记忆触发已接入真实聊天的完成路径：ReAct、Graph、Multi-Agent 在回答落库后会调用统一触发服务。触发采用分层策略：先做敏感信息与短消息过滤，再用显式偏好正则（如“记住/我喜欢/我来自/预算/不吃”）或较长旅行上下文决定是否入队；入队事件由后台 worker 抽取候选记忆。
+- `GET /api/memory/prompt`
+- `PUT /api/memory/prompt`
+- `GET /api/memory/prompt/revisions`
+- `POST /api/memory/prompt/rollback/{revisionId}`
+- `GET /api/memory/blocks`
+- `GET /api/memory/events/latest?conversationId=...`
+- `PUT /api/memory/blocks/{type}`
+- `GET /api/memory/blocks/{type}/revisions`
+- `POST /api/memory/blocks/{type}/rollback/{revisionId}`
 
-抽取器有两种实现，由 `app.memory.extraction.llm-enabled` 选择：默认关闭时为纯规则抽取（零成本、零延迟）；打开后使用 LLM 深度抽取，输出固定 JSON（类型只能是 `PROFILE/PREFERENCE/CONSTRAINT/VETO/EPISODIC`），JSON 解析失败、模型报错或返回空候选时自动回退规则抽取，结果写 `extractor_version`（`rule-v1` / `llm-v1`）便于事后归因。EPISODIC 记忆入库后由 `MemoryVectorIndexer` 异步写入向量库并把 `embedding_status` 从 `PENDING` 推进到 `INDEXED`/`FAILED`。
+主要配置：
 
-当前与长期记忆相关的配置：
-
-- `app.memory.long-term.max-items` / `max-chars`：旧偏好记忆注入上限。
-- `app.memory.hybrid.enabled`：是否启用混合记忆注入，默认 `false`。
-- `app.memory.hybrid.max-chars` / `max-items`：混合提示词预算，默认 1000 字符、8 条。
-- `app.memory.hybrid.recall-top-k` / `final-top-k` / `min-score`：候选召回与过滤参数。
-- `app.memory.hybrid.vector-enabled`：语义召回开关，默认 `false`；需同时打开 MCP Server 的 `app.memory-vector.enabled`。
-- `app.memory.extraction.llm-enabled` / `model` / `max-candidates` / `max-value-chars`：LLM 深度抽取开关、模型、条数与值长度上限，默认关闭。
-- `app.memory.consolidation.enabled`：定时整理开关，默认 `false`。
-- `app.memory.retention-days`：过期记忆保留窗口，默认 365 天。
-- `app.memory.ingest-trigger.enabled`：聊天完成后的记忆入队触发开关，默认 `true`。
-- `app.memory.ingest-trigger.min-chars`：触发入队的最小用户消息长度，默认 6。
-- `app.memory.ingest-trigger.process-interval-ms` / `initial-delay-ms` / `batch-size`：事件消费 worker 的轮询间隔、首次延迟与单轮批量，默认 5000 / 15000 / 20。
-
-> 注意：`app.memory.hybrid` / `extraction` / `ingest-trigger` / `consolidation` / `retention-days` 必须直接挂在 `app.memory` 下；缩进到 `app.memory.long-term` 下会静默失效（代码读不到，只走默认值）。
-
-治理接口：
-
-- `PATCH /api/memory/{id}`：纠正一条记忆。
-- `POST /api/memory/veto`：创建“不要再记住/提及”规则。
-- `GET /api/memory/revisions/{id}`：查看单条记忆的修订历史。
-- `GET /api/admin/memory/health`：查看记忆与事件健康统计。
-- `POST /api/admin/memory/process?limit=20`：处理待抽取事件。
-- `POST /api/admin/memory/reindex?userId=...`：按用户重建记忆向量索引，返回重建条数。
+- `app.memory.blocks.enabled`：是否启用新长期记忆 worker，默认 `true`。
+- `app.memory.blocks.consolidate-interval-ms` / `batch-size`：待处理事件轮询间隔与批量。
+- `app.memory.blocks.daily-cron` / `daily-timezone` / `daily-min-new-messages`：每日增量整理计划与最小新增消息数。
+- `app.memory.blocks.user-prompt-max-chars` / `profile-max-chars` / `event-max-chars`：三层文本上限。
+- `app.memory.blocks.max-attempts`：事件最大重试次数。
+- `app.memory.ingest-trigger.enabled` / `app.memory.hybrid.enabled`：旧链路已默认关闭。
 
 ## 接口说明
 

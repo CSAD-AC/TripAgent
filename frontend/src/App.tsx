@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { Sidebar } from './components/Sidebar'
 import { ChatMessage } from './components/ChatMessage'
 import { ChatInput } from './components/ChatInput'
@@ -9,12 +9,13 @@ import { useChat } from './hooks/useChat'
 import { useConversations } from './hooks/useConversations'
 import { Knowledge } from './pages/Knowledge'
 import { MemoryPanel } from './components/MemoryPanel'
-import { Menu, MapPin, GitBranch, Zap, Cpu, Rocket, Users, ArrowLeft, LogOut, Brain, X } from 'lucide-react'
+import { Menu, MapPin, GitBranch, Zap, Cpu, Rocket, Users, ArrowLeft, LogOut } from 'lucide-react'
 import { cn } from './lib/utils'
-import type { ApiMode, ModelInfo } from './types'
+import type { ApiMode, MemoryEventStatus, ModelInfo } from './types'
 import { LoginPage } from './auth/LoginPage'
 import { useAuth } from './auth/AuthProvider'
 import { apiFetch } from './lib/apiClient'
+import { attachMemoryEvents, isMemoryCommand } from './lib/memory'
 
 export default function App() {
   const { user, loading } = useAuth()
@@ -93,55 +94,97 @@ function AuthenticatedApp() {
   /** 已载入消息区的会话 ID：避免重复请求，也用于判断是否需要重新载入 */
   const loadedConversationRef = useRef<string | undefined>(undefined)
 
-  // ── 记忆抽取反馈：抽取是异步的(worker 5 秒一轮), 所以用轮询 diff 的方式提示 ──
-  const [memoryToast, setMemoryToast] = useState<string | null>(null)
-  const knownMemoryIdsRef = useRef<Set<string>>(new Set())
-  const memoryToastTimerRef = useRef<number | null>(null)
+  // ── 长期记忆变更：随会话持久化，作为消息时间线的一部分回放 ──
+  const [memoryEvents, setMemoryEvents] = useState<MemoryEventStatus[]>([])
+  const [pendingMemoryEvent, setPendingMemoryEvent] = useState<MemoryEventStatus | null>(null)
+  const activeConversationIdRef = useRef<string | undefined>(undefined)
+  const memoryResolvedRef = useRef(false)
+  const memoryEventIdsAtSendRef = useRef<Set<string>>(new Set())
+  const memoryLoadTokenRef = useRef(0)
   const memoryPollTimersRef = useRef<number[]>([])
 
-  const fetchMemoryIds = useCallback(async (): Promise<Array<{ id: string; value: string }>> => {
+  const fetchConversationMemoryEvents = useCallback(async (
+    conversationId: string
+  ): Promise<MemoryEventStatus[]> => {
     try {
-      const res = await apiFetch('/api/memory')
+      const res = await apiFetch(
+        `/api/memory/events?conversationId=${encodeURIComponent(conversationId)}&limit=100`
+      )
       if (!res.ok) return []
       const body = await res.json()
-      const items = body?.data?.data
+      const items = body?.data
       return Array.isArray(items) ? items : []
     } catch {
       return []
     }
   }, [])
 
-  /** 记住当前已有记忆 id，避免把历史记忆误判成"刚刚新增" */
-  useEffect(() => {
-    void fetchMemoryIds().then((items) => {
-      knownMemoryIdsRef.current = new Set(items.map((m) => m.id))
-    })
-  }, [fetchMemoryIds])
+  const loadConversationMemoryEvents = useCallback(async (conversationId: string) => {
+    const token = ++memoryLoadTokenRef.current
+    const events = await fetchConversationMemoryEvents(conversationId)
+    if (
+      memoryLoadTokenRef.current === token
+      && activeConversationIdRef.current === conversationId
+    ) {
+      setMemoryEvents(events)
+    }
+  }, [fetchConversationMemoryEvents])
 
-  const checkNewMemories = useCallback(async () => {
-    const items = await fetchMemoryIds()
-    if (items.length === 0) return
-    const fresh = items.filter((m) => !knownMemoryIdsRef.current.has(m.id))
-    if (fresh.length === 0) return
-    fresh.forEach((m) => knownMemoryIdsRef.current.add(m.id))
-    const preview = fresh.slice(0, 3).map((m) => m.value).join('、')
-    setMemoryToast(`已记住 ${fresh.length} 条：${preview}${fresh.length > 3 ? '…' : ''}`)
-    if (memoryToastTimerRef.current) window.clearTimeout(memoryToastTimerRef.current)
-    memoryToastTimerRef.current = window.setTimeout(() => setMemoryToast(null), 8000)
-  }, [fetchMemoryIds])
+  const checkMemoryChanges = useCallback(async (conversationId?: string) => {
+    if (!conversationId || memoryResolvedRef.current) return memoryResolvedRef.current
+    const events = await fetchConversationMemoryEvents(conversationId)
+    if (activeConversationIdRef.current !== conversationId) return false
+
+    if (events.length > 0) {
+      setMemoryEvents(events)
+    }
+    const newEvent = events.find(
+      (event) => !memoryEventIdsAtSendRef.current.has(event.id)
+    )
+    if (newEvent) {
+      setPendingMemoryEvent(null)
+      if (newEvent.eventStatus === 'DONE' || newEvent.eventStatus === 'FAILED') {
+        memoryResolvedRef.current = true
+        return true
+      }
+      return false
+    }
+    return false
+  }, [fetchConversationMemoryEvents])
 
   /** 一轮对话结束后分几次检查，覆盖 worker 的延迟窗口 */
-  const scheduleMemoryCheck = useCallback(() => {
+  const scheduleMemoryCheck = useCallback((conversationId?: string) => {
     memoryPollTimersRef.current.forEach((id) => window.clearTimeout(id))
-    memoryPollTimersRef.current = [6000, 12000, 20000].map((delay) =>
-      window.setTimeout(() => void checkNewMemories(), delay)
+    memoryPollTimersRef.current = [2500, 6000, 10000, 16000, 25000].map((delay) =>
+      window.setTimeout(() => {
+        void checkMemoryChanges(conversationId)
+      }, delay)
     )
-  }, [checkNewMemories])
+    memoryPollTimersRef.current.push(
+      window.setTimeout(async () => {
+        const handled = await checkMemoryChanges(conversationId)
+        if (!handled && !memoryResolvedRef.current) {
+          memoryResolvedRef.current = true
+          setPendingMemoryEvent((current) => current
+            ? {
+                ...current,
+                eventStatus: 'DONE',
+                resultStatus: 'NO_CHANGE',
+                resultJson: JSON.stringify({
+                  changed: false,
+                  reason: 'duplicate_or_not_triggered',
+                }),
+                processedAt: new Date().toISOString(),
+              }
+            : null)
+        }
+      }, 35000)
+    )
+  }, [checkMemoryChanges])
 
   useEffect(() => {
     return () => {
       memoryPollTimersRef.current.forEach((id) => window.clearTimeout(id))
-      if (memoryToastTimerRef.current) window.clearTimeout(memoryToastTimerRef.current)
     }
   }, [])
 
@@ -149,15 +192,17 @@ function AuthenticatedApp() {
   // 新对话创建后刷新列表，使其出现在侧边栏
   const handleSessionInit = useCallback(
     (id: string) => {
+      activeConversationIdRef.current = id
       // 本轮消息已由流式渲染写进消息区，标记为"已载入"，避免流结束后再回库覆盖
       loadedConversationRef.current = id
+      void loadConversationMemoryEvents(id)
       if (id !== conversationId) {
         setConversationId(id)
         // 新 conversationId 说明是新创建的对话，刷新列表使其出现在侧边栏
         fetchConversations()
       }
     },
-    [conversationId, setConversationId, fetchConversations]
+    [conversationId, setConversationId, fetchConversations, loadConversationMemoryEvents]
   )
 
   /**
@@ -167,12 +212,26 @@ function AuthenticatedApp() {
   const openConversation = useCallback(
     async (id: string) => {
       setView('chat')
-      if (id === loadedConversationRef.current) return
+      if (id === loadedConversationRef.current) {
+        activeConversationIdRef.current = id
+        if (memoryEvents.length === 0) void loadConversationMemoryEvents(id)
+        return
+      }
+      activeConversationIdRef.current = id
+      setPendingMemoryEvent(null)
+      setMemoryEvents([])
+      memoryResolvedRef.current = false
       clearMessages()
       const ok = await loadConversation(id)
       loadedConversationRef.current = ok ? id : undefined
+      if (ok) void loadConversationMemoryEvents(id)
     },
-    [clearMessages, loadConversation]
+    [
+      clearMessages,
+      loadConversation,
+      loadConversationMemoryEvents,
+      memoryEvents.length,
+    ]
   )
 
   /**
@@ -182,6 +241,9 @@ function AuthenticatedApp() {
   useEffect(() => {
     if (!conversationId) {
       loadedConversationRef.current = undefined
+      activeConversationIdRef.current = undefined
+      setMemoryEvents([])
+      setPendingMemoryEvent(null)
       return
     }
     // 流式生成中(含新会话的 session_init)不覆盖正在渲染的消息
@@ -193,22 +255,72 @@ function AuthenticatedApp() {
   /** 一轮结束: 刷新侧栏 + 检查是否有新记忆被抽取出来 */
   const handleTurnComplete = useCallback(() => {
     fetchConversations()
-    scheduleMemoryCheck()
+    scheduleMemoryCheck(activeConversationIdRef.current)
   }, [fetchConversations, scheduleMemoryCheck])
 
   const handleSend = useCallback(
     (content: string) => {
-      sendMessage(
-        content,
-        apiMode,
-        conversationId,
-        selectedModelId || undefined,
-        apiMode === 'react' ? superMode : false,
-        handleSessionInit,
-        handleTurnComplete
-      )
+      void (async () => {
+        memoryResolvedRef.current = false
+        memoryEventIdsAtSendRef.current = new Set(memoryEvents.map((event) => event.id))
+        if (isMemoryCommand(content)) {
+          // The optimistic record must sort after the user bubble created by
+          // sendMessage on the same event-loop turn.
+          const createdAt = new Date(Date.now() + 1000).toISOString()
+          setPendingMemoryEvent({
+            id: `pending-${Date.now()}`,
+            conversationId,
+            source: 'KEYWORD',
+            eventStatus: 'PENDING',
+            resultStatus: null,
+            content,
+            createdAt,
+            processedAt: null,
+          })
+        } else {
+          setPendingMemoryEvent(null)
+        }
+        sendMessage(
+          content,
+          apiMode,
+          conversationId,
+          selectedModelId || undefined,
+          apiMode === 'react' ? superMode : false,
+          handleSessionInit,
+          handleTurnComplete
+        )
+      })()
     },
-    [apiMode, conversationId, selectedModelId, superMode, handleSessionInit, handleTurnComplete, sendMessage]
+    [
+      apiMode,
+      conversationId,
+      handleSessionInit,
+      handleTurnComplete,
+      memoryEvents,
+      selectedModelId,
+      sendMessage,
+      superMode,
+    ]
+  )
+
+  const openMemoryView = useCallback(() => {
+    setView('memory')
+    setSidebarOpen(false)
+  }, [])
+
+  const timelineMessages = useMemo(() => {
+    const timelineEvents = pendingMemoryEvent
+      ? [
+          ...memoryEvents.filter((event) => event.id !== pendingMemoryEvent.id),
+          pendingMemoryEvent,
+        ]
+      : memoryEvents
+    return attachMemoryEvents(messages, timelineEvents)
+  }, [memoryEvents, messages, pendingMemoryEvent])
+
+  const lastAssistantId = useMemo(
+    () => [...messages].reverse().find((message) => message.role === 'assistant')?.id,
+    [messages]
   )
 
   // ── 从侧边栏选择对话 ──
@@ -238,6 +350,10 @@ function AuthenticatedApp() {
     setView('chat')
     newConversation()
     loadedConversationRef.current = undefined
+    activeConversationIdRef.current = undefined
+    setMemoryEvents([])
+    setPendingMemoryEvent(null)
+    memoryResolvedRef.current = false
     clearMessages()
     setSidebarOpen(false)
   }, [newConversation, clearMessages])
@@ -248,6 +364,9 @@ function AuthenticatedApp() {
       await deleteConversation(id)
       if (id === conversationId) {
         loadedConversationRef.current = undefined
+        activeConversationIdRef.current = undefined
+        setMemoryEvents([])
+        setPendingMemoryEvent(null)
         clearMessages()
       }
     },
@@ -279,7 +398,7 @@ function AuthenticatedApp() {
     messagesEndRef.current?.scrollIntoView({
       behavior: prefersReduced ? 'auto' : 'smooth',
     })
-  }, [messages, streamContent, pendingClarification])
+  }, [messages, streamContent, pendingClarification, memoryEvents, pendingMemoryEvent])
 
   return (
     <div className="h-screen flex overflow-hidden bg-warm-white dark:bg-[#1a1a1a]">
@@ -327,7 +446,7 @@ function AuthenticatedApp() {
           {(view === 'knowledge' || view === 'memory') && (
             <button
               onClick={toggleView}
-              className="ml-auto flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium text-warm-white bg-charcoal-900 dark:bg-charcoal-700 hover:bg-charcoal-700 dark:hover:bg-charcoal-600 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-terracotta-500"
+              className="ml-auto flex flex-shrink-0 items-center gap-1.5 whitespace-nowrap px-2.5 py-1.5 rounded-md text-xs font-medium text-warm-white bg-charcoal-900 dark:bg-charcoal-700 hover:bg-charcoal-700 dark:hover:bg-charcoal-600 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-terracotta-500"
             >
               <ArrowLeft className="w-3.5 h-3.5" />
               返回聊天
@@ -399,7 +518,7 @@ function AuthenticatedApp() {
           {/* 超能模式开关(仅 ReAct 模式显示, 默认关闭): 工具调用与迭代轮次无限制 */}
           {apiMode === 'react' && (
             <div
-              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-warm-white dark:bg-charcoal-800 border border-warm-white-200 dark:border-charcoal-700"
+              className="hidden md:flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-warm-white dark:bg-charcoal-800 border border-warm-white-200 dark:border-charcoal-700"
               title="超能模式: 工具调用与迭代轮次无限制(默认关闭)"
             >
               <Rocket className="w-3.5 h-3.5 text-terracotta-500 flex-shrink-0" />
@@ -433,7 +552,7 @@ function AuthenticatedApp() {
           {/* 模型选择器(列表来自 GET /api/models, 默认选中第一项 = deepseek) */}
           {models.length > 0 && (
             <div
-              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-warm-white dark:bg-charcoal-800 border border-warm-white-200 dark:border-charcoal-700"
+              className="hidden lg:flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-warm-white dark:bg-charcoal-800 border border-warm-white-200 dark:border-charcoal-700"
               title="选择 LLM 模型"
             >
               <Cpu className="w-3.5 h-3.5 text-terracotta-500 flex-shrink-0" />
@@ -528,9 +647,8 @@ function AuthenticatedApp() {
             )}
 
             {/* 消息列表 */}
-            {messages.map((msg, idx) => {
-              const isLastAssistant =
-                idx === messages.length - 1 && msg.role === 'assistant'
+            {timelineMessages.map((msg) => {
+              const isLastAssistant = msg.id === lastAssistantId
               return (
                 <ChatMessage
                   key={msg.id}
@@ -540,6 +658,7 @@ function AuthenticatedApp() {
                   streamIterations={isLastAssistant ? streamIterations : undefined}
                   conversationId={conversationId}
                   showSettle={isLastAssistant && !isLoading}
+                  onOpenMemory={openMemoryView}
                 />
               )
             })}
@@ -567,34 +686,6 @@ function AuthenticatedApp() {
         )}
       </div>
 
-      {/* 记忆抽取反馈: 异步抽取完成后提示新记住了什么 */}
-      {memoryToast && (
-        <div
-          role="status"
-          className="fixed bottom-24 left-1/2 -translate-x-1/2 z-40 flex items-center gap-3 max-w-[92vw] px-4 py-3 rounded-xl bg-charcoal-900 dark:bg-charcoal-700 text-warm-white shadow-lg border border-charcoal-700 dark:border-charcoal-600"
-        >
-          <Brain className="w-4 h-4 flex-shrink-0 text-terracotta-400" />
-          <span className="text-sm truncate">{memoryToast}</span>
-          <button
-            type="button"
-            onClick={() => {
-              setView('memory')
-              setMemoryToast(null)
-            }}
-            className="flex-shrink-0 text-sm font-medium text-terracotta-300 hover:text-terracotta-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-terracotta-400 rounded"
-          >
-            查看
-          </button>
-          <button
-            type="button"
-            onClick={() => setMemoryToast(null)}
-            aria-label="关闭提示"
-            className="flex-shrink-0 p-1 rounded hover:bg-white/10 text-warm-white/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-terracotta-400"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-      )}
     </div>
   )
 }

@@ -227,8 +227,9 @@ public class ManagerAgent extends BaseAgent {
         String memorySection = state.value(TripPlanningStateKeys.INPUT_USER_MEMORY)
                 .map(Object::toString)
                 .orElse("");
+        String managerSystemPrompt = SYSTEM_PROMPT_EXTRACT;
         if (!memorySection.isBlank()) {
-            rawRequest = rawRequest + "\n\n" + memorySection;
+            managerSystemPrompt = managerSystemPrompt + "\n\n" + memorySection;
         }
 
         String conversationId = state.value(TripPlanningStateKeys.INPUT_CONVERSATION_ID)
@@ -241,7 +242,7 @@ public class ManagerAgent extends BaseAgent {
         // 1. LLM 自主驱动提取+反问循环(最多 LLM_MAX_MANAGER_FIRST_ROUNDS 轮工具调用)
         String extractJson = callLLMWithTools(
                 traceId,
-                SYSTEM_PROMPT_EXTRACT,
+                managerSystemPrompt,
                 rawRequest + "\n(conversationId=" + conversationId + ")",
                 new ToolCallback[]{askUserToolCallback},
                 LLM_MAX_MANAGER_FIRST_ROUNDS

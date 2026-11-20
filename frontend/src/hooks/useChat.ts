@@ -11,6 +11,7 @@ import type {
   ApiResult,
 } from '../types'
 import { apiFetch } from '../lib/apiClient'
+import { isPureMemoryCommand } from '../lib/memory'
 
 export function useChat() {
   const [messages, setMessages] = useState<Message[]>([])
@@ -429,11 +430,13 @@ export function useChat() {
       onSessionInit?: (id: string) => void,
       onComplete?: () => void
     ) => {
+      const memoryCommand = isPureMemoryCommand(content)
       const userMsg: Message = {
         id: `user-${Date.now()}`,
         role: 'user',
         content,
         timestamp: Date.now(),
+        memoryCommand,
       }
       const assistantId = `assistant-${Date.now()}`
       const assistantMsg: Message = {
@@ -443,6 +446,7 @@ export function useChat() {
         type: 'thinking' as const,
         timestamp: Date.now(),
         apiMode,
+        memoryCommand,
       }
 
       setMessages((prev) => [...prev, userMsg, assistantMsg])
@@ -631,6 +635,7 @@ export function useChat() {
       // 对后端消息流进行分组：user / assistant → (tool)*, 把 tool 消息合并到前一条 assistant 的 toolCalls 中
       const grouped: Message[] = []
       let pendingAssistant: Message | null = null
+      let lastUserWasMemoryCommand = false
 
       /** flush pendingAssistant 到 grouped, 如有 toolCalls 则构建 iterationData */
       function flushAssistant(msg: Message | null) {
@@ -650,6 +655,7 @@ export function useChat() {
           // 先 flush 上一个 pending 的 assistant
           flushAssistant(pendingAssistant)
           pendingAssistant = null
+          lastUserWasMemoryCommand = isPureMemoryCommand(m.content || '')
           grouped.push({
             id: `hist-${detail.id}-${m.sequenceNum ?? Date.now()}`,
             role: 'user',
@@ -657,6 +663,7 @@ export function useChat() {
             type: 'final' as const,
             timestamp: m.createdAt ? new Date(m.createdAt).getTime() : Date.now(),
             apiMode: (detail.mode as ApiMode) || 'react',
+            memoryCommand: lastUserWasMemoryCommand,
           })
         } else if (m.role === 'assistant') {
           // flush previous assistant
@@ -684,6 +691,7 @@ export function useChat() {
             type: 'final' as const,
             timestamp: m.createdAt ? new Date(m.createdAt).getTime() : Date.now(),
             apiMode: (detail.mode as ApiMode) || 'react',
+            memoryCommand: lastUserWasMemoryCommand,
             toolCalls,
           }
         } else if (m.role === 'tool' && pendingAssistant) {

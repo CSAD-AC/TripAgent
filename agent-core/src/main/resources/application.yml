@@ -88,6 +88,17 @@ app:
   # LLM 摘要写入 conversation.summary 并在加载时前缀注入. 0 = 关闭(默认, 不压缩)
   memory:
     window-size: 0
+    blocks:
+      enabled: ${MEMORY_BLOCKS_ENABLED:true}
+      consolidate-interval-ms: 10000
+      batch-size: 50
+      daily-cron: "0 0 2 * * *"
+      daily-timezone: "Asia/Shanghai"
+      daily-min-new-messages: 5
+      user-prompt-max-chars: 600
+      profile-max-chars: 600
+      event-max-chars: 1000
+      max-attempts: 3
     # 旧偏好记忆(旧链路 UserMemoryService)的注入上限
     long-term:
       max-items: 10
@@ -113,7 +124,7 @@ app:
       max-candidates: 5
       max-value-chars: 40
     ingest-trigger:
-      enabled: true
+      enabled: false
       min-chars: 6
       # 事件消费worker: 入队后多久开始消费、每轮批量。关掉 enabled 则退回纯手动 /api/admin/memory/process
       initial-delay-ms: 15000

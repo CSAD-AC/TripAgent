@@ -30,6 +30,7 @@ public class GlobalExceptionHandler {
      * 返回 400 而不是 500,因为这是客户端请求问题
      */
     @ExceptionHandler(IllegalArgumentException.class)
+    @ResponseStatus(HttpStatus.BAD_REQUEST)
     public Result<Void> handleIllegalArgument(IllegalArgumentException e) {
         log.warn("参数非法: {}", e.getMessage());
         return Result.error(400, e.getMessage());

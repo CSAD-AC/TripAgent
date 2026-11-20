@@ -15,10 +15,9 @@ import uno.zhuchen.agent.config.ModelRouter;
 import uno.zhuchen.agent.core.agent.AgentState;
 import uno.zhuchen.agent.core.llm.ChatModel;
 import uno.zhuchen.agent.core.memory.ChatMemory;
-import uno.zhuchen.agent.core.memory.MemoryPromptRenderer;
-import uno.zhuchen.agent.core.memory.HybridMemoryPromptRenderer;
-import uno.zhuchen.agent.core.memory.MemoryTriggerService;
-import uno.zhuchen.agent.core.memory.UserMemoryService;
+import uno.zhuchen.agent.core.memory.block.LongTermMemoryContextBuilder;
+import uno.zhuchen.agent.core.memory.block.MemoryKeywordTrigger;
+import uno.zhuchen.agent.core.memory.block.MemoryRawEventService;
 import uno.zhuchen.agent.core.tool.AskUserTool;
 import uno.zhuchen.agent.core.tool.AskUserToolCallback;
 import uno.zhuchen.agent.core.tool.CalculatorTool;
@@ -62,10 +61,8 @@ public class MultiAgentManager {
     private final ModelRouter modelRouter;
     private final ToolRegistry toolRegistry;
     private final ChatMemory chatMemory;
-    private final UserMemoryService userMemoryService;
-    private final MemoryPromptRenderer memoryPromptRenderer;
-    private final HybridMemoryPromptRenderer hybridMemoryPromptRenderer;
-    private final MemoryTriggerService memoryTriggerService;
+    private final LongTermMemoryContextBuilder memoryContextBuilder;
+    private final MemoryRawEventService rawEventService;
     private final AgentConfig config;
     private final AskUserToolCallback askUserToolCallback;
     private final CalculatorTool calculatorTool;
@@ -86,17 +83,13 @@ public class MultiAgentManager {
                              WeatherSubAgent weatherSubAgent,
                              KnowledgeSubAgent knowledgeSubAgent,
                              TripPlanningTool tripPlanningTool,
-                             UserMemoryService userMemoryService,
-                             MemoryPromptRenderer memoryPromptRenderer,
-                             HybridMemoryPromptRenderer hybridMemoryPromptRenderer,
-                             MemoryTriggerService memoryTriggerService) {
+                             LongTermMemoryContextBuilder memoryContextBuilder,
+                             MemoryRawEventService rawEventService) {
         this.modelRouter = modelRouter;
         this.toolRegistry = toolRegistry;
         this.chatMemory = chatMemory;
-        this.userMemoryService = userMemoryService;
-        this.memoryPromptRenderer = memoryPromptRenderer;
-        this.hybridMemoryPromptRenderer = hybridMemoryPromptRenderer;
-        this.memoryTriggerService = memoryTriggerService;
+        this.memoryContextBuilder = memoryContextBuilder;
+        this.rawEventService = rawEventService;
         this.config = config;
         this.askUserToolCallback = askUserToolCallback;
         this.calculatorTool = calculatorTool;
@@ -171,20 +164,15 @@ public class MultiAgentManager {
      */
     private void runLoopAndEmit(String userId, String userInput, String conversationId, String traceId,
                                 String modelId, Sinks.Many<StreamChunk> sink, long startMs) {
-        String memorySection = "";
+        AgentState state = new AgentState(
+                userId, conversationId, MultiAgentPrompts.MANAGER_SYSTEM_PROMPT, userInput);
         try {
-            memorySection = hybridMemoryPromptRenderer.render("default", userId, null, userInput);
-            if (memorySection.isBlank()) {
-                memorySection = memoryPromptRenderer.render(userMemoryService.loadSummary(userId));
+            String memorySection = memoryContextBuilder.render(userId);
+            if (memorySection != null && !memorySection.isBlank()) {
+                state.setSystemContext(memorySection);
             }
         } catch (Exception e) {
             log.warn("[traceId={}] [MultiAgent] 加载长期记忆失败: {}", traceId, e.getMessage());
-        }
-        AgentState state = new AgentState(
-                userId, conversationId, MultiAgentPrompts.MANAGER_SYSTEM_PROMPT, userInput);
-        // 记忆走 user 角色的背景上下文: 当前模型网关会丢弃 system 角色消息
-        if (!memorySection.isBlank()) {
-            state.setContextBlock(memorySection);
         }
         chatMemory.claim(userId, conversationId, "multi", modelRouter.resolveModelName(modelId));
         try {
@@ -292,12 +280,11 @@ public class MultiAgentManager {
 
     private void remember(String userId, String conversationId, String userInput) {
         try {
-            if (!memoryTriggerService.isHybridPipelineEnabled()) {
-                userMemoryService.extractAndStore(userId, conversationId, userInput);
+            if (MemoryKeywordTrigger.matches(userInput)) {
+                rawEventService.appendKeyword(userId, conversationId, userInput);
             }
-            memoryTriggerService.onConversationFinished(userId, conversationId, userInput);
         } catch (Exception e) {
-            log.warn("[MultiAgent] 保存长期记忆失败: userId={}, conversationId={}, error={}",
+            log.warn("[MultiAgent] 长期记忆入队失败: userId={}, conversationId={}, error={}",
                     userId, conversationId, e.getMessage());
         }
     }

@@ -2,6 +2,7 @@ import { cn } from '../lib/utils'
 import { apiFetch } from '../lib/apiClient'
 import type { Message, ToolCallInfo, StreamIteration } from '../types'
 import { ItineraryCard } from './ItineraryCard'
+import { MemoryChangeCard } from './MemoryChangeCard'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Loader2, CheckCircle2, XCircle, ChevronDown, ChevronRight, AlertCircle, ThumbsUp, Check } from 'lucide-react'
@@ -21,6 +22,8 @@ interface ChatMessageProps {
   conversationId?: string
   /** 是否为本次会话的最终回答(仅最终回答展示沉淀按钮) */
   showSettle?: boolean
+  /** 打开长期记忆管理页 */
+  onOpenMemory?: () => void
 }
 
 /** 工具名称转中文 */
@@ -367,8 +370,18 @@ export function ChatMessage({
   currentIteration: _currentIteration,
   conversationId,
   showSettle,
+  onOpenMemory,
 }: ChatMessageProps) {
   const isUser = message.role === 'user'
+
+  if (message.memoryEvent) {
+    return (
+      <MemoryChangeCard
+        event={message.memoryEvent}
+        onOpenMemory={onOpenMemory || (() => undefined)}
+      />
+    )
+  }
 
   // 仅"最终回答"在回答结束后展示沉淀按钮(中间的工具调用/思考帧不展示)
   const canSettle = !!showSettle && !isStreaming
@@ -388,6 +401,18 @@ export function ChatMessage({
           <div className="bg-terracotta-500 text-white rounded-2xl rounded-br-sm px-4 py-3 text-sm leading-relaxed">
             {message.content}
           </div>
+        </div>
+      </div>
+    )
+  }
+
+  if (message.memoryCommand) {
+    if (!message.error) return null
+    return (
+      <div className="flex w-full justify-start" role="alert">
+        <div className="flex max-w-full items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300">
+          <AlertCircle className="h-4 w-4 flex-shrink-0" />
+          记忆指令处理失败，请稍后重试。
         </div>
       </div>
     )
