@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { Sidebar } from './components/Sidebar'
 import { ChatMessage } from './components/ChatMessage'
 import { ChatInput } from './components/ChatInput'
@@ -8,14 +8,36 @@ import { MultiAgentProgress } from './components/MultiAgentProgress'
 import { useChat } from './hooks/useChat'
 import { useConversations } from './hooks/useConversations'
 import { Knowledge } from './pages/Knowledge'
-import { Menu, MapPin, GitBranch, Zap, Cpu, Rocket, Users, ArrowLeft } from 'lucide-react'
+import { MemoryPanel } from './components/MemoryPanel'
+import { Menu, MapPin, GitBranch, Zap, Cpu, Rocket, Users, ArrowLeft, LogOut } from 'lucide-react'
 import { cn } from './lib/utils'
-import type { ApiMode, ModelInfo } from './types'
+import type { ApiMode, MemoryEventStatus, ModelInfo } from './types'
+import { LoginPage } from './auth/LoginPage'
+import { useAuth } from './auth/AuthProvider'
+import { apiFetch } from './lib/apiClient'
+import { attachMemoryEvents, isMemoryCommand } from './lib/memory'
 
 export default function App() {
+  const { user, loading } = useAuth()
+
+  if (loading) {
+    return (
+      <div className="h-screen bg-warm-white dark:bg-[#1a1a1a] flex items-center justify-center">
+        <div className="w-8 h-8 rounded-full border-2 border-terracotta-500 border-t-transparent animate-spin" />
+      </div>
+    )
+  }
+  if (!user) {
+    return <LoginPage />
+  }
+  return <AuthenticatedApp />
+}
+
+function AuthenticatedApp() {
+  const { user, logout } = useAuth()
   const [sidebarOpen, setSidebarOpen] = useState(false)
   /** 主视图: 'chat' = 聊天, 'knowledge' = 知识库管理 */
-  const [view, setView] = useState<'chat' | 'knowledge'>('chat')
+  const [view, setView] = useState<'chat' | 'knowledge' | 'memory'>('chat')
   /** API 模式: 'react' = ReAct 工具调用, 'graph' = Graph 工作流 */
   const [apiMode, setApiMode] = useState<ApiMode>('react')
   /** 模型列表(来自 GET /api/models, 顺序即后端配置, 第一项 deepseek 为默认) */
@@ -28,7 +50,7 @@ export default function App() {
 
   // 首次挂载拉取模型列表; 失败时静默(不阻塞聊天, 后端会回退默认模型)
   useEffect(() => {
-    fetch('/api/models')
+    apiFetch('/api/models')
       .then((r) => r.json())
       .then((body: { code: number; data?: ModelInfo[] }) => {
         if (body.code === 200 && body.data && body.data.length > 0) {
@@ -69,60 +91,269 @@ export default function App() {
     loadConversation,
   } = useChat()
 
+  /** 已载入消息区的会话 ID：避免重复请求，也用于判断是否需要重新载入 */
+  const loadedConversationRef = useRef<string | undefined>(undefined)
+
+  // ── 长期记忆变更：随会话持久化，作为消息时间线的一部分回放 ──
+  const [memoryEvents, setMemoryEvents] = useState<MemoryEventStatus[]>([])
+  const [pendingMemoryEvent, setPendingMemoryEvent] = useState<MemoryEventStatus | null>(null)
+  const activeConversationIdRef = useRef<string | undefined>(undefined)
+  const memoryResolvedRef = useRef(false)
+  const memoryEventIdsAtSendRef = useRef<Set<string>>(new Set())
+  const memoryLoadTokenRef = useRef(0)
+  const memoryPollTimersRef = useRef<number[]>([])
+
+  const fetchConversationMemoryEvents = useCallback(async (
+    conversationId: string
+  ): Promise<MemoryEventStatus[]> => {
+    try {
+      const res = await apiFetch(
+        `/api/memory/events?conversationId=${encodeURIComponent(conversationId)}&limit=100`
+      )
+      if (!res.ok) return []
+      const body = await res.json()
+      const items = body?.data
+      return Array.isArray(items) ? items : []
+    } catch {
+      return []
+    }
+  }, [])
+
+  const loadConversationMemoryEvents = useCallback(async (conversationId: string) => {
+    const token = ++memoryLoadTokenRef.current
+    const events = await fetchConversationMemoryEvents(conversationId)
+    if (
+      memoryLoadTokenRef.current === token
+      && activeConversationIdRef.current === conversationId
+    ) {
+      setMemoryEvents(events)
+    }
+  }, [fetchConversationMemoryEvents])
+
+  const checkMemoryChanges = useCallback(async (conversationId?: string) => {
+    if (!conversationId || memoryResolvedRef.current) return memoryResolvedRef.current
+    const events = await fetchConversationMemoryEvents(conversationId)
+    if (activeConversationIdRef.current !== conversationId) return false
+
+    if (events.length > 0) {
+      setMemoryEvents(events)
+    }
+    const newEvent = events.find(
+      (event) => !memoryEventIdsAtSendRef.current.has(event.id)
+    )
+    if (newEvent) {
+      setPendingMemoryEvent(null)
+      if (newEvent.eventStatus === 'DONE' || newEvent.eventStatus === 'FAILED') {
+        memoryResolvedRef.current = true
+        return true
+      }
+      return false
+    }
+    return false
+  }, [fetchConversationMemoryEvents])
+
+  /** 一轮对话结束后分几次检查，覆盖 worker 的延迟窗口 */
+  const scheduleMemoryCheck = useCallback((conversationId?: string) => {
+    memoryPollTimersRef.current.forEach((id) => window.clearTimeout(id))
+    memoryPollTimersRef.current = [2500, 6000, 10000, 16000, 25000].map((delay) =>
+      window.setTimeout(() => {
+        void checkMemoryChanges(conversationId)
+      }, delay)
+    )
+    memoryPollTimersRef.current.push(
+      window.setTimeout(async () => {
+        const handled = await checkMemoryChanges(conversationId)
+        if (!handled && !memoryResolvedRef.current) {
+          memoryResolvedRef.current = true
+          setPendingMemoryEvent((current) => current
+            ? {
+                ...current,
+                eventStatus: 'DONE',
+                resultStatus: 'NO_CHANGE',
+                resultJson: JSON.stringify({
+                  changed: false,
+                  reason: 'duplicate_or_not_triggered',
+                }),
+                processedAt: new Date().toISOString(),
+              }
+            : null)
+        }
+      }, 35000)
+    )
+  }, [checkMemoryChanges])
+
+  useEffect(() => {
+    return () => {
+      memoryPollTimersRef.current.forEach((id) => window.clearTimeout(id))
+    }
+  }, [])
+
   // 把后端下发的 session_init.conversationId 写回 URL hash
   // 新对话创建后刷新列表，使其出现在侧边栏
   const handleSessionInit = useCallback(
     (id: string) => {
+      activeConversationIdRef.current = id
+      // 本轮消息已由流式渲染写进消息区，标记为"已载入"，避免流结束后再回库覆盖
+      loadedConversationRef.current = id
+      void loadConversationMemoryEvents(id)
       if (id !== conversationId) {
         setConversationId(id)
         // 新 conversationId 说明是新创建的对话，刷新列表使其出现在侧边栏
         fetchConversations()
       }
     },
-    [conversationId, setConversationId, fetchConversations]
+    [conversationId, setConversationId, fetchConversations, loadConversationMemoryEvents]
   )
 
-  // 首次挂载时，如果 URL hash 中有 conversationId，自动恢复历史消息
-  const initialLoadDoneRef = useRef(false)
+  /**
+   * 打开一个会话：必须先切回聊天视图，否则在知识库/记忆视图下点了历史对话
+   * 只会改 hash 与侧栏高亮，消息区不可见（表现为"点了没反应/加载不出来"）。
+   */
+  const openConversation = useCallback(
+    async (id: string) => {
+      setView('chat')
+      if (id === loadedConversationRef.current) {
+        activeConversationIdRef.current = id
+        if (memoryEvents.length === 0) void loadConversationMemoryEvents(id)
+        return
+      }
+      activeConversationIdRef.current = id
+      setPendingMemoryEvent(null)
+      setMemoryEvents([])
+      memoryResolvedRef.current = false
+      clearMessages()
+      const ok = await loadConversation(id)
+      loadedConversationRef.current = ok ? id : undefined
+      if (ok) void loadConversationMemoryEvents(id)
+    },
+    [
+      clearMessages,
+      loadConversation,
+      loadConversationMemoryEvents,
+      memoryEvents.length,
+    ]
+  )
+
+  /**
+   * conversationId 的权威变化入口：刷新页面(hash 恢复)、点击历史对话、
+   * 浏览器前进/后退(hashchange) 都走这里统一载入消息。
+   */
   useEffect(() => {
-    if (initialLoadDoneRef.current) return
-    initialLoadDoneRef.current = true
-    if (conversationId) {
-      loadConversation(conversationId)
+    if (!conversationId) {
+      loadedConversationRef.current = undefined
+      activeConversationIdRef.current = undefined
+      setMemoryEvents([])
+      setPendingMemoryEvent(null)
+      return
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+    // 流式生成中(含新会话的 session_init)不覆盖正在渲染的消息
+    if (isLoading) return
+    if (conversationId === loadedConversationRef.current) return
+    void openConversation(conversationId)
+  }, [conversationId, isLoading, openConversation])
+
+  /** 一轮结束: 刷新侧栏 + 检查是否有新记忆被抽取出来 */
+  const handleTurnComplete = useCallback(() => {
+    fetchConversations()
+    scheduleMemoryCheck(activeConversationIdRef.current)
+  }, [fetchConversations, scheduleMemoryCheck])
 
   const handleSend = useCallback(
     (content: string) => {
-      sendMessage(
-        content,
-        apiMode,
-        conversationId,
-        selectedModelId || undefined,
-        apiMode === 'react' ? superMode : false,
-        handleSessionInit,
-        fetchConversations // 流结束后刷新列表, 让新对话/消息数出现在侧边栏
-      )
+      void (async () => {
+        memoryResolvedRef.current = false
+        memoryEventIdsAtSendRef.current = new Set(memoryEvents.map((event) => event.id))
+        if (isMemoryCommand(content)) {
+          // The optimistic record must sort after the user bubble created by
+          // sendMessage on the same event-loop turn.
+          const createdAt = new Date(Date.now() + 1000).toISOString()
+          setPendingMemoryEvent({
+            id: `pending-${Date.now()}`,
+            conversationId,
+            source: 'KEYWORD',
+            eventStatus: 'PENDING',
+            resultStatus: null,
+            content,
+            createdAt,
+            processedAt: null,
+          })
+        } else {
+          setPendingMemoryEvent(null)
+        }
+        sendMessage(
+          content,
+          apiMode,
+          conversationId,
+          selectedModelId || undefined,
+          apiMode === 'react' ? superMode : false,
+          handleSessionInit,
+          handleTurnComplete
+        )
+      })()
     },
-    [apiMode, conversationId, selectedModelId, superMode, handleSessionInit, fetchConversations, sendMessage]
+    [
+      apiMode,
+      conversationId,
+      handleSessionInit,
+      handleTurnComplete,
+      memoryEvents,
+      selectedModelId,
+      sendMessage,
+      superMode,
+    ]
+  )
+
+  const openMemoryView = useCallback(() => {
+    setView('memory')
+    setSidebarOpen(false)
+  }, [])
+
+  const timelineMessages = useMemo(() => {
+    const timelineEvents = pendingMemoryEvent
+      ? [
+          ...memoryEvents.filter((event) => event.id !== pendingMemoryEvent.id),
+          pendingMemoryEvent,
+        ]
+      : memoryEvents
+    return attachMemoryEvents(messages, timelineEvents)
+  }, [memoryEvents, messages, pendingMemoryEvent])
+
+  const lastAssistantId = useMemo(
+    () => [...messages].reverse().find((message) => message.role === 'assistant')?.id,
+    [messages]
   )
 
   // ── 从侧边栏选择对话 ──
   const handleSelectConversation = useCallback(
     (id: string) => {
-      if (id === conversationId) return
-      selectConversation(id)
-      clearMessages()
-      loadConversation(id)
+      // 无论当前在哪个视图，点历史对话都应回到聊天
+      setView('chat')
       setSidebarOpen(false)
+      // 生成过程中不打断，避免流式内容被清空
+      if (isLoading) return
+      if (id !== conversationId) {
+        // 交给 conversationId 的监听 effect 统一载入
+        selectConversation(id)
+        return
+      }
+      // 同一会话但消息区是空的(例如刚从记忆/知识库视图回来)，补载一次
+      if (loadedConversationRef.current !== id) {
+        loadedConversationRef.current = undefined
+        void openConversation(id)
+      }
     },
-    [conversationId, selectConversation, clearMessages, loadConversation]
+    [conversationId, isLoading, selectConversation, openConversation]
   )
 
   // ── 新建对话 ──
   const handleNewConversation = useCallback(() => {
+    setView('chat')
     newConversation()
+    loadedConversationRef.current = undefined
+    activeConversationIdRef.current = undefined
+    setMemoryEvents([])
+    setPendingMemoryEvent(null)
+    memoryResolvedRef.current = false
     clearMessages()
     setSidebarOpen(false)
   }, [newConversation, clearMessages])
@@ -132,6 +363,10 @@ export default function App() {
     async (id: string) => {
       await deleteConversation(id)
       if (id === conversationId) {
+        loadedConversationRef.current = undefined
+        activeConversationIdRef.current = undefined
+        setMemoryEvents([])
+        setPendingMemoryEvent(null)
         clearMessages()
       }
     },
@@ -152,13 +387,18 @@ export default function App() {
     setSidebarOpen(false)
   }, [])
 
+  const toggleMemoryView = useCallback(() => {
+    setView((v) => (v === 'memory' ? 'chat' : 'memory'))
+    setSidebarOpen(false)
+  }, [])
+
   // 自动滚动到底部(尊重 prefers-reduced-motion)
   useEffect(() => {
     const prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
     messagesEndRef.current?.scrollIntoView({
       behavior: prefersReduced ? 'auto' : 'smooth',
     })
-  }, [messages, streamContent, pendingClarification])
+  }, [messages, streamContent, pendingClarification, memoryEvents, pendingMemoryEvent])
 
   return (
     <div className="h-screen flex overflow-hidden bg-warm-white dark:bg-[#1a1a1a]">
@@ -176,6 +416,7 @@ export default function App() {
         onToggle={() => setSidebarOpen(!sidebarOpen)}
         view={view}
         onToggleView={toggleView}
+        onToggleMemoryView={toggleMemoryView}
       />
 
       {/* 主区域 */}
@@ -202,10 +443,10 @@ export default function App() {
           </div>
 
           {/* 知识库视图下的返回聊天按钮 */}
-          {view === 'knowledge' && (
+          {(view === 'knowledge' || view === 'memory') && (
             <button
               onClick={toggleView}
-              className="ml-auto flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium text-warm-white bg-charcoal-900 dark:bg-charcoal-700 hover:bg-charcoal-700 dark:hover:bg-charcoal-600 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-terracotta-500"
+              className="ml-auto flex flex-shrink-0 items-center gap-1.5 whitespace-nowrap px-2.5 py-1.5 rounded-md text-xs font-medium text-warm-white bg-charcoal-900 dark:bg-charcoal-700 hover:bg-charcoal-700 dark:hover:bg-charcoal-600 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-terracotta-500"
             >
               <ArrowLeft className="w-3.5 h-3.5" />
               返回聊天
@@ -216,7 +457,7 @@ export default function App() {
           <div
             className={cn(
               'ml-auto flex items-center gap-1 p-1 rounded-lg bg-warm-white dark:bg-charcoal-800 border border-warm-white-200 dark:border-charcoal-700',
-              view === 'knowledge' && 'hidden' /* 知识库视图隐藏模式切换, 避免拥挤 */
+              (view === 'knowledge' || view === 'memory') && 'hidden'
             )}
             role="tablist"
             aria-label="API 模式"
@@ -277,7 +518,7 @@ export default function App() {
           {/* 超能模式开关(仅 ReAct 模式显示, 默认关闭): 工具调用与迭代轮次无限制 */}
           {apiMode === 'react' && (
             <div
-              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-warm-white dark:bg-charcoal-800 border border-warm-white-200 dark:border-charcoal-700"
+              className="hidden md:flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-warm-white dark:bg-charcoal-800 border border-warm-white-200 dark:border-charcoal-700"
               title="超能模式: 工具调用与迭代轮次无限制(默认关闭)"
             >
               <Rocket className="w-3.5 h-3.5 text-terracotta-500 flex-shrink-0" />
@@ -311,7 +552,7 @@ export default function App() {
           {/* 模型选择器(列表来自 GET /api/models, 默认选中第一项 = deepseek) */}
           {models.length > 0 && (
             <div
-              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-warm-white dark:bg-charcoal-800 border border-warm-white-200 dark:border-charcoal-700"
+              className="hidden lg:flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-warm-white dark:bg-charcoal-800 border border-warm-white-200 dark:border-charcoal-700"
               title="选择 LLM 模型"
             >
               <Cpu className="w-3.5 h-3.5 text-terracotta-500 flex-shrink-0" />
@@ -338,10 +579,24 @@ export default function App() {
               {conversationId.slice(0, 8)}
             </div>
           )}
+
+          <button
+            type="button"
+            onClick={() => void logout()}
+            title={`退出登录 ${user?.displayName || ''}`}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium text-charcoal-500 dark:text-charcoal-400 hover:bg-warm-white dark:hover:bg-charcoal-800 border border-transparent hover:border-warm-white-200 dark:hover:border-charcoal-700"
+          >
+            <LogOut className="w-3.5 h-3.5" />
+            <span className="hidden lg:inline max-w-24 truncate">
+              {user?.displayName || '退出'}
+            </span>
+          </button>
         </header>
 
         {/* 知识库视图: 渲染管理页 */}
-        {view === 'knowledge' ? (
+        {view === 'memory' ? (
+          <MemoryPanel onBack={toggleMemoryView} />
+        ) : view === 'knowledge' ? (
           <Knowledge />
         ) : (
           <>
@@ -392,9 +647,8 @@ export default function App() {
             )}
 
             {/* 消息列表 */}
-            {messages.map((msg, idx) => {
-              const isLastAssistant =
-                idx === messages.length - 1 && msg.role === 'assistant'
+            {timelineMessages.map((msg) => {
+              const isLastAssistant = msg.id === lastAssistantId
               return (
                 <ChatMessage
                   key={msg.id}
@@ -404,6 +658,7 @@ export default function App() {
                   streamIterations={isLastAssistant ? streamIterations : undefined}
                   conversationId={conversationId}
                   showSettle={isLastAssistant && !isLoading}
+                  onOpenMemory={openMemoryView}
                 />
               )
             })}
@@ -430,6 +685,7 @@ export default function App() {
           </>
         )}
       </div>
+
     </div>
   )
 }

@@ -17,6 +17,8 @@ import uno.zhuchen.agent.core.llm.impl.DashScopeChatModel;
 import uno.zhuchen.agent.core.llm.impl.DeepSeekChatModel;
 import uno.zhuchen.agent.core.memory.ChatMemory;
 import uno.zhuchen.agent.core.memory.InMemoryChatMemory;
+import uno.zhuchen.agent.core.memory.block.LongTermMemoryContextBuilder;
+import uno.zhuchen.agent.core.memory.block.MemoryRawEventService;
 import uno.zhuchen.agent.core.tool.ToolRegistry;
 
 /**
@@ -113,7 +115,10 @@ public class LLMConfig {
      */
     @Bean
     public ReactAgent reactAgent(ModelRouter modelRouter, ChatMemory chatMemory,
-                                  AgentConfig agentConfig, ToolRegistry toolRegistry) {
-        return new ReactAgent(modelRouter, chatMemory, agentConfig, toolRegistry);
+                                  AgentConfig agentConfig, ToolRegistry toolRegistry,
+                                  MemoryRawEventService rawEventService,
+                                  LongTermMemoryContextBuilder memoryContextBuilder) {
+        return new ReactAgent(modelRouter, chatMemory, agentConfig, toolRegistry,
+                rawEventService, memoryContextBuilder);
     }
 }

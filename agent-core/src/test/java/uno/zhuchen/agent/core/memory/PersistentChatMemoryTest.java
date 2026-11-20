@@ -71,6 +71,7 @@ class PersistentChatMemoryTest {
     private PersistentChatMemory persistentChatMemory;
 
     private static final long CACHE_TTL_SECONDS = 1800L;
+    private static final String USER_ID = "user-a";
 
     @BeforeEach
     void setUp() {
@@ -78,6 +79,13 @@ class PersistentChatMemoryTest {
                 messageMapper, conversationMapper, messageCache, eventPublisher, compactor, CACHE_TTL_SECONDS);
         // 默认关闭压缩, 保持既有 load 行为
         when(compactor.enabled()).thenReturn(false);
+        when(conversationMapper.selectById(anyString())).thenAnswer(invocation -> {
+            ConversationEntity conversation = new ConversationEntity();
+            conversation.setId(invocation.getArgument(0));
+            conversation.setUserId(USER_ID);
+            conversation.setStatus("active");
+            return conversation;
+        });
     }
 
     // ============= save =============
@@ -92,10 +100,10 @@ class PersistentChatMemoryTest {
         );
 
         // when
-        persistentChatMemory.save(conversationId, messages, "a1b2c3d4");
+        persistentChatMemory.save(USER_ID, conversationId, messages, "a1b2c3d4");
 
-        // then - verify conversation insert
-        verify(conversationMapper).insert(argThat((ConversationEntity conv) ->
+        // then - verify conversation metadata update
+        verify(conversationMapper).updateById(argThat((ConversationEntity conv) ->
                 conv.getId().equals(conversationId)
                         && conv.getTitle().equals("北京天气如何？")
         ));
@@ -136,9 +144,10 @@ class PersistentChatMemoryTest {
                 .when(conversationMapper).insert(any(ConversationEntity.class));
 
         // when
-        persistentChatMemory.save(conversationId, List.of(new UserMessage("hello")), "");
+        persistentChatMemory.save(USER_ID, conversationId, List.of(new UserMessage("hello")), "");
 
-        // then - 幂等:DuplicateKeyException 被吞掉,messages 仍正常写入
+        // then - 已有会话无需重复插入,messages 仍正常写入
+        verify(conversationMapper, never()).insert(any(ConversationEntity.class));
         verify(messageMapper).insertBatch(any());
         verify(conversationMapper).incrementMessageCount(conversationId, 1);
     }
@@ -156,7 +165,7 @@ class PersistentChatMemoryTest {
         );
 
         // when
-        persistentChatMemory.save(conversationId, messages, "tool-trace-01");
+        persistentChatMemory.save(USER_ID, conversationId, messages, "tool-trace-01");
 
         // then - tool response 的 content 是可读摘要,metadata 是结构化 JSON
         @SuppressWarnings("unchecked")
@@ -186,11 +195,11 @@ class PersistentChatMemoryTest {
                 .build();
 
         // when - 5 参 save 携带模型名与模式
-        persistentChatMemory.save(conversationId, List.of(assistant), "token-trace",
+        persistentChatMemory.save(USER_ID, conversationId, List.of(assistant), "token-trace",
                 "deepseek-v4-flash", "react");
 
         // then - conversation 落 mode 与 model 元数据
-        verify(conversationMapper).insert(argThat((ConversationEntity conv) ->
+        verify(conversationMapper).updateById(argThat((ConversationEntity conv) ->
                 "react".equals(conv.getMode())
                         && "deepseek-v4-flash".equals(conv.getModel())));
 
@@ -225,7 +234,7 @@ class PersistentChatMemoryTest {
         when(messageMapper.listByConversation(conversationId)).thenReturn(List.of(u1, a2, u3));
 
         // when
-        List<Message> result = persistentChatMemory.load(conversationId);
+        List<Message> result = persistentChatMemory.load(USER_ID, conversationId);
 
         // then - 保留最近 2 条, 前缀注入摘要(system), 并异步触发压缩
         assertEquals(3, result.size());
@@ -253,7 +262,7 @@ class PersistentChatMemoryTest {
         a2.setContent("五");
         when(messageMapper.listByConversation(conversationId)).thenReturn(List.of(u1, a2));
 
-        List<Message> result = persistentChatMemory.load(conversationId);
+        List<Message> result = persistentChatMemory.load(USER_ID, conversationId);
 
         assertEquals(3, result.size());
         assertEquals(MessageType.SYSTEM, result.get(0).getMessageType());
@@ -275,7 +284,7 @@ class PersistentChatMemoryTest {
         when(messageCache.get(conversationId)).thenReturn(Optional.of(cachedDtos));
 
         // when
-        List<Message> result = persistentChatMemory.load(conversationId);
+        List<Message> result = persistentChatMemory.load(USER_ID, conversationId);
 
         // then - cache hit, no DB query, no backfill
         assertNotNull(result);
@@ -297,7 +306,7 @@ class PersistentChatMemoryTest {
         when(messageMapper.listByConversation(conversationId)).thenReturn(List.of(userEntity));
 
         // when
-        List<Message> result = persistentChatMemory.load(conversationId);
+        List<Message> result = persistentChatMemory.load(USER_ID, conversationId);
 
         // then
         assertNotNull(result);
@@ -319,7 +328,7 @@ class PersistentChatMemoryTest {
         when(messageMapper.listByConversation(conversationId)).thenReturn(List.of(userEntity));
 
         // when - 应正常返回不抛异常
-        List<Message> result = persistentChatMemory.load(conversationId);
+        List<Message> result = persistentChatMemory.load(USER_ID, conversationId);
 
         // then - 走 MySQL,回填由 messageCache.put 自带降级
         assertNotNull(result);
@@ -340,7 +349,7 @@ class PersistentChatMemoryTest {
         when(messageMapper.listByConversation(conversationId)).thenReturn(List.of(userEntity));
 
         // when
-        List<Message> result = persistentChatMemory.load(conversationId);
+        List<Message> result = persistentChatMemory.load(USER_ID, conversationId);
 
         // then - 空缓存被忽略,走 MySQL
         assertNotNull(result);
@@ -356,11 +365,12 @@ class PersistentChatMemoryTest {
         String conversationId = "test-conv-clear";
         ConversationEntity conv = new ConversationEntity();
         conv.setId(conversationId);
+        conv.setUserId(USER_ID);
         conv.setStatus("active");
         when(conversationMapper.selectById(conversationId)).thenReturn(conv);
 
         // when
-        persistentChatMemory.clear(conversationId);
+        persistentChatMemory.clear(USER_ID, conversationId);
 
         // then
         verify(messageMapper).delete(any());

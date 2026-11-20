@@ -8,6 +8,9 @@ spring:
   profiles:
     default: deepseek
 
+  session:
+    timeout: 30m
+
   # 始终排除 DashScope starter 的自动配置.
   # 原因: LLMConfig 里已经手动装配了一个名为 dashScopeChatModel 的 ChatModel bean,
   # starter 的 DashScopeChatAutoConfiguration 也会注册同名 bean,
@@ -76,12 +79,69 @@ mcp:
 # 对话消息缓存 TTL(秒),作用在 RedisMessageCache@persistentChatMemory
 # 仅在生产 profile(非 dev/test)下生效,因为 InMemoryChatMemory 不依赖 Redis
 app:
+  auth:
+    # 服务端 Session 必须满足空闲超时和绝对超时双重约束.
+    session-absolute-timeout-seconds: 43200
   cache:
     session-ttl: 1800
   # 对话历史滑动窗口压缩(生产标配): 保留最近 N 条完整消息, 超限时异步把最旧段
   # LLM 摘要写入 conversation.summary 并在加载时前缀注入. 0 = 关闭(默认, 不压缩)
   memory:
     window-size: 0
+    blocks:
+      enabled: ${MEMORY_BLOCKS_ENABLED:true}
+      consolidate-interval-ms: 10000
+      batch-size: 50
+      daily-cron: "0 0 2 * * *"
+      daily-timezone: "Asia/Shanghai"
+      daily-min-new-messages: 5
+      user-prompt-max-chars: 600
+      profile-max-chars: 600
+      event-max-chars: 1000
+      max-attempts: 3
+    # 旧偏好记忆(旧链路 UserMemoryService)的注入上限
+    long-term:
+      max-items: 10
+      max-chars: 800
+      max-value-chars: 120
+    # 混合记忆提示词链路. 注意: 以下配置必须直接挂在 app.memory 下,
+    # 代码读取的是 app.memory.hybrid / extraction / ingest-trigger / consolidation,
+    # 误缩进到 long-term 下会静默失效(只走默认值)。
+    hybrid:
+      enabled: ${MEMORY_HYBRID_ENABLED:false}
+      # 语义召回开关: 打开后经 mcp-server 的 /api/memory-vectors 访问 Milvus,
+      # 需同时设置 mcp-server 侧 app.memory-vector.enabled=true。默认关闭, 只用词面打分。
+      vector-enabled: ${MEMORY_VECTOR_ENABLED:false}
+      max-chars: 1000
+      max-items: 8
+      recall-top-k: 20
+      final-top-k: 6
+      min-score: 0.55
+    # LLM 深度抽取: 默认关闭(每轮多一次模型调用). 打开后失败自动回退规则抽取
+    extraction:
+      llm-enabled: ${MEMORY_LLM_EXTRACTION_ENABLED:false}
+      model: ${MEMORY_LLM_EXTRACTION_MODEL:}
+      max-candidates: 5
+      max-value-chars: 40
+    ingest-trigger:
+      enabled: false
+      min-chars: 6
+      # 事件消费worker: 入队后多久开始消费、每轮批量。关掉 enabled 则退回纯手动 /api/admin/memory/process
+      initial-delay-ms: 15000
+      process-interval-ms: 5000
+      batch-size: 20
+    consolidation:
+      enabled: false
+      initial-delay-ms: 60000
+      interval-ms: 3600000
+    retention-days: 365
+  # 知识沉淀整理: 点赞沉淀前先由模型改写成结构化知识文档(标题/概览/行程/要点/标签),
+  # 关掉则退回"回答原文直接入库"的旧行为
+  knowledge:
+    distill:
+      enabled: ${KNOWLEDGE_DISTILL_ENABLED:true}
+      # 留空 = 用模型注册表默认模型
+      model: ${KNOWLEDGE_DISTILL_MODEL:}
   # 模型注册表: 列表顺序即前端展示顺序, 第一项为默认模型(未指定 modelId 时回退)
   # provider 与 ChatModel 实现的 bean 路由键对应(见 ModelRouter)
   models:
@@ -103,6 +163,14 @@ clarify:
 
 server:
   port: ${SERVER_PORT:8080}
+  reactive:
+    session:
+      timeout: 30m
+      cookie:
+        http-only: true
+        same-site: lax
+        secure: ${SESSION_COOKIE_SECURE:false}
+
 
 logging:
   level:
@@ -129,6 +197,17 @@ spring:
   config:
     activate:
       on-profile: dev
+  datasource:
+    url: jdbc:h2:mem:travelpal-dev;MODE=MySQL;DB_CLOSE_DELAY=-1
+    username: sa
+    password:
+    driver-class-name: org.h2.Driver
+  flyway:
+    enabled: false
+  sql:
+    init:
+      mode: always
+      schema-locations: classpath:db/dev/schema.sql
   ai:
     dashscope:
       chat:

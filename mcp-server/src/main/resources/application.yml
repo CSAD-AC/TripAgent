@@ -42,6 +42,21 @@ spring:
         metric-type: COSINE
         initialize-schema: true
 
+# 用户长期记忆的独立向量 collection 配置。与知识库 RAG 完全隔离。
+# enabled=false(默认) 时完全不连 Milvus: 本地无需 Milvus 也能起服务,
+# agent-core 侧 app.memory.hybrid.vector-enabled 也保持 false, 二者一起打开才生效。
+app:
+  memory-vector:
+    enabled: ${USER_MEMORY_VECTOR_ENABLED:false}
+    collection-name: ${USER_MEMORY_COLLECTION:user_memory_episodic_v1}
+    embedding-dimension: ${USER_MEMORY_EMBEDDING_DIMENSION:1024}
+    host: ${MILVUS_HOST:localhost}
+    port: ${MILVUS_PORT:19530}
+    database-name: ${MILVUS_DATABASE:default}
+    index-type: ${USER_MEMORY_INDEX_TYPE:IVF_FLAT}
+    metric-type: ${USER_MEMORY_METRIC_TYPE:COSINE}
+    token: ${MILVUS_TOKEN:}
+
   # RAG: 知识库源数据 (MySQL 为源, Milvus 为可重建索引)
   datasource:
     url: jdbc:mysql://${MYSQL_HOST:localhost}:${MYSQL_PORT:3306}/${MYSQL_DB:TripAgent}?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai

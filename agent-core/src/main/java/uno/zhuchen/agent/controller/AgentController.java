@@ -4,6 +4,7 @@ import jakarta.validation.Valid;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -13,7 +14,10 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.Sinks;
 import reactor.util.context.Context;
+import reactor.core.scheduler.Schedulers;
 import uno.zhuchen.agent.config.ModelRouter;
+import uno.zhuchen.agent.core.memory.ChatMemory;
+import uno.zhuchen.agent.security.UserPrincipal;
 import uno.zhuchen.agent.core.agent.ReactAgent;
 import uno.zhuchen.agent.core.multi.MultiAgentManager;
 import uno.zhuchen.agent.core.clarify.ClarificationBroker;
@@ -61,15 +65,17 @@ public class AgentController {
     private final GraphStreamRunner graphStreamRunner;
     private final MultiAgentManager multiAgentManager;
     private final ModelRouter modelRouter;
+    private final ChatMemory chatMemory;
 
     public AgentController(ReactAgent reactAgent, ClarificationBroker clarificationBroker,
                            GraphStreamRunner graphStreamRunner, MultiAgentManager multiAgentManager,
-                           ModelRouter modelRouter) {
+                           ModelRouter modelRouter, ChatMemory chatMemory) {
         this.reactAgent = reactAgent;
         this.clarificationBroker = clarificationBroker;
         this.graphStreamRunner = graphStreamRunner;
         this.multiAgentManager = multiAgentManager;
         this.modelRouter = modelRouter;
+        this.chatMemory = chatMemory;
     }
 
     /**
@@ -103,7 +109,8 @@ public class AgentController {
      * 同步聊天
      */
     @PostMapping("/chat")
-    public Mono<Result<ChatVO>> chat(@Valid @RequestBody ChatRequest request) {
+    public Mono<Result<ChatVO>> chat(@Valid @RequestBody ChatRequest request,
+                                     @AuthenticationPrincipal UserPrincipal user) {
         String conversationId = resolveConversationId(request.getConversationId());
         String modelId = resolveModelId(request.getModelId());
         boolean superMode = Boolean.TRUE.equals(request.getSuperMode());
@@ -114,8 +121,9 @@ public class AgentController {
                 superMode,
                 request.getMessage() != null ? request.getMessage().length() : 0);
 
-        return Mono.fromCallable(() -> {
-            ChatDTO chatDTO = reactAgent.call(request.getMessage(), conversationId, traceId, modelId,
+        return Mono.<Result<ChatVO>>fromCallable(() -> {
+            ChatDTO chatDTO = reactAgent.call(user.userId(), request.getMessage(),
+                    conversationId, traceId, modelId,
                     superMode);
             ChatVO vo = ChatVO.from(chatDTO);
 
@@ -128,7 +136,11 @@ public class AgentController {
                 return Result.error(500, chatDTO.getErrorMessage());
             }
             return Result.success(vo);
-        });
+        })
+                // ReAct 内部是阻塞式调用(LLM + MCP 工具 + 记忆检索), 必须离开 Netty event loop,
+                // 否则 SyncMcpToolCallback / WebClient 的 block() 会直接抛
+                // "block() ... not supported in thread reactor-http-nio"
+                .subscribeOn(Schedulers.boundedElastic());
     }
 
     /**
@@ -161,7 +173,8 @@ public class AgentController {
      *   - Reactive 路径入口 log: 显式拼 traceId 到消息中
      */
     @PostMapping(value = "/chat/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public Flux<StreamChunk> stream(@Valid @RequestBody ChatRequest request) {
+    public Flux<StreamChunk> stream(@Valid @RequestBody ChatRequest request,
+                                    @AuthenticationPrincipal UserPrincipal user) {
         String conversationId = resolveConversationId(request.getConversationId());
         String modelId = resolveModelId(request.getModelId());
         boolean superMode = Boolean.TRUE.equals(request.getSuperMode());
@@ -198,7 +211,8 @@ public class AgentController {
         Sinks.One<Void> completionSignal = Sinks.one();
 
         // 4. 主事件流(thinking_token / tool_call / tool_result / final)
-        Flux<StreamChunk> mainStream = reactAgent.stream(request.getMessage(), conversationId, superMode)
+        Flux<StreamChunk> mainStream = reactAgent.stream(
+                        user.userId(), request.getMessage(), conversationId, superMode)
                 .doFinally(signalType -> completionSignal.tryEmitEmpty())
                 .doOnTerminate(doCleanup)
                 .doOnCancel(() -> {
@@ -232,11 +246,17 @@ public class AgentController {
      * 要求同时传 conversationId 和 questionId,后端校验两者匹配,防止跨会话误路由
      */
     @PostMapping("/chat/answer")
-    public Mono<Result<Void>> submitAnswer(@Valid @RequestBody AnswerRequest request) {
-        log.info("收到用户回答: conversationId={}, questionId={}, answer={}",
-                request.conversationId(), request.questionId(), request.answer());
-        clarificationBroker.submit(request.conversationId(), request.questionId(), request.answer());
-        return Mono.just(Result.success(null));
+    public Mono<Result<Void>> submitAnswer(@Valid @RequestBody AnswerRequest request,
+                                           @AuthenticationPrincipal UserPrincipal user) {
+        return Mono.fromRunnable(() -> chatMemory.assertOwned(user.userId(), request.conversationId()))
+                .subscribeOn(Schedulers.boundedElastic())
+                .then(Mono.fromRunnable(() -> {
+                    log.info("收到用户回答: conversationId={}, questionId={}, answer={}",
+                            request.conversationId(), request.questionId(), request.answer());
+                    clarificationBroker.submit(
+                            request.conversationId(), request.questionId(), request.answer());
+                }))
+                .thenReturn(Result.success(null));
     }
 
     /**
@@ -262,7 +282,8 @@ public class AgentController {
      * (Graph 路径同时由 GraphStreamRunner 写入 state[INPUT_TRACE_ID] 供 BaseAgent 读取).
      */
     @PostMapping(value = "/chat/graph", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public Flux<StreamChunk> graphStream(@Valid @RequestBody ChatRequest request) {
+    public Flux<StreamChunk> graphStream(@Valid @RequestBody ChatRequest request,
+                                         @AuthenticationPrincipal UserPrincipal user) {
         String conversationId = resolveConversationId(request.getConversationId());
         String traceId = newTraceId();
         long startMs = System.currentTimeMillis();
@@ -296,7 +317,8 @@ public class AgentController {
         // 3. 主事件流（GraphStreamRunner 内部已发射 session_init + graph_topology + 全生命周期事件）
         //    注意: Sinks.Many.unicast() 只允许单订阅者，所以心跳不能用 mainStream.last() 做终止信号
         Sinks.One<Void> graphCompletionSignal = Sinks.one();
-        Flux<StreamChunk> mainStream = graphStreamRunner.runStream(request.getMessage(), conversationId, traceId)
+        Flux<StreamChunk> mainStream = graphStreamRunner.runStream(
+                        user.userId(), request.getMessage(), conversationId, traceId)
                 .doFinally(signalType -> graphCompletionSignal.tryEmitEmpty())
                 .doOnTerminate(graphCleanup)
                 .doOnCancel(() -> {
@@ -334,7 +356,8 @@ public class AgentController {
      * <p>modelId 生效: 主管 LLM 按所选模型路由; 子代理内部暂用注册表默认模型。
      */
     @PostMapping(value = "/chat/multi", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public Flux<StreamChunk> multiStream(@Valid @RequestBody ChatRequest request) {
+    public Flux<StreamChunk> multiStream(@Valid @RequestBody ChatRequest request,
+                                         @AuthenticationPrincipal UserPrincipal user) {
         String conversationId = resolveConversationId(request.getConversationId());
         String modelId = resolveModelId(request.getModelId());
         String traceId = newTraceId();
@@ -367,7 +390,7 @@ public class AgentController {
         // 3. 主事件流完成信号(Sinks.One 避免冷 Flux 二次订阅)
         Sinks.One<Void> multiCompletionSignal = Sinks.one();
         Flux<StreamChunk> mainStream = multiAgentManager
-                .stream(request.getMessage(), conversationId, traceId, modelId)
+                .stream(user.userId(), request.getMessage(), conversationId, traceId, modelId)
                 .doFinally(signalType -> multiCompletionSignal.tryEmitEmpty())
                 .doOnTerminate(multiCleanup)
                 .doOnCancel(() -> {

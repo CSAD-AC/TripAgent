@@ -16,15 +16,21 @@ import java.util.UUID;
  */
 public class AgentState {
 
+    private final String userId;
     private final String conversationId;
+    private final String userInput;
     private final SystemMessage systemPrompt;
     private final List<Message> messages;
+    /** 长期记忆等背景信息，合并进同一条 system 消息，且不落库。 */
+    private String systemContext;
     private int iterationCount;
     /** 从持久层加载的历史消息数量，save() 时只保存此偏移量之后的新消息，防止续聊重复插入 */
     private int loadedMessageCount;
 
-    public AgentState(String conversationId, String systemPromptText, String userInput) {
+    public AgentState(String userId, String conversationId, String systemPromptText, String userInput) {
+        this.userId = userId;
         this.conversationId = conversationId != null ? conversationId : UUID.randomUUID().toString().substring(0, 8);
+        this.userInput = userInput;
         this.systemPrompt = new SystemMessage(systemPromptText);
         this.messages = new ArrayList<>();
         this.messages.add(new UserMessage(userInput));
@@ -59,15 +65,36 @@ public class AgentState {
      */
     public List<Message> getFullMessages() {
         List<Message> full = new ArrayList<>();
-        full.add(systemPrompt);
+        String prompt = systemPrompt.getText();
+        if (systemContext != null && !systemContext.isBlank()) {
+            prompt = prompt + "\n\n" + systemContext;
+        }
+        full.add(new SystemMessage(prompt));
         full.addAll(messages);
         return full;
+    }
+
+    /** 设置背景上下文(system 角色合并注入, 不落库) */
+    public void setSystemContext(String systemContext) {
+        this.systemContext = systemContext;
+    }
+
+    public String getSystemContext() {
+        return systemContext;
     }
 
     // --- getters ---
 
     public String getConversationId() {
         return conversationId;
+    }
+
+    public String getUserId() {
+        return userId;
+    }
+
+    public String getUserInput() {
+        return userInput;
     }
 
     public SystemMessage getSystemPrompt() {

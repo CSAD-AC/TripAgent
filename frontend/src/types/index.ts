@@ -38,6 +38,10 @@ export interface Message {
   error?: boolean
   /** 链路追踪 ID (仅 error=true 时携带, 用户报错反馈时用, #8 trace_id) */
   traceId?: string
+  /** 纯记忆指令使用独立的任务标记，不渲染普通 assistant 气泡 */
+  memoryCommand?: boolean
+  /** 持久化的长期记忆变更记录，作为独立时间线项目渲染 */
+  memoryEvent?: MemoryEventStatus
 }
 
 /** API 模式: react=ReAct 工具调用路径, graph=Graph 工作流路径, multi=Multi-Agent 主管调度路径 */
@@ -52,6 +56,85 @@ export interface ModelInfo {
   provider: string
   model: string
   displayName: string
+}
+
+/** 当前登录用户 */
+export interface AuthUser {
+  id: string
+  username: string
+  displayName: string
+}
+
+/** 用户长期记忆 */
+export interface UserMemory {
+  id: string
+  memoryType: string
+  key?: string
+  label: string
+  value: string
+  content?: string
+  confidence?: number
+  importance?: number
+  status?: string
+  sourceConversationId?: string
+  extractorVersion?: string
+  updatedAt: string
+}
+
+/** 单条记忆修订记录 */
+export interface MemoryRevision {
+  id: string
+  memoryItemId: string
+  operation: string
+  previousValue?: string | null
+  newValue?: string | null
+  reason?: string | null
+  createdAt: string
+}
+
+export type MemoryBlockType = 'profile' | 'event'
+
+export interface MemoryPrompt {
+  content: string
+  charCount: number
+  maxChars: number
+  version: number
+  updatedAt: string
+}
+
+export interface MemoryBlock {
+  type: MemoryBlockType
+  content: string
+  charCount: number
+  maxChars: number
+  version: number
+  changeSource: 'INIT' | 'KEYWORD' | 'AUTO_CONSOLIDATION' | 'DAILY' | 'MANUAL'
+  changedAt?: string
+  updatedAt: string
+  generatedEdited: boolean
+}
+
+export interface MemoryBlockRevision {
+  id: string
+  blockType: string
+  oldContent?: string | null
+  newContent: string
+  changeSource: string
+  createdAt: string
+}
+
+export interface MemoryEventStatus {
+  id: string
+  conversationId?: string | null
+  source: string
+  eventStatus: 'PENDING' | 'PROCESSING' | 'DONE' | 'FAILED'
+  resultStatus?: 'UPDATED' | 'NO_CHANGE' | 'FAILED' | null
+  content?: string | null
+  candidateJson?: string | null
+  resultJson?: string | null
+  errorMessage?: string | null
+  createdAt: string
+  processedAt?: string | null
 }
 
 /** SWV 工作流 6 节点（Graph 模式专用） */

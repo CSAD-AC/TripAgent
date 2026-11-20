@@ -27,7 +27,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Flyway 迁移实跑测试: 在容器化的干净 MySQL 8.4 上执行 db/migration 的 V1~V8.
+ * Flyway 迁移实跑测试: 在容器化的干净 MySQL 8.4 上执行 db/migration 的 V1~V15.
  *
  * <p>目的: 迁移脚本此前从未在"空库"上验证过, 一旦脚本含语法错误或隐含依赖,
  * 只会在生产首次启动时才炸. 本测试把这一步前移到 CI.
@@ -39,7 +39,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * {@code -DexcludedGroups=integration} 跑, 加了 tag 就会被排除, 等于没测.
  */
 @Testcontainers(disabledWithoutDocker = true)
-@DisplayName("agent-core Flyway 迁移: 在干净 MySQL 8.4 上从零跑通 V1~V8")
+@DisplayName("agent-core Flyway 迁移: 在干净 MySQL 8.4 上从零跑通 V1~V15")
 class FlywayMigrationTest {
 
     /** 与生产同版本镜像: mysql:8.4 */
@@ -131,6 +131,18 @@ class FlywayMigrationTest {
         }
     }
 
+    private static int rawEventCount(String userId, String eventKey) throws SQLException {
+        try (Connection conn = connect();
+             PreparedStatement ps = conn.prepareStatement(
+                     "SELECT COUNT(*) FROM memory_raw_event WHERE user_id = ? AND event_key = ?")) {
+            ps.setString(1, userId);
+            ps.setString(2, eventKey);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? rs.getInt(1) : 0;
+            }
+        }
+    }
+
     private static boolean indexExists(String table, String index) throws SQLException {
         try (Connection conn = connect();
              PreparedStatement ps = conn.prepareStatement(
@@ -164,17 +176,17 @@ class FlywayMigrationTest {
     // ==================== 测试 ====================
 
     @Test
-    @DisplayName("空库执行 migrate: V1~V8 全部执行且无异常")
+    @DisplayName("空库执行 migrate: V1~V15 全部执行且无异常")
     void migrate_cleanDatabase_appliesAllMigrations() throws Exception {
         assertNotNull(firstMigrate, "migrate 应已执行");
 
         assertAll(
                 () -> assertTrue(firstMigrate.success, "migrate 结果应为 success"),
-                () -> assertEquals(8, firstMigrate.migrationsExecuted,
-                        "应恰好执行 8 个版本化迁移(V1~V8)"),
-                () -> assertEquals(List.of("1", "2", "3", "4", "5", "6", "7", "8"),
+                () -> assertEquals(15, firstMigrate.migrationsExecuted,
+                        "应恰好执行 15 个版本化迁移(V1~V15)"),
+                () -> assertEquals(List.of("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15"),
                         appliedVersions(),
-                        "flyway_schema_history 中 success=1 的版本应恰好是 V1..V8")
+                        "flyway_schema_history 中 success=1 的版本应恰好是 V1..V15")
         );
     }
 
@@ -207,11 +219,30 @@ class FlywayMigrationTest {
     }
 
     @Test
-    @DisplayName("V1/V2 建出 conversation 与 message 表")
+    @DisplayName("V1/V2/V9/V14/V15 建出核心表与长期记忆审计字段")
     void migrate_createsCoreTables() throws Exception {
         assertAll(
                 () -> assertTrue(tableExists("conversation"), "conversation 表应存在"),
-                () -> assertTrue(tableExists("message"), "message 表应存在")
+                () -> assertTrue(tableExists("message"), "message 表应存在"),
+                () -> assertTrue(tableExists("user_account"), "user_account 表应存在"),
+                () -> assertTrue(tableExists("memory_block"), "memory_block 表应存在"),
+                () -> assertTrue(tableExists("memory_user_prompt"), "memory_user_prompt 表应存在"),
+                () -> assertTrue(tableExists("memory_raw_event"), "memory_raw_event 表应存在"),
+                () -> assertTrue(tableExists("memory_block_revision"), "memory_block_revision 表应存在"),
+                () -> assertTrue(tableExists("memory_consolidation_watermark"),
+                        "memory_consolidation_watermark 表应存在"),
+                () -> assertFalse(tableExists("user_memory"), "旧 user_memory 表应被删除"),
+                () -> assertFalse(tableExists("memory_item"), "旧 memory_item 表应被删除"),
+                () -> assertFalse(tableExists("memory_ingest_event"), "旧 memory_ingest_event 表应被删除"),
+                () -> assertFalse(tableExists("memory_revision"), "旧 memory_revision 表应被删除"),
+                () -> assertEquals("varchar(24)", columnType("memory_raw_event", "result_status"),
+                        "V15 应新增 result_status"),
+                () -> assertEquals("text", columnType("memory_raw_event", "candidate_json").toLowerCase(),
+                        "V15 应新增 candidate_json"),
+                () -> assertEquals("text", columnType("memory_raw_event", "result_json").toLowerCase(),
+                        "V15 应新增 result_json"),
+                () -> assertEquals("varchar(500)", columnType("memory_raw_event", "error_message"),
+                        "V15 应新增 error_message")
         );
     }
 
@@ -256,9 +287,39 @@ class FlywayMigrationTest {
         assertAll(
                 () -> assertEquals(0, second.migrationsExecuted,
                         "第二次 migrate 不应执行任何迁移(幂等)"),
-                () -> assertEquals(8, applied.length, "flyway info 应显示 8 个已应用迁移"),
+                () -> assertEquals(15, applied.length, "flyway info 应显示 15 个已应用迁移"),
                 () -> assertEquals(0, flyway.info().pending().length, "不应残留 pending 迁移"),
                 () -> assertEquals(before, after, "重复迁移不应改变已应用版本集合")
         );
+    }
+
+    @Test
+    @DisplayName("memory_raw_event 的唯一键让重复事件只保留一行")
+    void rawEventUniqueKeyMakesInsertIgnoreIdempotent() throws Exception {
+        String insert = """
+                INSERT IGNORE INTO memory_raw_event
+                (id, user_id, conversation_id, message_id, event_key, content, source,
+                 event_status, attempt_count, processed_at, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """;
+        try (Connection conn = connect();
+             PreparedStatement ps = conn.prepareStatement(insert)) {
+            for (String id : List.of("e1", "e2")) {
+                ps.setString(1, id);
+                ps.setString(2, "u-idempotent");
+                ps.setString(3, "c1");
+                ps.setNull(4, java.sql.Types.BIGINT);
+                ps.setString(5, "same-event-key");
+                ps.setString(6, "记住：常住杭州");
+                ps.setString(7, "KEYWORD");
+                ps.setString(8, "PENDING");
+                ps.setInt(9, 0);
+                ps.setNull(10, java.sql.Types.TIMESTAMP);
+                ps.setTimestamp(11, java.sql.Timestamp.valueOf(java.time.LocalDateTime.now()));
+                ps.executeUpdate();
+            }
+        }
+
+        assertEquals(1, rawEventCount("u-idempotent", "same-event-key"));
     }
 }

@@ -31,3 +31,6 @@ mybatis-plus:
 app:
   cache:
     session-ttl: 1800
+  memory:
+    blocks:
+      enabled: false

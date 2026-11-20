@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { cn } from '../lib/utils'
-import { MapPin, Plus, Hash, Trash2, Pencil, Check, X, MessageSquare, Loader2, Database } from 'lucide-react'
+import { MapPin, Plus, Hash, Trash2, Pencil, Check, X, MessageSquare, Loader2, Database, Brain } from 'lucide-react'
 import type { Conversation } from '../types'
 
 interface SidebarProps {
@@ -15,9 +15,10 @@ interface SidebarProps {
   open: boolean
   onToggle: () => void
   /** 当前主视图: 'chat' = 聊天, 'knowledge' = 知识库管理 */
-  view?: 'chat' | 'knowledge'
+  view?: 'chat' | 'knowledge' | 'memory'
   /** 切换主视图回调(点击知识库入口) */
   onToggleView?: () => void
+  onToggleMemoryView?: () => void
 }
 
 /** 格式化时间: 今天/昨天/日期 */
@@ -203,6 +204,7 @@ export function Sidebar({
   onToggle,
   view = 'chat',
   onToggleView,
+  onToggleMemoryView,
 }: SidebarProps & { total?: number }) {
   return (
     <>
@@ -291,6 +293,20 @@ export function Sidebar({
           >
             <Database className={cn('w-4 h-4', view === 'knowledge' ? 'text-terracotta-500' : '')} />
             知识库
+          </button>
+
+          <button
+            onClick={onToggleMemoryView}
+            className={cn(
+              'w-full flex items-center gap-2 px-4 py-2.5 rounded-xl transition-colors text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-terracotta-500 mt-1',
+              view === 'memory'
+                ? 'bg-terracotta-50 dark:bg-terracotta-900/30 text-terracotta-600 dark:text-terracotta-400'
+                : 'text-charcoal-600 dark:text-charcoal-300 hover:bg-warm-white dark:hover:bg-charcoal-800'
+            )}
+            aria-label="偏好记忆"
+          >
+            <Brain className={cn('w-4 h-4', view === 'memory' ? 'text-terracotta-500' : '')} />
+            偏好记忆
           </button>
         </div>
 

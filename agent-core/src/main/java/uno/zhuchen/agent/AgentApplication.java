@@ -4,6 +4,7 @@ import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.context.properties.ConfigurationPropertiesScan;
 import org.springframework.context.annotation.ComponentScan;
+import org.springframework.scheduling.annotation.EnableScheduling;
 
 /**
  * 启动类
@@ -16,6 +17,7 @@ import org.springframework.context.annotation.ComponentScan;
  * (如 {@code McpClientProperties}), 并在启动期完成绑定与校验(fail-fast).
  */
 @SpringBootApplication
+@EnableScheduling
 @ComponentScan({"uno.zhuchen.agent", "uno.zhuchen.workflow"})
 @ConfigurationPropertiesScan({"uno.zhuchen.agent.config", "uno.zhuchen.workflow"})
 public class AgentApplication {

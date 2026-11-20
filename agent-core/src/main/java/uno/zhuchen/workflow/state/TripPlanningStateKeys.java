@@ -31,6 +31,9 @@ public final class TripPlanningStateKeys {
     /** Trace ID（用于日志链路追踪） */
     public static final String INPUT_TRACE_ID = "trace_id";
 
+    /** 当前用户长期记忆摘要（提示词注入用，只读） */
+    public static final String INPUT_USER_MEMORY = "user_memory";
+
     // ============ CONSTRAINTS 约束（ManagerAgent 输出）============
 
     /** 提取的结构化约束对象 {@link Constraints} */

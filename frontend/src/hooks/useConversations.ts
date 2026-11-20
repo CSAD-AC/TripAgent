@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import type { Conversation, ApiResult, PageResult } from '../types'
+import { apiFetch } from '../lib/apiClient'
 
 const API_BASE = '/api/conversations'
 
@@ -60,7 +61,7 @@ export function useConversations() {
   const fetchConversations = useCallback(async (page = 0, size = 50) => {
     setLoading(true)
     try {
-      const res = await fetch(`${API_BASE}?page=${page}&size=${size}`)
+      const res = await apiFetch(`${API_BASE}?page=${page}&size=${size}`)
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const body: ApiResult<PageResult<Conversation>> = await res.json()
       if (body.code === 200 && mountedRef.current) {
@@ -82,7 +83,7 @@ export function useConversations() {
   // ── 删除对话 ──
   const deleteConversation = useCallback(async (id: string) => {
     try {
-      const res = await fetch(`${API_BASE}/${id}`, { method: 'DELETE' })
+      const res = await apiFetch(`${API_BASE}/${id}`, { method: 'DELETE' })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       // 如果删除的是当前对话,清空
       setConversations((prev) => prev.filter((c) => c.id !== id))
@@ -98,7 +99,7 @@ export function useConversations() {
   // ── 重命名对话 ──
   const renameConversation = useCallback(async (id: string, title: string) => {
     try {
-      const res = await fetch(`${API_BASE}/${id}`, {
+      const res = await apiFetch(`${API_BASE}/${id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ title }),

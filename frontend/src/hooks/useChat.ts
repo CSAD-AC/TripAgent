@@ -10,6 +10,8 @@ import type {
   ConversationDetail,
   ApiResult,
 } from '../types'
+import { apiFetch } from '../lib/apiClient'
+import { isPureMemoryCommand } from '../lib/memory'
 
 export function useChat() {
   const [messages, setMessages] = useState<Message[]>([])
@@ -28,6 +30,8 @@ export function useChat() {
   const [graphTrace, setGraphTrace] = useState<GraphTrace | null>(null)
 
   const abortRef = useRef<AbortController | null>(null)
+  /** 历史载入请求序号：用于丢弃过期结果(快速切换会话时的竞态) */
+  const loadTokenRef = useRef(0)
   /** 当前正在流式写入的 assistant 消息 ID(error 事件需要标记这条消息) */
   const currentAssistantIdRef = useRef<string | null>(null)
 
@@ -426,11 +430,13 @@ export function useChat() {
       onSessionInit?: (id: string) => void,
       onComplete?: () => void
     ) => {
+      const memoryCommand = isPureMemoryCommand(content)
       const userMsg: Message = {
         id: `user-${Date.now()}`,
         role: 'user',
         content,
         timestamp: Date.now(),
+        memoryCommand,
       }
       const assistantId = `assistant-${Date.now()}`
       const assistantMsg: Message = {
@@ -440,6 +446,7 @@ export function useChat() {
         type: 'thinking' as const,
         timestamp: Date.now(),
         apiMode,
+        memoryCommand,
       }
 
       setMessages((prev) => [...prev, userMsg, assistantMsg])
@@ -471,7 +478,7 @@ export function useChat() {
         : '/api/chat/stream'
 
       try {
-        const response = await fetch(endpoint, {
+        const response = await apiFetch(endpoint, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ conversationId, message: content, modelId, superMode: superMode || undefined }),
@@ -574,7 +581,7 @@ export function useChat() {
       return
     }
     try {
-      const res = await fetch('/api/chat/answer', {
+      const res = await apiFetch('/api/chat/answer', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -599,6 +606,8 @@ export function useChat() {
   }, [])
 
   const clearMessages = useCallback(() => {
+    // 作废仍在路上的历史载入请求，避免旧会话结果覆盖新会话
+    loadTokenRef.current += 1
     setMessages([])
     setPendingClarification(null)
     setGraphTrace(null)
@@ -607,20 +616,26 @@ export function useChat() {
   /**
    * 加载已有对话的历史消息。
    * 当用户从侧边栏选择对话时调用,替代 sendMessage 的初始化流程。
+   *
+   * @returns 是否成功载入（失败时不覆盖当前消息区）
    */
-  const loadConversation = useCallback(async (id: string) => {
+  const loadConversation = useCallback(async (id: string): Promise<boolean> => {
+    const token = ++loadTokenRef.current
     try {
-      const res = await fetch(`/api/conversations/${id}`)
+      const res = await apiFetch(`/api/conversations/${id}`)
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const body: ApiResult<ConversationDetail> = await res.json()
       if (body.code !== 200 || !body.data) {
         throw new Error(body.message || '加载失败')
       }
       const detail = body.data
+      // 期间用户又切换了会话/新建了对话,丢弃本次结果
+      if (loadTokenRef.current !== token) return false
 
       // 对后端消息流进行分组：user / assistant → (tool)*, 把 tool 消息合并到前一条 assistant 的 toolCalls 中
       const grouped: Message[] = []
       let pendingAssistant: Message | null = null
+      let lastUserWasMemoryCommand = false
 
       /** flush pendingAssistant 到 grouped, 如有 toolCalls 则构建 iterationData */
       function flushAssistant(msg: Message | null) {
@@ -640,6 +655,7 @@ export function useChat() {
           // 先 flush 上一个 pending 的 assistant
           flushAssistant(pendingAssistant)
           pendingAssistant = null
+          lastUserWasMemoryCommand = isPureMemoryCommand(m.content || '')
           grouped.push({
             id: `hist-${detail.id}-${m.sequenceNum ?? Date.now()}`,
             role: 'user',
@@ -647,6 +663,7 @@ export function useChat() {
             type: 'final' as const,
             timestamp: m.createdAt ? new Date(m.createdAt).getTime() : Date.now(),
             apiMode: (detail.mode as ApiMode) || 'react',
+            memoryCommand: lastUserWasMemoryCommand,
           })
         } else if (m.role === 'assistant') {
           // flush previous assistant
@@ -674,6 +691,7 @@ export function useChat() {
             type: 'final' as const,
             timestamp: m.createdAt ? new Date(m.createdAt).getTime() : Date.now(),
             apiMode: (detail.mode as ApiMode) || 'react',
+            memoryCommand: lastUserWasMemoryCommand,
             toolCalls,
           }
         } else if (m.role === 'tool' && pendingAssistant) {
@@ -718,8 +736,10 @@ export function useChat() {
       setMessages(grouped)
       setPendingClarification(null)
       setGraphTrace(null)
+      return true
     } catch (err) {
       console.error('[useChat] loadConversation error:', err)
+      return false
     }
   }, [])
 

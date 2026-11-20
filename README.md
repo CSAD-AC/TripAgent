@@ -19,6 +19,7 @@ TravelPal 是一个基于大语言模型的 AI 旅游规划系统，具备三种
 | 语言模型 | DeepSeek（默认）/ 通义千问 | global:deepseek-v4.1-flash / qwen3.6-flash |
 | 工具协议 | Model Context Protocol (MCP) | — |
 | 持久化 | MySQL + Redis（MyBatis-Plus + Flyway） | 8.x / 7.x |
+| 认证与会话 | Spring Security + Spring Session Redis（BCrypt / CSRF） | 6.x / 3.x |
 | 向量库 | Milvus（RAG 语义检索，Docker Compose 部署） | - |
 | 前端框架 | React | 19.x |
 | 前端构建 | Vite | 8.x |
@@ -109,7 +110,24 @@ cp mcp-server/src/main/resources/.env.example mcp-server/src/main/resources/.env
 
 > **Profile 说明**：默认 profile 是 `deepseek`（见 application.yml `spring.profiles.default`）。
 > `deepseek` 生产 profile 会启用持久化层，需要**本地 MySQL + Redis**；
-> 改用 `dev` 或 `dashscope` profile 则使用内存记忆（InMemoryChatMemory），无需数据库。
+> 改用 `dev` 或 `dashscope` profile 时，对话记忆和账号仓库使用内存实现，无需数据库。
+
+### 认证与会话
+
+- 首次打开前端进入登录/注册页，账号密码使用 BCrypt 哈希存储。
+- 生产环境登录态由 Redis 服务端 Session 管理，浏览器只持有 `HttpOnly` Cookie。
+- 默认空闲超时 30 分钟、最长登录有效期 12 小时；注销后服务端 Session 立即失效。
+- 所有业务 API 均要求认证，对话、消息和后续长期记忆统一按认证后的 `userId` 隔离。
+- 状态变更请求使用 `XSRF-TOKEN` Cookie + `X-XSRF-TOKEN` Header 双重提交保护。
+- 生产部署必须通过 HTTPS 访问，并设置 `SESSION_COOKIE_SECURE=true`。
+
+账号接口：
+
+- `GET /api/auth/csrf`
+- `POST /api/auth/register`
+- `POST /api/auth/login`
+- `POST /api/auth/logout`
+- `GET /api/auth/me`
 
 ### 3. 启动 Milvus（RAG 需要）
 
@@ -214,6 +232,43 @@ npm run dev
 - 生产 profile 下对话（消息）会持久化到 MySQL，侧边栏展示会话列表，支持选中/行内重命名/删除
 - conversationId 双向绑定到 URL hash：刷新页面后自动恢复当前会话与历史消息
 - 会话 ID 由后端权威生成（UUID），续聊必须传合法 UUID，否则返回 400
+
+### 长期记忆
+
+长期记忆采用三层文本模型，并在 ReAct、Graph、Multi-Agent 三种模式中合并进同一条 system 提示词：
+
+1. **用户固定提示词**：由用户独占维护，worker 永远不修改。适合放硬性规则、称呼和长期稳定偏好。
+2. **自动用户信息块**：最多 600 字，记录稳定的全局事实。用户可以直接编辑，后续整理会在容量允许时尽量保留，但不承诺永久不重建。
+3. **自动事件记忆块**：最多 1000 字，记录已发生或明确计划的长期事件。用户同样可以编辑和回滚。
+
+写入采用两阶段模型调用：先由 `MemoryCandidateExtractor` 从原始消息中抽取全局稳定事实，丢弃本次行程、临时状态和敏感信息；再由 `MemoryBlockUpdater` 基于完整旧记忆和候选事实重写自动块，冲突时以最新候选为准。普通对话不会触发长期记忆写入，只有显式关键词（如“记住”“记一下”“请记住”）和每日增量任务会入队。
+
+幂等由 `memory_raw_event.event_key` 保证：显式事件使用用户、会话、来源和规范化文本计算 SHA-256，每日事件使用 `message:<id>`；唯一键为 `(user_id, event_key)`，重复入队由 `INSERT IGNORE` 跳过。事件状态为 `PENDING / PROCESSING / DONE / FAILED`，失败最多重试 3 次。
+
+V15 为每个事件记录抽取候选、最终结果和真实状态：`UPDATED / NO_CHANGE / FAILED`。前端会先提示“正在整理”，处理完成后再根据真实结果提示成功、无变化或失败，不再把 async worker 的 `DONE` 误当成一定发生了更新。
+
+开发环境不兼容旧记忆数据。V14 迁移会删除旧的 `user_memory`、`memory_item`、`memory_ingest_event`、`memory_revision`，并建立 `memory_user_prompt`、`memory_block`、`memory_raw_event`、`memory_block_revision`、`memory_consolidation_watermark`；V15 增加事件结果审计列。
+
+长期记忆接口：
+
+- `GET /api/memory/prompt`
+- `PUT /api/memory/prompt`
+- `GET /api/memory/prompt/revisions`
+- `POST /api/memory/prompt/rollback/{revisionId}`
+- `GET /api/memory/blocks`
+- `GET /api/memory/events/latest?conversationId=...`
+- `PUT /api/memory/blocks/{type}`
+- `GET /api/memory/blocks/{type}/revisions`
+- `POST /api/memory/blocks/{type}/rollback/{revisionId}`
+
+主要配置：
+
+- `app.memory.blocks.enabled`：是否启用新长期记忆 worker，默认 `true`。
+- `app.memory.blocks.consolidate-interval-ms` / `batch-size`：待处理事件轮询间隔与批量。
+- `app.memory.blocks.daily-cron` / `daily-timezone` / `daily-min-new-messages`：每日增量整理计划与最小新增消息数。
+- `app.memory.blocks.user-prompt-max-chars` / `profile-max-chars` / `event-max-chars`：三层文本上限。
+- `app.memory.blocks.max-attempts`：事件最大重试次数。
+- `app.memory.ingest-trigger.enabled` / `app.memory.hybrid.enabled`：旧链路已默认关闭。
 
 ## 接口说明
 
